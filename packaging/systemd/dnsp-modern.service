@@ -1,0 +1,25 @@
+[Unit]
+Description=DNSProxy modern DNS-over-HTTPS forwarder
+Documentation=https://github.com/fantuz/DNSProxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/bin/dnsp-modern -l 127.0.0.1 -p 5300 -s https://cloudflare-dns.com/dns-query
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
