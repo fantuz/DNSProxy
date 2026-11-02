@@ -1,15 +1,79 @@
-# dnsp-modern experimental package
+# dnsp-modern experimental v0.2.0
 
-This package installs `/usr/bin/dnsp-modern` and a systemd unit. It does **not** replace the legacy DNSProxy executables, modify `/etc/resolv.conf`, or take over port 53.
+`dnsp-modern` is an **opt-in** DNS-over-HTTPS forwarder. It does not replace the
+legacy `dnsp`/`dnsp-h2` binaries, modify `/etc/resolv.conf`, or take over port 53.
+It is not a recursive resolver and currently handles **one query per TCP client**.
 
-Build on Debian/Ubuntu with `sudo apt install build-essential pkg-config libcurl4-openssl-dev dpkg-dev python3`, then `sh scripts/build-deb.sh`.
+## Manual build and integration tests
 
-Inspect the result with `dpkg-deb --info dist/*.deb` and `dpkg-deb --contents dist/*.deb`.
+On supported Debian/Ubuntu systems:
 
-Install with `sudo apt install ./dist/dnsp-modern_*.deb` (use an exact filename if more than one package exists).
+```sh
+sudo apt install build-essential pkg-config libcurl4-openssl-dev dpkg-dev python3
+make -f modern.mk
+make -f modern.mk modern-check
+sh scripts/build-deb.sh
+sudo apt install ./dist/dnsp-modern_0.2.0_$(dpkg --print-architecture).deb
+```
 
-The service is **not automatically enabled or started**. For manual startup use `sudo systemctl enable --now dnsp-modern`. Check `systemctl status dnsp-modern` and `journalctl -u dnsp-modern -f`. The default listens on `127.0.0.1:5300` and forwards to Cloudflare DoH. To customize it, use `sudo systemctl edit dnsp-modern`, clear `ExecStart=` and specify a new `ExecStart=` with the desired options.
+The service is installed **disabled and stopped**. Start it explicitly:
 
-Test with `dig @127.0.0.1 -p 5300 example.com A` and `dig +tcp @127.0.0.1 -p 5300 example.com A`.
+```sh
+sudo systemctl enable --now dnsp-modern
+journalctl -u dnsp-modern -f
+```
 
-This is an experimental release. Do not expose the resolver publicly until protocol correctness, rate limits, and load testing have been expanded.
+The packaged service listens on `127.0.0.1:5300` (UDP and TCP), forwards to
+`https://cloudflare-dns.com/dns-query`, and exposes metrics on the loopback
+interface at `http://127.0.0.1:9153/metrics`. It never binds metrics to a public
+interface. If port 9153 is already in use, override `ExecStart` with
+`sudo systemctl edit dnsp-modern` (first clear it with a blank `ExecStart=`).
+Manual launch can disable metrics by omitting `-m PORT`.
+
+```sh
+dig @127.0.0.1 -p 5300 example.com A
+dig +tcp @127.0.0.1 -p 5300 example.com A
+curl -fsS http://127.0.0.1:9153/metrics
+```
+
+Observe `dnsp_upstream_http_responses_total{version="2"}` and
+`dnsp_upstream_reused_requests_total` while generating traffic to evaluate
+HTTP/2 negotiation and connection reuse. Loopback integration tests exercise
+HTTP/1.1 only and do not prove remote HTTP/2 throughput. Metrics are process-
+local and reset on restart; they do not include DNS question names, client
+addresses, or other high-cardinality labels.
+
+## GitHub Actions releases
+
+`.github/workflows/dnsp-modern.yml` builds and tests on Ubuntu 22.04 and 24.04
+on pull requests and pushes to `master`. Two separately versioned `.deb`
+artifacts are attached to each successful workflow run. An annotated tag matching
+`vMAJOR.MINOR.PATCH-modern`, for example `v0.2.0-modern`, triggers the same
+checks and (only if both pass) publishes an **experimental GitHub pre-release**
+with both packages and `SHA256SUMS`.
+
+```sh
+# Inspect and test locally before creating a release tag:
+make -f modern.mk modern-check
+sh scripts/build-deb.sh
+# Once you are satisfied and have committed the patch:
+git tag -a v0.2.0-modern -m "DNSProxy modern v0.2.0 (experimental)"
+git push origin v0.2.0-modern
+```
+
+CI uses `0.2.0+ubuntu22.04` and `0.2.0+ubuntu24.04` as distinct Debian
+versions. Install the artifact built for your own distribution/version; binary
+packages are not guaranteed to be portable across Debian and Ubuntu releases.
+These packages are **not signed** or published to an APT repository. Verify
+checksums and the GitHub release source before installing.
+
+## Protocol and performance limitations
+
+The proxy forwards DNS wire messages without caching or DNSSEC validation.
+UDP reply limits are 512 bytes without EDNS and the client's advertised EDNS
+buffer size (clamped to 512–4096) otherwise. Oversized UDP replies are returned
+with `TC=1` and can be retried over TCP. The upstream DoH response must pass
+HTTP status, Content-Type, DNS header/ID/question, and record-boundary checks.
+It is not yet a production-hardened public recursive resolver. Client TCP
+pipelining, EDNS(0) option semantics, end-to-end HTTP/2 benchmarks, request
+rate limiting, and comprehensive fuzz testing are future work.

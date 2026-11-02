@@ -1,0 +1,97 @@
+name: DNSProxy modern - test and package
+
+"on":
+  pull_request:
+  push:
+    branches: [master]
+    tags: ['v*-modern']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deb:
+    name: Build and test (${{ matrix.distro }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            distro: ubuntu22.04
+          - runner: ubuntu-24.04
+            distro: ubuntu24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev dpkg-dev python3
+      - name: Build and run integration tests; build distro-specific DEB
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            if [[ "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-modern$ ]]; then
+              version="${BASH_REMATCH[1]}"
+            else
+              echo "Release tags must be vMAJOR.MINOR.PATCH-modern" >&2
+              exit 1
+            fi
+          else
+            version="0.2.0~ci${GITHUB_RUN_NUMBER}"
+          fi
+          VERSION="${version}+${{ matrix.distro }}" sh scripts/build-deb.sh
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dnsp-modern-${{ matrix.distro }}
+          path: dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  sanitizers:
+    name: AddressSanitizer and UndefinedBehaviorSanitizer
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev python3
+      - name: Sanitizer integration test suite
+        run: |
+          make -B -f modern.mk dnsp-modern CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
+          make -f modern.mk modern-check
+
+  publish:
+    name: Publish pre-release from version tag
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [deb, sanitizers]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dnsp-modern-*
+          merge-multiple: true
+          path: dist
+      - name: Publish both DEBs and checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mapfile -t packages < <(find dist -maxdepth 1 -type f -name '*.deb' | sort)
+          if (( ${#packages[@]} != 2 )); then
+            echo "Expected two distribution-specific packages, found ${#packages[@]}" >&2
+            exit 1
+          fi
+          (cd dist && sha256sum *.deb > SHA256SUMS)
+          gh release create "$GITHUB_REF_NAME" "${packages[@]}" dist/SHA256SUMS \
+            --title "DNSProxy Modern ${GITHUB_REF_NAME} (experimental)" \
+            --prerelease --generate-notes
