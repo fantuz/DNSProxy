@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
-VERSION=${VERSION:-0.2.0}
+VERSION=${VERSION:-0.2.3}
 case "$VERSION" in *[!0-9A-Za-z.+~:-]*|'') echo 'Invalid Debian version' >&2; exit 2;; esac
 ARCH=$(dpkg --print-architecture)
 mkdir -p dist

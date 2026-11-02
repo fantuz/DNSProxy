@@ -35,6 +35,11 @@ such as disk caching, custom TTL rewriting, HTTP proxy-chain options, and raw
 message dumps have **not** been migrated. Do not interchange CLI flags between
 these executables.
 
+`dnsp-modern` now supports **persistent DNS-over-TCP client sessions**, ordered
+sequential/pipelined messages, and an adjustable `--tcp-idle-ms` timeout. See
+[the TCP session documentation](docs/TCP_SESSIONS.md) for behavior, limits,
+metrics and tests.
+
 ## Build, test and run
 
 On Ubuntu or Debian:

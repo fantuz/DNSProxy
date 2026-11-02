@@ -114,7 +114,7 @@ typedef struct Query Query;
 struct Client {
     int fd;size_t have,need,sent,out_len;
     unsigned char in[TCP_MAX+2],out[TCP_MAX+2];
-    bool busy;uint64_t generation,last_ms;
+    bool busy,read_eof;uint64_t generation,last_ms,queries_started;
 };
 struct Query {
     CURL *easy;struct curl_slist *headers;
@@ -130,7 +130,9 @@ typedef struct {
     uint64_t udp_queries,tcp_queries,invalid_queries,overload,upstream_requests,
       upstream_ok,upstream_failed,upstream_timeouts,invalid_responses,
       truncated,requests_new_connections,requests_reused_connections,
-      http1,http2,http3,socket_callbacks,timer_callbacks,timer_fires;
+      http1,http2,http3,socket_callbacks,timer_callbacks,timer_fires,
+      tcp_accepted,tcp_closed,tcp_keepalive_queries,tcp_pipeline_buffered,
+      tcp_half_closes,tcp_idle_timeouts,tcp_cancelled_upstream;
     double upstream_seconds;
 } Metrics;
 static Metrics metrics;
@@ -143,6 +145,7 @@ static Client clients[MAX_CLIENTS];
 static CurlSocket curl_sockets[MAX_CURL_SOCKETS];
 static size_t curl_socket_count;
 static int64_t curl_deadline=-1;
+static uint64_t tcp_idle_ms=TCP_IDLE_MS;
 
 typedef struct {
     int fd;uint64_t generation,last_ms;
@@ -207,12 +210,15 @@ static void close_client(Client *c) {
     Query *q=active;
     while(q) {
         Query *next=q->next;
-        if(q->client==c && q->generation==gen) remove_query(q);
+        if(q->client==c && q->generation==gen) {
+            metrics.tcp_cancelled_upstream++;
+            remove_query(q);
+        }
         q=next;
     }
-    if(c->fd>=0) close(c->fd);
+    if(c->fd>=0) {close(c->fd);metrics.tcp_closed++;}
     c->fd=-1;c->have=c->need=c->sent=c->out_len=0;
-    c->busy=false;c->generation++;
+    c->busy=c->read_eof=false;c->generation++;c->queries_started=0;
 }
 static void reply_dns(Query *q,const unsigned char *p,size_t n) {
     if(q->client) {
@@ -321,7 +327,10 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
     if(curl_multi_add_handle(multi,q->easy)!=CURLM_OK) goto fail;
     q->next=active;active=q;active_count++;
     metrics.upstream_requests++;
-    if(client) {client->busy=true;metrics.tcp_queries++;}
+    if(client) {
+        if(client->queries_started++>0) metrics.tcp_keepalive_queries++;
+        client->busy=true;metrics.tcp_queries++;
+    }
     else metrics.udp_queries++;
     return true;
 fail:
@@ -339,22 +348,51 @@ static int listener(int type,const char *bindip,int port) {
        (type==SOCK_STREAM && listen(fd,128)<0)) {close(fd);return -1;}
     return fd;
 }
+/* At most one in-flight query and one fully buffered successor per TCP
+ * connection. Framing reads stop exactly at a message boundary: further
+ * pipelined messages stay in the kernel receive buffer (backpressure).
+ * Responses are emitted in request order. */
+static bool start_tcp_query(Client *c) {
+    if(c->fd<0 || c->busy || c->out_len || !c->need || c->have!=c->need) return true;
+    if(!submit(c->in+2,c->need-2,c,-1,NULL,0)) {
+        close_client(c);
+        return false;
+    }
+    c->have=c->need=0; /* submit() owns a copy of the complete wire request */
+    return true;
+}
+static short tcp_events(const Client *c) {
+    short ev=0;
+    if(c->out_len) ev|=POLLOUT;
+    /* No POLLIN when a complete successor frame is buffered: avoid spin. */
+    if(!c->read_eof && (!c->need || c->have<c->need)) ev|=POLLIN;
+    return ev;
+}
 static void tcp_io(Client *c,short events) {
     if(c->fd<0) return;
-    if(c->out_len) {
-        if(events&POLLOUT) {
-            ssize_t n=send(c->fd,c->out+c->sent,c->out_len-c->sent,MSG_NOSIGNAL);
-            if(n>0) {c->sent+=(size_t)n;c->last_ms=clock_ms();}
-            else if(n<0 && (errno==EAGAIN || errno==EINTR)) return;
-            else {close_client(c);return;}
-            if(c->sent==c->out_len) close_client(c); /* v0.2: one query per TCP connection */
+    if(c->out_len && (events&POLLOUT)) {
+        ssize_t n=send(c->fd,c->out+c->sent,c->out_len-c->sent,MSG_NOSIGNAL);
+        if(n>0) {c->sent+=(size_t)n;c->last_ms=clock_ms();}
+        else if(n<0 && (errno==EAGAIN || errno==EINTR)) return;
+        else {close_client(c);return;}
+        if(c->sent==c->out_len) {
+            c->out_len=c->sent=0;
+            if(c->need && c->have==c->need && !start_tcp_query(c)) return;
+            if(c->read_eof && !c->busy) close_client(c);
         }
-        return;
     }
-    if(c->busy || !(events&POLLIN)) return;
+    if(c->fd<0 || c->read_eof ||
+       !(!c->need || c->have<c->need) || !(events&(POLLIN|POLLHUP))) return;
     size_t target=c->need?c->need:2;
     ssize_t n=recv(c->fd,c->in+c->have,target-c->have,0);
-    if(n==0) {close_client(c);return;}
+    if(n==0) {
+        c->read_eof=true;
+        metrics.tcp_half_closes++;
+        /* A half-closed writer may still be waiting to read its replies. */
+        if(c->have && (!c->need || c->have!=c->need)) {close_client(c);return;}
+        if(!c->busy && !c->out_len) close_client(c);
+        return;
+    }
     if(n<0) {if(errno!=EAGAIN && errno!=EINTR) close_client(c);return;}
     c->have+=(size_t)n;c->last_ms=clock_ms();
     if(c->have==2 && !c->need) {
@@ -362,8 +400,10 @@ static void tcp_io(Client *c,short events) {
         if(length<17 || length>TCP_MAX) {close_client(c);return;}
         c->need=length+2;
     }
-    if(c->need && c->have==c->need &&
-       !submit(c->in+2,c->need-2,c,-1,NULL,0)) close_client(c);
+    if(c->need && c->have==c->need) {
+        if(c->busy || c->out_len) metrics.tcp_pipeline_buffered++;
+        else (void)start_tcp_query(c);
+    }
 }
 static void udp_io(int fd) {
     unsigned char buf[DNS_MAX];
@@ -406,6 +446,20 @@ static void metric_response(MetricClient *c) {
         "# TYPE dnsp_queries_total counter\n"
         "dnsp_queries_total{transport=\"udp\"} %llu\n"
         "dnsp_queries_total{transport=\"tcp\"} %llu\n"
+        "# TYPE dnsp_tcp_connections_accepted_total counter\n"
+        "dnsp_tcp_connections_accepted_total %llu\n"
+        "# TYPE dnsp_tcp_connections_closed_total counter\n"
+        "dnsp_tcp_connections_closed_total %llu\n"
+        "# TYPE dnsp_tcp_keepalive_queries_total counter\n"
+        "dnsp_tcp_keepalive_queries_total %llu\n"
+        "# TYPE dnsp_tcp_pipeline_buffered_total counter\n"
+        "dnsp_tcp_pipeline_buffered_total %llu\n"
+        "# TYPE dnsp_tcp_half_closes_total counter\n"
+        "dnsp_tcp_half_closes_total %llu\n"
+        "# TYPE dnsp_tcp_idle_timeouts_total counter\n"
+        "dnsp_tcp_idle_timeouts_total %llu\n"
+        "# TYPE dnsp_tcp_cancelled_upstream_total counter\n"
+        "dnsp_tcp_cancelled_upstream_total %llu\n"
         "# TYPE dnsp_upstream_requests_total counter\n"
         "dnsp_upstream_requests_total %llu\n"
         "dnsp_upstream_success_total %llu\n"
@@ -431,6 +485,12 @@ static void metric_response(MetricClient *c) {
         "dnsp_tcp_clients %zu\n"
         "dnsp_curl_socket_watches %zu\n",
         (unsigned long long)metrics.udp_queries,(unsigned long long)metrics.tcp_queries,
+        (unsigned long long)metrics.tcp_accepted,(unsigned long long)metrics.tcp_closed,
+        (unsigned long long)metrics.tcp_keepalive_queries,
+        (unsigned long long)metrics.tcp_pipeline_buffered,
+        (unsigned long long)metrics.tcp_half_closes,
+        (unsigned long long)metrics.tcp_idle_timeouts,
+        (unsigned long long)metrics.tcp_cancelled_upstream,
         (unsigned long long)metrics.upstream_requests,(unsigned long long)metrics.upstream_ok,
         (unsigned long long)metrics.upstream_failed,(unsigned long long)metrics.upstream_timeouts,
         (unsigned long long)metrics.invalid_queries,(unsigned long long)metrics.invalid_responses,
@@ -484,7 +544,8 @@ static void accept_tcp(int server,bool is_metrics) {
             size_t j=0;while(j<MAX_CLIENTS && clients[j].fd>=0) j++;
             if(j==MAX_CLIENTS) close(fd);
             else {uint64_t g=clients[j].generation+1;
-                  clients[j]=(Client){.fd=fd,.generation=g,.last_ms=clock_ms()};}
+                  clients[j]=(Client){.fd=fd,.generation=g,.last_ms=clock_ms()};
+                  metrics.tcp_accepted++;}
         }
     }
 }
@@ -492,7 +553,9 @@ typedef enum {P_UDP,P_TCP_LISTEN,P_METRIC_LISTEN,P_TCP_CLIENT,P_METRIC_CLIENT,P_
 typedef struct {struct pollfd p;PollType kind;size_t idx;uint64_t generation;} PollItem;
 static void expire_clients(uint64_t now) {
     for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd>=0 &&
-       now-clients[i].last_ms>TCP_IDLE_MS) close_client(&clients[i]);
+       now-clients[i].last_ms>=tcp_idle_ms) {
+        metrics.tcp_idle_timeouts++;close_client(&clients[i]);
+    }
     for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) if(metric_clients[i].fd>=0 &&
        now-metric_clients[i].last_ms>METRICS_IDLE_MS) close_metric(&metric_clients[i]);
 }
@@ -522,9 +585,17 @@ int main(int argc,char **argv) {
         else if(!strcmp(argv[i],"-s") && i+1<argc) upstream=argv[++i];
         else if(!strcmp(argv[i],"-m") && i+1<argc) metrics_port=parse_port(argv[++i]);
         else if(!strcmp(argv[i],"--ca-file") && i+1<argc) ca_file=argv[++i];
+        else if(!strcmp(argv[i],"--tcp-idle-ms") && i+1<argc) {
+            const char *raw=argv[++i];char *end=NULL;errno=0;
+            unsigned long v=strtoul(raw,&end,10);
+            if(errno || end==raw || *end || v<100 || v>600000) {
+                fprintf(stderr,"invalid --tcp-idle-ms (100..600000)\n");return 2;
+            }
+            tcp_idle_ms=v;
+        }
         else if(!strcmp(argv[i],"--max-host-connections") && i+1<argc)
             max_host_connections=parse_port(argv[++i]);
-        else {fprintf(stderr,"usage: %s [-l IPv4] [-p port] [-s https://DoH-URL] [-m loopback-metrics-port] [--ca-file PEM] [--max-host-connections 1..16]\n",argv[0]);return 2;}
+        else {fprintf(stderr,"usage: %s [-l IPv4] [-p port] [-s https://DoH-URL] [-m loopback-metrics-port] [--ca-file PEM] [--max-host-connections 1..16] [--tcp-idle-ms 100..600000]\n",argv[0]);return 2;}
     }
     if(port<1 || port>65535 || metrics_port<0 || metrics_port>65535 || metrics_port==port ||
        max_host_connections<1 || max_host_connections>16) {
@@ -567,8 +638,10 @@ int main(int argc,char **argv) {
         ADD(P_UDP,udp,POLLIN,0,0);
         ADD(P_TCP_LISTEN,tcp,POLLIN,0,0);
         if(mfd>=0) ADD(P_METRIC_LISTEN,mfd,POLLIN,0,0);
-        for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd>=0)
-            ADD(P_TCP_CLIENT,clients[i].fd,clients[i].out_len?POLLOUT:(clients[i].busy?0:POLLIN),i,clients[i].generation);
+        for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd>=0) {
+            short ev=tcp_events(&clients[i]);
+            if(ev) ADD(P_TCP_CLIENT,clients[i].fd,ev,i,clients[i].generation);
+        }
         for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) if(metric_clients[i].fd>=0)
             ADD(P_METRIC_CLIENT,metric_clients[i].fd,metric_clients[i].reply_len?POLLOUT:POLLIN,i,metric_clients[i].generation);
         for(size_t i=0;i<curl_socket_count;i++) {
@@ -584,6 +657,13 @@ int main(int argc,char **argv) {
             if(left<0) left=0;
             if(left<timeout) timeout=(int)left;
         }
+        /* Wake for the nearest idle client; a 1000 ms floor would delay
+         * configured short timeouts even with no incoming traffic. */
+        for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd>=0) {
+            uint64_t age=now-clients[i].last_ms;
+            uint64_t left=age>=tcp_idle_ms?0:tcp_idle_ms-age;
+            if(left<(uint64_t)timeout) timeout=(int)left;
+        }
         for(size_t i=0;i<n;i++) pfds[i]=items[i].p;
         int result=poll(pfds,n,timeout);
         for(size_t i=0;i<n;i++) items[i].p.revents=pfds[i].revents;
@@ -598,8 +678,8 @@ int main(int argc,char **argv) {
                 case P_TCP_CLIENT: {
                     Client *c=&clients[items[i].idx];
                     if(c->fd!=items[i].p.fd || c->generation!=items[i].generation) break;
-                    if(re&(POLLERR|POLLHUP|POLLNVAL)) close_client(c);
-                    else tcp_io(c,re);
+                    if(re&(POLLERR|POLLNVAL)) close_client(c);
+                    else tcp_io(c,re); /* POLLHUP can follow a valid final query */
                     break;
                 }
                 case P_METRIC_CLIENT: {

@@ -62,6 +62,8 @@ class DoH(http.server.BaseHTTPRequestHandler):
             return
         r = make_response(data)
         typ = struct.unpack('!H', data[len(QUERY)-4:len(QUERY)-2])[0]
+        if typ == 65010:  # test intentional upstream delay and cancellation
+            time.sleep(0.7)
         self.send_response(502 if typ == 65009 else 200)
         self.send_header('Content-Type', 'text/plain' if typ == 65008 else 'application/dns-message')
         self.send_header('Content-Length', str(len(r)))
@@ -173,6 +175,166 @@ class Tests(unittest.TestCase):
                 return b
             n = struct.unpack('!H', readall(2))[0]
             return readall(n)
+
+    @staticmethod
+    def tcp_frame(sock):
+        def exact(n):
+            result = bytearray()
+            while len(result) < n:
+                chunk = sock.recv(n - len(result))
+                if not chunk:
+                    raise AssertionError(f'unexpected TCP EOF: {len(result)}/{n}')
+                result.extend(chunk)
+            return bytes(result)
+        length = struct.unpack('!H', exact(2))[0]
+        return exact(length)
+
+    @staticmethod
+    def frame(payload):
+        return struct.pack('!H', len(payload)) + payload
+
+    def test_tcp_reuses_connection(self):
+        before = self.metrics()
+        with socket.create_connection(('127.0.0.1', self.port), timeout=4) as sock:
+            sock.settimeout(4)
+            for i in range(4):
+                packet = query(ident=2000 + i)
+                sock.sendall(self.frame(packet))
+                answer = self.tcp_frame(sock)
+                self.assertEqual(answer[:2], packet[:2])
+                self.assertEqual(answer[2:4], b'\x81\x80')
+        after = self.metrics()
+        self.assertGreaterEqual(self.metric(after, 'dnsp_tcp_keepalive_queries_total') -
+                                self.metric(before, 'dnsp_tcp_keepalive_queries_total'), 3)
+
+    def test_tcp_pipelined_frames_ordered(self):
+        count = 8
+        packets = [query(ident=3000+i) for i in range(count)]
+        before = self.metrics()
+        with socket.create_connection(('127.0.0.1', self.port), timeout=4) as sock:
+            sock.settimeout(6)
+            sock.sendall(b''.join(map(self.frame, packets)))
+            for packet in packets:
+                answer = self.tcp_frame(sock)
+                self.assertEqual(answer[:2], packet[:2])
+                self.assertEqual(answer[2:4], b'\x81\x80')
+        after = self.metrics()
+        self.assertGreaterEqual(self.metric(after, 'dnsp_tcp_pipeline_buffered_total') -
+                                self.metric(before, 'dnsp_tcp_pipeline_buffered_total'), 1)
+
+    def test_tcp_parallel_reused_sessions(self):
+        errors = []
+        def worker(index):
+            try:
+                packets = [query(ident=5000 + index * 10 + j) for j in range(5)]
+                with socket.create_connection(('127.0.0.1', self.port), timeout=4) as sock:
+                    sock.settimeout(6)
+                    sock.sendall(b''.join(map(self.frame, packets)))
+                    for packet in packets:
+                        answer = self.tcp_frame(sock)
+                        if answer[:2] != packet[:2]:
+                            raise AssertionError((answer[:2], packet[:2]))
+            except Exception as exc:
+                errors.append((index, repr(exc)))
+        jobs = [threading.Thread(target=worker, args=(i,)) for i in range(12)]
+        for job in jobs:
+            job.start()
+        for job in jobs:
+            job.join(timeout=8)
+        self.assertFalse(any(job.is_alive() for job in jobs), 'TCP clients hung')
+        self.assertFalse(errors, errors)
+
+    def test_tcp_half_close_preserves_last_reply(self):
+        packets = [query(ident=4000+i) for i in range(3)]
+        before = self.metrics()
+        with socket.create_connection(('127.0.0.1', self.port), timeout=4) as sock:
+            sock.settimeout(5)
+            sock.sendall(b''.join(map(self.frame, packets)))
+            sock.shutdown(socket.SHUT_WR)
+            for packet in packets:
+                answer = self.tcp_frame(sock)
+                self.assertEqual(answer[:2], packet[:2])
+            self.assertEqual(sock.recv(1), b'')
+        after = self.metrics()
+        self.assertGreater(self.metric(after, 'dnsp_tcp_half_closes_total'),
+                           self.metric(before, 'dnsp_tcp_half_closes_total'))
+
+    def test_tcp_rst_cancels_orphaned_upstream(self):
+        before = self.metrics()
+        sock = socket.create_connection(('127.0.0.1', self.port), timeout=4)
+        try:
+            sock.sendall(self.frame(query(qtype=65010, ident=4500)))
+            # Wait until the delayed request is actually in flight.
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if self.metric(self.metrics(), 'dnsp_queries_inflight') >= 1:
+                    break
+                time.sleep(.01)
+            else:
+                self.fail('delayed TCP query never entered the upstream queue')
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                            struct.pack('ii', 1, 0))  # abortive close / RST
+        finally:
+            sock.close()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            after = self.metrics()
+            if self.metric(after, 'dnsp_tcp_cancelled_upstream_total') > self.metric(
+                    before, 'dnsp_tcp_cancelled_upstream_total'):
+                self.assertEqual(self.metric(after, 'dnsp_queries_inflight'), 0)
+                break
+            time.sleep(.02)
+        else:
+            self.fail('RST did not cancel the abandoned upstream request')
+
+    def test_tcp_partial_framing(self):
+        packet = query(ident=4230)
+        with socket.create_connection(('127.0.0.1', self.port), timeout=4) as sock:
+            sock.settimeout(4)
+            framed = self.frame(packet)
+            for piece in (framed[:1], framed[1:2], framed[2:5], framed[5:]):
+                sock.sendall(piece)
+                time.sleep(0.005)
+            self.assertEqual(self.tcp_frame(sock)[:2], packet[:2])
+
+    def test_tcp_idle_expiry(self):
+        # A dedicated instance avoids changing the shared tests' idle settings.
+        port, metrics_port = unused_ports()
+        with tempfile.TemporaryFile(mode='w+b') as logfile:
+            proc = subprocess.Popen([
+                str(BASE/'dnsp-modern'), '-p', str(port), '-m', str(metrics_port),
+                '--tcp-idle-ms', '250',
+                '-s', f'http://127.0.0.1:{self.server.server_port}/dns-query'
+            ], stdout=subprocess.DEVNULL, stderr=logfile)
+            try:
+                deadline = time.monotonic() + 5
+                sock = None
+                while time.monotonic() < deadline:
+                    if proc.poll() is not None:
+                        break
+                    try:
+                        sock = socket.create_connection(('127.0.0.1', port), timeout=.2)
+                        break
+                    except OSError:
+                        time.sleep(.05)
+                self.assertIsNotNone(sock, 'proxy did not open the TCP listener')
+                with sock:
+                    sock.settimeout(3)
+                    self.assertEqual(sock.recv(1), b'')  # idle connection closed
+            finally:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill();proc.wait(timeout=3)
+
+    def test_reject_invalid_tcp_idle(self):
+        for raw in ('0', '99', '600001', '-1', 'anything'):
+            with self.subTest(raw=raw):
+                proc = subprocess.run([str(BASE/'dnsp-modern'), '--tcp-idle-ms', raw],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                      timeout=2)
+                self.assertEqual(proc.returncode, 2, proc.stderr)
 
     def metrics(self):
         c = http.client.HTTPConnection('127.0.0.1', self.metrics_port, timeout=4)
