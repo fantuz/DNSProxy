@@ -23,12 +23,13 @@ jobs:
           - runner: ubuntu-24.04
             distro: ubuntu24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev dpkg-dev python3
       - name: Build and run integration tests; build distro-specific DEB
+        id: build
         shell: bash
         run: |
           set -euo pipefail
@@ -42,13 +43,19 @@ jobs:
           else
             version="0.2.0~ci${GITHUB_RUN_NUMBER}"
           fi
+          # Inspect exactly the package from this job, never a dist/*.deb glob.
+          pkg="dist/dnsp-modern_${version}+${{ matrix.distro }}_$(dpkg --print-architecture).deb"
           VERSION="${version}+${{ matrix.distro }}" sh scripts/build-deb.sh
-          dpkg-deb --info dist/*.deb
-          dpkg-deb --contents dist/*.deb
+          test -s "$pkg"
+          dpkg-deb --info "$pkg"
+          dpkg-deb --contents "$pkg"
+          test "$(dpkg-deb --field "$pkg" Package)" = dnsp-modern
+          test "$(dpkg-deb --field "$pkg" Version)" = "${version}+${{ matrix.distro }}"
+          echo "package=$pkg" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: dnsp-modern-${{ matrix.distro }}
-          path: dist/*.deb
+          path: ${{ steps.build.outputs.package }}
           if-no-files-found: error
           retention-days: 14
 
@@ -56,7 +63,7 @@ jobs:
     name: AddressSanitizer and UndefinedBehaviorSanitizer
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -74,7 +81,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           pattern: dnsp-modern-*
           merge-multiple: true
@@ -91,7 +98,14 @@ jobs:
             echo "Expected two distribution-specific packages, found ${#packages[@]}" >&2
             exit 1
           fi
-          (cd dist && sha256sum *.deb > SHA256SUMS)
+          for distro in ubuntu22.04 ubuntu24.04; do
+            matches=(dist/*+"$distro"_*.deb)
+            if (( ${#matches[@]} != 1 )) || [[ ! -f "${matches[0]}" ]]; then
+              echo "Expected one package for $distro, found ${#matches[@]}" >&2
+              exit 1
+            fi
+          done
+          (cd dist && sha256sum *.deb > SHA256SUMS && sha256sum -c SHA256SUMS)
           gh release create "$GITHUB_REF_NAME" "${packages[@]}" dist/SHA256SUMS \
             --title "DNSProxy Modern ${GITHUB_REF_NAME} (experimental)" \
             --prerelease --generate-notes

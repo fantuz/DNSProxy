@@ -13,3 +13,8 @@ modern-check: dnsp-modern
 
 clean:
 	rm -f dnsp-modern
+
+# Optional TLS/HTTP2 benchmarking deps: python3, hypercorn, h2, openssl.
+.PHONY: benchmark-smoke
+benchmark-smoke: dnsp-modern
+	python3 -m unittest discover -s tests -p 'test_benchmark.py' -v

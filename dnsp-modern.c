@@ -138,6 +138,7 @@ static Query *active;
 static size_t active_count;
 static CURLM *multi;
 static const char *upstream;
+static const char *ca_file; /* optional additional trusted CA bundle; TLS checks remain enabled */
 static Client clients[MAX_CLIENTS];
 static CurlSocket curl_sockets[MAX_CURL_SOCKETS];
 static size_t curl_socket_count;
@@ -313,6 +314,7 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
     OPT(CURLOPT_CONNECTTIMEOUT_MS,1500L);
     OPT(CURLOPT_SSL_VERIFYPEER,1L);
     OPT(CURLOPT_SSL_VERIFYHOST,2L);
+    if(ca_file) OPT(CURLOPT_CAINFO,ca_file);
     OPT(CURLOPT_FOLLOWLOCATION,0L);
     OPT(CURLOPT_NOSIGNAL,1L);
 #undef OPT
@@ -512,15 +514,20 @@ static int parse_port(const char *s) {
 }
 int main(int argc,char **argv) {
     const char *bindip="127.0.0.1";int port=5300,metrics_port=0;
+    int max_host_connections=8;
     upstream="https://cloudflare-dns.com/dns-query";
     for(int i=1;i<argc;i++) {
         if(!strcmp(argv[i],"-l") && i+1<argc) bindip=argv[++i];
         else if(!strcmp(argv[i],"-p") && i+1<argc) port=parse_port(argv[++i]);
         else if(!strcmp(argv[i],"-s") && i+1<argc) upstream=argv[++i];
         else if(!strcmp(argv[i],"-m") && i+1<argc) metrics_port=parse_port(argv[++i]);
-        else {fprintf(stderr,"usage: %s [-l IPv4] [-p port] [-s https://DoH-URL] [-m loopback-metrics-port]\n",argv[0]);return 2;}
+        else if(!strcmp(argv[i],"--ca-file") && i+1<argc) ca_file=argv[++i];
+        else if(!strcmp(argv[i],"--max-host-connections") && i+1<argc)
+            max_host_connections=parse_port(argv[++i]);
+        else {fprintf(stderr,"usage: %s [-l IPv4] [-p port] [-s https://DoH-URL] [-m loopback-metrics-port] [--ca-file PEM] [--max-host-connections 1..16]\n",argv[0]);return 2;}
     }
-    if(port<1 || port>65535 || metrics_port<0 || metrics_port>65535 || metrics_port==port) {
+    if(port<1 || port>65535 || metrics_port<0 || metrics_port>65535 || metrics_port==port ||
+       max_host_connections<1 || max_host_connections>16) {
         fprintf(stderr,"invalid port\n");return 2;
     }
     if(curl_global_init(CURL_GLOBAL_DEFAULT)!=CURLE_OK) return 1;
@@ -533,7 +540,7 @@ int main(int argc,char **argv) {
     for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) metric_clients[i].fd=-1;
     multi=curl_multi_init();if(!multi) {curl_global_cleanup();return 1;}
     curl_multi_setopt(multi,CURLMOPT_MAX_TOTAL_CONNECTIONS,16L);
-    curl_multi_setopt(multi,CURLMOPT_MAX_HOST_CONNECTIONS,8L);
+    curl_multi_setopt(multi,CURLMOPT_MAX_HOST_CONNECTIONS,(long)max_host_connections);
     curl_multi_setopt(multi,CURLMOPT_PIPELINING,CURLPIPE_MULTIPLEX);
     curl_multi_setopt(multi,CURLMOPT_SOCKETFUNCTION,on_curl_socket);
     curl_multi_setopt(multi,CURLMOPT_TIMERFUNCTION,curl_timer_callback);

@@ -1,0 +1,47 @@
+name: DNSProxy modern - HTTP2 benchmark smoke
+
+"on":
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'bench/**'
+      - 'tests/test_benchmark.py'
+      - 'dnsp-modern.c'
+      - 'modern.mk'
+      - '.github/workflows/dnsp-modern-benchmark.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-h2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install compiler, curl and Python venv
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev python3-venv openssl
+      - name: Install benchmark server dependencies in isolated venv
+        run: |
+          python3 -m venv .bench-venv
+          .bench-venv/bin/python -m pip install 'hypercorn==0.18.0' 'h2==4.3.0'
+      - name: Compile and run loopback TLS/ALPN smoke
+        run: |
+          make -f modern.mk dnsp-modern
+          .bench-venv/bin/python -m unittest discover -s tests -p 'test_benchmark.py' -v
+      - name: Run reproducible short two-protocol comparison
+        run: |
+          mkdir -p dist
+          .bench-venv/bin/python bench/bench_modern.py \
+            --protocol both --concurrency 1,8,32 --warmup 0.3 --duration 1 \
+            --max-host-connections 1 --assert-h2-multiplex \
+            --output dist/bench-ci.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dnsp-modern-benchmark-smoke
+          path: dist/bench-ci.*
+          if-no-files-found: warn
+          retention-days: 7

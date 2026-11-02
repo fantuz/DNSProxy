@@ -3,3 +3,10 @@ ssl.txt
 dnsp.c.backup
 dnsp.c.bac
 dnsp.c.ori
+
+# Generated modern build / package / benchmark artifacts
+/dnsp-modern
+/dist/
+/.bench-venv/
+__pycache__/
+*.pyc
