@@ -69,6 +69,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev python3
       - name: Sanitizer integration test suite
+        env:
+          # Keep sanitizer findings fatal, with useful UBSan stack traces.
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          DNSP_TEST_STARTUP_TIMEOUT: '12'
         run: |
           make -B -f modern.mk dnsp-modern CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
           make -f modern.mk modern-check

@@ -2,12 +2,14 @@
 """Loopback integration: RFC 8484 framing, EDNS, DNS validation, libcurl loop."""
 import http.client
 import http.server
+import os
 import socket
 import socketserver
 import struct
 import subprocess
 import threading
 import time
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -90,27 +92,72 @@ class Tests(unittest.TestCase):
         cls.server = HTTP(('127.0.0.1', 0), DoH)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
+        cls.addClassCleanup(cls.server.server_close)
+        cls.addClassCleanup(cls.server.shutdown)
+
         cls.port, cls.metrics_port = unused_ports()
+        # A regular file prevents unconsumed PIPE output from blocking the proxy
+        # and allows diagnostics even when a sanitizer-instrumented process hangs.
+        cls.proxy_log = tempfile.TemporaryFile(mode='w+b')
+        cls.addClassCleanup(cls.proxy_log.close)
         cls.process = subprocess.Popen([
             str(BASE/'dnsp-modern'), '-p', str(cls.port), '-m', str(cls.metrics_port),
             '-s', f'http://127.0.0.1:{cls.server.server_port}/dns-query'
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        time.sleep(.2)
-        if cls.process.poll() is not None:
-            raise RuntimeError('proxy exited: ' + cls.process.stderr.read().decode())
+        ], stdout=subprocess.DEVNULL, stderr=cls.proxy_log)
+        cls.addClassCleanup(cls.stop_proxy)
+
+        # A 200 ms sleep is not an adequate readiness check with ASan/UBSan.
+        # Require a complete, successful DNS round-trip before testing malformed
+        # requests; otherwise the first test can time out on a slow CI runner.
+        deadline = time.monotonic() + float(os.environ.get('DNSP_TEST_STARTUP_TIMEOUT', '12'))
+        last = 'no response received'
+        while time.monotonic() < deadline:
+            code = cls.process.poll()
+            if code is not None:
+                break
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.settimeout(0.75)
+                    sock.sendto(query(), ('127.0.0.1', cls.port))
+                    answer = sock.recvfrom(4096)[0]
+                if (answer[:2] == QUERY[:2] and answer[2:4] == b'\x81\x80'
+                        and answer[12:] == QUERY[12:]):
+                    return
+                last = f'invalid readiness answer: {answer[:40].hex()}'
+            except (socket.timeout, OSError) as exc:
+                last = repr(exc)
+            time.sleep(0.1)
+
+        cls.proxy_log.flush()
+        cls.proxy_log.seek(0)
+        diagnostic = cls.proxy_log.read(8192).decode('utf-8', errors='replace')
+        raise RuntimeError(f'proxy not ready (exit={cls.process.poll()}, '
+                           f'last={last}); stderr:\n{diagnostic}')
 
     @classmethod
-    def tearDownClass(cls):
-        cls.process.terminate()
-        cls.process.wait(timeout=5)
-        cls.server.shutdown()
-        cls.server.server_close()
+    def stop_proxy(cls):
+        if cls.process.poll() is None:
+            cls.process.terminate()
+            try:
+                cls.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                cls.process.kill()
+                cls.process.wait(timeout=5)
 
     def udp(self, payload):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.settimeout(4)
             s.sendto(payload, ('127.0.0.1', self.port))
-            return s.recvfrom(4096)[0]
+            try:
+                return s.recvfrom(4096)[0]
+            except socket.timeout as exc:
+                self.proxy_log.flush()
+                self.proxy_log.seek(0)
+                diagnostic = self.proxy_log.read(8192).decode('utf-8', errors='replace')
+                raise AssertionError(
+                    f'UDP response timed out (proxy exit={self.process.poll()}); '
+                    f'proxy stderr:\n{diagnostic}'
+                ) from exc
 
     def tcp(self, payload):
         with socket.create_connection(('127.0.0.1', self.port), timeout=4) as s:
@@ -174,7 +221,10 @@ class Tests(unittest.TestCase):
     def test_invalid_udp_does_not_kill(self):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.sendto(b'\0\1', ('127.0.0.1', self.port))
-        self.test_udp()
+        out = self.udp(query())
+        self.assertEqual(out[:2], QUERY[:2])
+        self.assertEqual(out[2:4], b'\x81\x80')
+        self.assertEqual(out[12:], QUERY[12:])
 
     def test_udp_without_edns_truncates_to_512(self):
         out = self.udp(query(65001))
