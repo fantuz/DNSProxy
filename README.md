@@ -1,6 +1,11 @@
 # DNSProxy — DNS over HTTPS (DoH)
 
 [![Modern build and Debian packages](https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-modern.yml/badge.svg)](https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-modern.yml)
+[![golangci-lint](https://img.shields.io/badge/golangci--lint-enabled-brightgreen?logo=go)](https://golangci-lint.run/)
+[![build](https://github.com/fantuz/DNSProxy/actions/workflows/build.yml/badge.svg)](https://github.com/fantuz/DNSProxye/actions/workflows/build.yml)
+![Latest GitHub release](https://img.shields.io/github/release/fantuz/DNSProxy.svg)
+[![GitHub license](https://img.shields.io/github/license/fantuz/DNSProxy)](LICENSE)
+![GitHub all releases](https://img.shields.io/github/downloads/fantuz/DNSProxy/total)
 
 DNSProxy bridges conventional **DNS clients (UDP/TCP)** to upstream
 **DNS-over-HTTPS (DoH)** resolvers. The experimental `dnsp-modern` implementation
