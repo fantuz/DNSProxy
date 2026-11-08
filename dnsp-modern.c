@@ -178,6 +178,7 @@ static size_t active_count;
 static CURLM *multi;
 static const char *upstream;
 static bool loopback_http;
+static long upstream_http_version=CURL_HTTP_VERSION_1_1;
 static struct curl_slist *bootstrap_hosts;
 static const char *ca_file; /* optional additional trusted CA bundle; TLS checks remain enabled */
 static Client clients[MAX_CLIENTS];
@@ -193,6 +194,26 @@ typedef struct {
     char reply[4096];size_t reply_len,sent;
 } MetricClient;
 static MetricClient metric_clients[MAX_METRICS_CLIENTS];
+
+typedef enum {
+    LOG_CAPACITY,LOG_SETUP,LOG_TIMEOUT,LOG_TRANSPORT,LOG_STATUS,LOG_CONTENT,LOG_DNS,LOG_COUNT
+} Failure;
+static void log_failure(Failure event,bool tcp,CURLcode code,long status) {
+    static const char *const names[LOG_COUNT]={
+        "capacity","upstream_setup","upstream_timeout","upstream_transport",
+        "upstream_http_status","upstream_content_type","upstream_dns_response"
+    };
+    static struct {uint64_t next,suppressed;} rate[LOG_COUNT];
+    uint64_t now=clock_ms();
+    if(now<rate[event].next) {rate[event].suppressed++;return;}
+    fprintf(stderr,"level=warning event=%s transport=%s curl_code=%d http_status=%ld suppressed=%llu\n",
+            names[event],tcp?"tcp":"udp",(int)code,status,(unsigned long long)rate[event].suppressed);
+    rate[event].next=now+10000;
+    rate[event].suppressed=0;
+}
+static long select_http_version(int features) {
+    return features&CURL_VERSION_HTTP2?CURL_HTTP_VERSION_2TLS:CURL_HTTP_VERSION_1_1;
+}
 
 static int on_curl_socket(CURL *easy,curl_socket_t fd,int what,void *user,void *socketp) {
     (void)easy;(void)user;(void)socketp;
@@ -281,12 +302,12 @@ static size_t append_local_opt(const Query *q,unsigned char *p,size_t n,unsigned
     memcpy(p+n,opt,sizeof(opt));
     return n+sizeof(opt);
 }
-static void send_error(Query *q,unsigned char rcode) {
+static void send_error(Query *q,const unsigned char *request,unsigned char rcode) {
     size_t length=q->info.question_end;
     if(length<17 || length>q->req_len) return;
     unsigned char p[512];
     if(length>sizeof(p)-DNS_OPT_SIZE) return;
-    memcpy(p,q->request,length);
+    memcpy(p,request,length);
     p[2]=(unsigned char)((p[2]&0x79)|0x80); /* QR=1, clear TC/AA */
     p[3]=(unsigned char)((p[3]&0x10)|(rcode&0x0f));
     memset(p+6,0,6);
@@ -295,7 +316,7 @@ static void send_error(Query *q,unsigned char rcode) {
 static void send_truncated(Query *q,const DnsInfo *response) {
     size_t n=q->info.question_end;
     unsigned char p[512];
-    if(n>sizeof(p)-DNS_OPT_SIZE) {send_error(q,2);return;}
+    if(n>sizeof(p)-DNS_OPT_SIZE) {send_error(q,q->request,2);return;}
     memcpy(p,q->response,12);
     p[2]|=0x02; /* TC: client can retry over TCP */
     p[4]=0;p[5]=1;
@@ -322,20 +343,26 @@ static void complete(Query *q,CURLcode code) {
     else if(version==CURL_HTTP_VERSION_3) metrics.http3++;
 #endif
     DnsInfo response;
-    bool ok=code==CURLE_OK && status==200 && content_type &&
-            strncasecmp(content_type,"application/dns-message",23)==0 &&
-            (content_type[23]==0 || content_type[23]==';') && q->resp_len>=12 &&
-            q->response[0]==q->request[0] && q->response[1]==q->request[1] &&
-            dns_parse(q->response,q->resp_len,true,&q->info,&response);
-    if(ok) {
+    bool success_status=status>=200 && status<300;
+    bool dns_media=content_type && strncasecmp(content_type,"application/dns-message",23)==0 &&
+                   (content_type[23]==0 || content_type[23]==';');
+    Failure failure=LOG_COUNT;
+    if(code==CURLE_OPERATION_TIMEDOUT) failure=LOG_TIMEOUT;
+    else if(code!=CURLE_OK) failure=LOG_TRANSPORT;
+    else if(!success_status) failure=LOG_STATUS;
+    else if(!dns_media) failure=LOG_CONTENT;
+    else if(q->resp_len<12 || q->response[0]!=q->request[0] || q->response[1]!=q->request[1] ||
+            !dns_parse(q->response,q->resp_len,true,&q->info,&response)) failure=LOG_DNS;
+    if(failure==LOG_COUNT) {
         metrics.upstream_ok++;
         if(!q->client && q->resp_len>q->info.udp_limit) send_truncated(q,&response);
         else reply_dns(q,q->response,q->resp_len);
     } else {
         metrics.upstream_failed++;
-        if(code==CURLE_OPERATION_TIMEDOUT) metrics.upstream_timeouts++;
-        if(code==CURLE_OK && status==200) metrics.invalid_responses++;
-        send_error(q,2);
+        if(failure==LOG_TIMEOUT) metrics.upstream_timeouts++;
+        if(failure==LOG_CONTENT || failure==LOG_DNS) metrics.invalid_responses++;
+        log_failure(failure,q->client!=NULL,code,status);
+        send_error(q,q->request,2);
     }
     if(q->client && q->client->fd>=0 && q->client->generation==q->generation)
         q->client->busy=false;
@@ -345,13 +372,21 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
                    const struct sockaddr_storage *peer,socklen_t peer_len) {
     DnsInfo info;
     if(!dns_parse(data,len,false,NULL,&info)) {metrics.invalid_queries++;return false;}
-    if(active_count>=MAX_ACTIVE) {metrics.overload++;return false;}
-    Query *q=calloc(1,sizeof(*q));if(!q) {metrics.overload++;return false;}
+    Query pending={.req_len=len,.info=info,.client=client,.generation=client?client->generation:0,
+                   .udp_fd=udp_fd,.peer_len=peer_len};
+    if(peer) pending.peer=*peer;
+    if(active_count>=MAX_ACTIVE) {
+        log_failure(LOG_CAPACITY,client!=NULL,CURLE_OK,0);
+        goto reject;
+    }
+
+    CURLcode setup_code=CURLE_OUT_OF_MEMORY;
+    Query *q=malloc(sizeof(*q));
+    if(!q) goto setup_failure;
+    *q=pending;
     q->request=malloc(len);
-    if(!q->request) {free(q);metrics.overload++;return false;}
-    memcpy(q->request,data,len);q->req_len=len;q->info=info;
-    q->client=client;q->generation=client?client->generation:0;q->udp_fd=udp_fd;
-    if(peer) {q->peer=*peer;q->peer_len=peer_len;}
+    if(!q->request) goto fail;
+    memcpy(q->request,data,len);
     q->easy=curl_easy_init();
     if(!q->easy) goto fail;
     struct curl_slist *h=curl_slist_append(q->headers,"Content-Type: application/dns-message");
@@ -360,14 +395,14 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
     h=curl_slist_append(q->headers,"Accept: application/dns-message");
     if(!h) goto fail;
     q->headers=h;
-#define OPT(key,val) do {if(curl_easy_setopt(q->easy,key,val)!=CURLE_OK) goto fail;}while(0)
+#define OPT(key,val) do {setup_code=curl_easy_setopt(q->easy,key,val);if(setup_code!=CURLE_OK) goto fail;}while(0)
     OPT(CURLOPT_URL,upstream);
     if(loopback_http || bootstrap_hosts) OPT(CURLOPT_PROXY,"");
     if(bootstrap_hosts) OPT(CURLOPT_RESOLVE,bootstrap_hosts);
     OPT(CURLOPT_HTTPHEADER,q->headers);
     OPT(CURLOPT_POSTFIELDS,q->request);
     OPT(CURLOPT_POSTFIELDSIZE_LARGE,(curl_off_t)len);
-    OPT(CURLOPT_HTTP_VERSION,CURL_HTTP_VERSION_2TLS);
+    OPT(CURLOPT_HTTP_VERSION,upstream_http_version);
     OPT(CURLOPT_WRITEFUNCTION,collect);
     OPT(CURLOPT_WRITEDATA,q);
     OPT(CURLOPT_PRIVATE,q);
@@ -379,7 +414,10 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
     OPT(CURLOPT_FOLLOWLOCATION,0L);
     OPT(CURLOPT_NOSIGNAL,1L);
 #undef OPT
-    if(curl_multi_add_handle(multi,q->easy)!=CURLM_OK) goto fail;
+    if(curl_multi_add_handle(multi,q->easy)!=CURLM_OK) {
+        setup_code=CURLE_FAILED_INIT;
+        goto fail;
+    }
     q->next=active;active=q;active_count++;
     metrics.upstream_requests++;
     if(client) {
@@ -391,17 +429,30 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
 fail:
     if(q->easy) curl_easy_cleanup(q->easy);
     curl_slist_free_all(q->headers);free(q->request);free(q);
-    metrics.overload++;return false;
+setup_failure:
+    log_failure(LOG_SETUP,client!=NULL,setup_code,0);
+reject:
+    metrics.overload++;
+    send_error(&pending,data,2);
+    return true; /* A local reply is queued for a valid TCP query. */
 }
-static int listener(int type,const char *bindip,int port) {
-    int fd=socket(AF_INET,type,0),yes=1;
-    if(fd<0) return -1;
-    setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes));
+static int listener(const char *role,int type,const char *bindip,int port) {
     struct sockaddr_in a={.sin_family=AF_INET,.sin_port=htons((uint16_t)port)};
-    if(inet_pton(AF_INET,bindip,&a.sin_addr)!=1 || nonblock(fd)<0 ||
-       bind(fd,(struct sockaddr*)&a,sizeof(a))<0 ||
-       (type==SOCK_STREAM && listen(fd,128)<0)) {close(fd);return -1;}
-    return fd;
+    if(inet_pton(AF_INET,bindip,&a.sin_addr)!=1) {
+        fprintf(stderr,"level=error event=listener_address role=%s port=%d\n",role,port);
+        return -1;
+    }
+    int fd=socket(AF_INET,type,0),yes=1;
+    if(fd>=0) {
+        setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes));
+        if(nonblock(fd)==0 && bind(fd,(struct sockaddr*)&a,sizeof(a))==0 &&
+           (type!=SOCK_STREAM || listen(fd,128)==0)) return fd;
+    }
+    int error=errno;
+    if(fd>=0) close(fd);
+    fprintf(stderr,"level=error event=listener_failed role=%s port=%d errno=%d message=%s\n",
+            role,port,error,strerror(error));
+    return -1;
 }
 /* At most one in-flight query and one fully buffered successor per TCP
  * connection. Framing reads stop exactly at a message boundary: further
@@ -488,7 +539,12 @@ static void drain_completions(void) {
 }
 static bool drive_curl(curl_socket_t fd,int events) {
     int running;
-    if(curl_multi_socket_action(multi,fd,events,&running)!=CURLM_OK) return false;
+    CURLMcode code=curl_multi_socket_action(multi,fd,events,&running);
+    if(code!=CURLM_OK) {
+        fprintf(stderr,"level=error event=curl_multi_action code=%d message=%s\n",
+                (int)code,curl_multi_strerror(code));
+        return false;
+    }
     drain_completions();
     return true;
 }
@@ -705,7 +761,13 @@ int main(int argc,char **argv) {
        max_host_connections<1 || max_host_connections>16) {
         fprintf(stderr,"invalid port\n");return 2;
     }
-    if(curl_global_init(CURL_GLOBAL_DEFAULT)!=CURLE_OK) return 1;
+    CURLcode global_code=curl_global_init(CURL_GLOBAL_DEFAULT);
+    if(global_code!=CURLE_OK) {
+        fprintf(stderr,"level=error event=curl_global_init code=%d\n",(int)global_code);
+        return 1;
+    }
+    const curl_version_info_data *curl_info=curl_version_info(CURLVERSION_NOW);
+    if(curl_info) upstream_http_version=select_http_version(curl_info->features);
     if(!configure_upstream(upstream,bootstrap_address)) {
         if(bootstrap_address) fprintf(stderr,"--bootstrap-address requires a numeric IP and an HTTPS upstream hostname\n");
         else fprintf(stderr,"invalid upstream (only HTTPS or loopback HTTP test endpoint)\n");
@@ -716,28 +778,45 @@ int main(int argc,char **argv) {
     for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) metric_clients[i].fd=-1;
     multi=curl_multi_init();
     if(!multi) {
+        fprintf(stderr,"level=error event=curl_multi_init\n");
         curl_slist_free_all(bootstrap_hosts);
         curl_global_cleanup();
         return 1;
     }
-    curl_multi_setopt(multi,CURLMOPT_MAX_TOTAL_CONNECTIONS,16L);
-    curl_multi_setopt(multi,CURLMOPT_MAX_HOST_CONNECTIONS,(long)max_host_connections);
-    curl_multi_setopt(multi,CURLMOPT_PIPELINING,CURLPIPE_MULTIPLEX);
-    curl_multi_setopt(multi,CURLMOPT_SOCKETFUNCTION,on_curl_socket);
-    curl_multi_setopt(multi,CURLMOPT_TIMERFUNCTION,curl_timer_callback);
-    int udp=listener(SOCK_DGRAM,bindip,port);
-    int tcp=listener(SOCK_STREAM,bindip,port);
-    int mfd=metrics_port?listener(SOCK_STREAM,"127.0.0.1",metrics_port):-1;
-    int exitcode=1;
+    int udp=-1,tcp=-1,mfd=-1,exitcode=1;
     PollItem *items=NULL;
     struct pollfd *pfds=NULL;
-    if(udp<0 || tcp<0 || (metrics_port && mfd<0)) {perror("listen");goto cleanup;}
+#define MULTI_OPT(key,val) do { \
+    CURLMcode code=curl_multi_setopt(multi,key,val); \
+    if(code!=CURLM_OK) { \
+        fprintf(stderr,"level=error event=curl_multi_setopt option=%s code=%d\n",#key,(int)code); \
+        goto cleanup; \
+    } \
+} while(0)
+    MULTI_OPT(CURLMOPT_MAX_TOTAL_CONNECTIONS,16L);
+    MULTI_OPT(CURLMOPT_MAX_HOST_CONNECTIONS,(long)max_host_connections);
+    MULTI_OPT(CURLMOPT_PIPELINING,upstream_http_version==CURL_HTTP_VERSION_2TLS?CURLPIPE_MULTIPLEX:CURLPIPE_NOTHING);
+    MULTI_OPT(CURLMOPT_SOCKETFUNCTION,on_curl_socket);
+    MULTI_OPT(CURLMOPT_TIMERFUNCTION,curl_timer_callback);
+#undef MULTI_OPT
+    udp=listener("dns_udp",SOCK_DGRAM,bindip,port);
+    if(udp<0) goto cleanup;
+    tcp=listener("dns_tcp",SOCK_STREAM,bindip,port);
+    if(tcp<0) goto cleanup;
+    if(metrics_port) {
+        mfd=listener("metrics",SOCK_STREAM,"127.0.0.1",metrics_port);
+        if(mfd<0) goto cleanup;
+    }
     const size_t cap=3+MAX_CLIENTS+MAX_METRICS_CLIENTS+MAX_CURL_SOCKETS;
     items=calloc(cap,sizeof(*items));
     pfds=calloc(cap,sizeof(*pfds));
-    if(!items || !pfds) goto cleanup;
-    fprintf(stderr,"DNSProxy modern listening %s:%d -> %s; metrics %s\n",
-            bindip,port,upstream,metrics_port?"enabled on loopback":"disabled");
+    if(!items || !pfds) {
+        fprintf(stderr,"level=error event=poll_allocation\n");
+        goto cleanup;
+    }
+    fprintf(stderr,"level=info event=listening address=%s port=%d metrics_port=%d upstream_scheme=%s http_preference=%s\n",
+            bindip,port,metrics_port,loopback_http?"http":"https",
+            upstream_http_version==CURL_HTTP_VERSION_2TLS && !loopback_http?"h2":"http/1.1");
     exitcode=0;
     while(!stopping) {
         uint64_t now=clock_ms();

@@ -24,5 +24,18 @@ int main(void) {
     if(!curl_socket_still_watched(fd,current) ||
        on_curl_socket(NULL,fd,CURL_POLL_OUT,NULL,NULL)) return 7;
     if(curl_socket_still_watched(fd,current)) return 8;
+
+    if(select_http_version(0)!=CURL_HTTP_VERSION_1_1 ||
+       select_http_version(CURL_VERSION_HTTP2)!=CURL_HTTP_VERSION_2TLS) return 9;
+
+    static Client client={.fd=1};
+    const unsigned char request[]={
+        0x12,0x34,1,0,0,1,0,0,0,0,0,0,0,0,1,0,1
+    };
+    active_count=MAX_ACTIVE;
+    if(!submit(request,sizeof(request),&client,-1,NULL,0) || client.busy ||
+       active_count!=MAX_ACTIVE || metrics.overload!=1) return 10;
+    if(client.out_len!=sizeof(request)+2 || be16(client.out)!=sizeof(request) ||
+       be16(client.out+2)!=0x1234 || (client.out[5]&15)!=2) return 11;
     return 0;
 }
