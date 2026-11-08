@@ -162,7 +162,7 @@ struct Query {
     Client *client;uint64_t generation;int udp_fd;
     Query *next;
 };
-typedef struct { curl_socket_t fd;int action; } CurlSocket;
+typedef struct { curl_socket_t fd;int action;uint64_t generation; } CurlSocket;
 typedef struct {
     uint64_t udp_queries,tcp_queries,invalid_queries,overload,upstream_requests,
       upstream_ok,upstream_failed,upstream_timeouts,invalid_responses,
@@ -177,10 +177,13 @@ static Query *active;
 static size_t active_count;
 static CURLM *multi;
 static const char *upstream;
+static bool loopback_http;
+static struct curl_slist *bootstrap_hosts;
 static const char *ca_file; /* optional additional trusted CA bundle; TLS checks remain enabled */
 static Client clients[MAX_CLIENTS];
 static CurlSocket curl_sockets[MAX_CURL_SOCKETS];
 static size_t curl_socket_count;
+static uint64_t curl_socket_generation;
 static int64_t curl_deadline=-1;
 static uint64_t tcp_idle_ms=TCP_IDLE_MS,tcp_io_ms=TCP_IO_MS;
 
@@ -203,9 +206,8 @@ static int on_curl_socket(CURL *easy,curl_socket_t fd,int what,void *user,void *
     if(i==curl_socket_count) {
         if(curl_socket_count==MAX_CURL_SOCKETS) return -1;
         curl_socket_count++;
-        curl_sockets[i].fd=fd;
-    }
-    curl_sockets[i].action=what;
+    } else if(curl_sockets[i].action==what) return 0;
+    curl_sockets[i]=(CurlSocket){.fd=fd,.action=what,.generation=++curl_socket_generation};
     return 0;
 }
 static int curl_timer_callback(CURLM *m,long timeout_ms,void *user) {
@@ -214,15 +216,16 @@ static int curl_timer_callback(CURLM *m,long timeout_ms,void *user) {
     curl_deadline=timeout_ms<0?-1:(int64_t)clock_ms()+timeout_ms;
     return 0;
 }
-static bool curl_socket_still_watched(curl_socket_t fd) {
-    for(size_t i=0;i<curl_socket_count;i++) if(curl_sockets[i].fd==fd) return true;
+static bool curl_socket_still_watched(curl_socket_t fd,uint64_t generation) {
+    for(size_t i=0;i<curl_socket_count;i++)
+        if(curl_sockets[i].fd==fd) return curl_sockets[i].generation==generation;
     return false;
 }
 static size_t collect(char *p,size_t sz,size_t nm,void *arg) {
     Query *q=arg;
     if(nm && sz>SIZE_MAX/nm) return 0;
     size_t n=sz*nm;
-    if(n>TCP_MAX-q->resp_len) return 0;
+    if(!n || n>TCP_MAX-q->resp_len) return 0;
     if(q->resp_len+n>q->resp_cap) {
         size_t cap=q->resp_cap?q->resp_cap:512;
         while(cap<q->resp_len+n) cap*=2;
@@ -359,6 +362,8 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
     q->headers=h;
 #define OPT(key,val) do {if(curl_easy_setopt(q->easy,key,val)!=CURLE_OK) goto fail;}while(0)
     OPT(CURLOPT_URL,upstream);
+    if(loopback_http || bootstrap_hosts) OPT(CURLOPT_PROXY,"");
+    if(bootstrap_hosts) OPT(CURLOPT_RESOLVE,bootstrap_hosts);
     OPT(CURLOPT_HTTPHEADER,q->headers);
     OPT(CURLOPT_POSTFIELDS,q->request);
     OPT(CURLOPT_POSTFIELDSIZE_LARGE,(curl_off_t)len);
@@ -630,15 +635,37 @@ static void expire_clients(uint64_t now) {
     for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) if(metric_clients[i].fd>=0 &&
        now-metric_clients[i].last_ms>METRICS_IDLE_MS) close_metric(&metric_clients[i]);
 }
-static bool valid_upstream_url(const char *s) {
+static bool configure_bootstrap(CURLU *url,const char *host,const char *address) {
+    struct in_addr addr4;
+    struct in6_addr addr6;
+    bool ipv6=inet_pton(AF_INET6,address,&addr6)==1;
+    if(!ipv6 && inet_pton(AF_INET,address,&addr4)!=1) return false;
+    if(host[0]=='[' || inet_pton(AF_INET,host,&addr4)==1) return false;
+
+    char *port=NULL;
+    if(curl_url_get(url,CURLUPART_PORT,&port,CURLU_DEFAULT_PORT)!=CURLUE_OK) return false;
+    char entry[512];
+    int n=snprintf(entry,sizeof(entry),"%s:%s:%s%s%s",host,port,
+                   ipv6?"[":"",address,ipv6?"]":"");
+    curl_free(port);
+    if(n<0 || (size_t)n>=sizeof(entry)) return false;
+
+    bootstrap_hosts=curl_slist_append(NULL,entry);
+    return bootstrap_hosts!=NULL;
+}
+static bool configure_upstream(const char *s,const char *bootstrap_address) {
     CURLU *url=curl_url();
     char *scheme=NULL,*host=NULL;
     if(!url) return false;
     bool ok=curl_url_set(url,CURLUPART_URL,s,0)==CURLUE_OK &&
             curl_url_get(url,CURLUPART_SCHEME,&scheme,0)==CURLUE_OK &&
             curl_url_get(url,CURLUPART_HOST,&host,0)==CURLUE_OK;
-    if(ok) ok=!strcasecmp(scheme,"https") ||
-              (!strcasecmp(scheme,"http") && !strcmp(host,"127.0.0.1"));
+    if(ok && !strcasecmp(scheme,"https")) {
+        if(bootstrap_address) ok=configure_bootstrap(url,host,bootstrap_address);
+    } else {
+        loopback_http=ok && !strcasecmp(scheme,"http") && !strcmp(host,"127.0.0.1");
+        ok=loopback_http && !bootstrap_address;
+    }
     curl_free(scheme);curl_free(host);curl_url_cleanup(url);
     return ok;
 }
@@ -647,13 +674,18 @@ static int parse_port(const char *s) {
     return errno || end==s || *end || v<1 || v>65535 ? -1 : (int)v;
 }
 int main(int argc,char **argv) {
-    const char *bindip="127.0.0.1";int port=5300,metrics_port=0;
+    const char *bindip="127.0.0.1",*bootstrap_address=NULL;
+    int port=5300,metrics_port=0;
     int max_host_connections=8;
     upstream="https://cloudflare-dns.com/dns-query";
     for(int i=1;i<argc;i++) {
         if(!strcmp(argv[i],"-l") && i+1<argc) bindip=argv[++i];
         else if(!strcmp(argv[i],"-p") && i+1<argc) port=parse_port(argv[++i]);
         else if(!strcmp(argv[i],"-s") && i+1<argc) upstream=argv[++i];
+        else if(!strcmp(argv[i],"--bootstrap-address")) {
+            if(i+1==argc) {fprintf(stderr,"--bootstrap-address requires an IPv4 or IPv6 address\n");return 2;}
+            bootstrap_address=argv[++i];
+        }
         else if(!strcmp(argv[i],"-m") && i+1<argc) metrics_port=parse_port(argv[++i]);
         else if(!strcmp(argv[i],"--ca-file") && i+1<argc) ca_file=argv[++i];
         else if((!strcmp(argv[i],"--tcp-idle-ms") || !strcmp(argv[i],"--tcp-io-ms")) && i+1<argc) {
@@ -674,14 +706,20 @@ int main(int argc,char **argv) {
         fprintf(stderr,"invalid port\n");return 2;
     }
     if(curl_global_init(CURL_GLOBAL_DEFAULT)!=CURLE_OK) return 1;
-    if(!valid_upstream_url(upstream)) {
-        fprintf(stderr,"invalid upstream (only HTTPS or loopback HTTP test endpoint)\n");
+    if(!configure_upstream(upstream,bootstrap_address)) {
+        if(bootstrap_address) fprintf(stderr,"--bootstrap-address requires a numeric IP and an HTTPS upstream hostname\n");
+        else fprintf(stderr,"invalid upstream (only HTTPS or loopback HTTP test endpoint)\n");
         curl_global_cleanup();return 2;
     }
     signal(SIGINT,stop_now);signal(SIGTERM,stop_now);signal(SIGPIPE,SIG_IGN);
     for(size_t i=0;i<MAX_CLIENTS;i++) clients[i].fd=-1;
     for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) metric_clients[i].fd=-1;
-    multi=curl_multi_init();if(!multi) {curl_global_cleanup();return 1;}
+    multi=curl_multi_init();
+    if(!multi) {
+        curl_slist_free_all(bootstrap_hosts);
+        curl_global_cleanup();
+        return 1;
+    }
     curl_multi_setopt(multi,CURLMOPT_MAX_TOTAL_CONNECTIONS,16L);
     curl_multi_setopt(multi,CURLMOPT_MAX_HOST_CONNECTIONS,(long)max_host_connections);
     curl_multi_setopt(multi,CURLMOPT_PIPELINING,CURLPIPE_MULTIPLEX);
@@ -690,14 +728,17 @@ int main(int argc,char **argv) {
     int udp=listener(SOCK_DGRAM,bindip,port);
     int tcp=listener(SOCK_STREAM,bindip,port);
     int mfd=metrics_port?listener(SOCK_STREAM,"127.0.0.1",metrics_port):-1;
-    if(udp<0 || tcp<0 || (metrics_port && mfd<0)) {perror("listen");return 1;}
+    int exitcode=1;
+    PollItem *items=NULL;
+    struct pollfd *pfds=NULL;
+    if(udp<0 || tcp<0 || (metrics_port && mfd<0)) {perror("listen");goto cleanup;}
+    const size_t cap=3+MAX_CLIENTS+MAX_METRICS_CLIENTS+MAX_CURL_SOCKETS;
+    items=calloc(cap,sizeof(*items));
+    pfds=calloc(cap,sizeof(*pfds));
+    if(!items || !pfds) goto cleanup;
     fprintf(stderr,"DNSProxy modern listening %s:%d -> %s; metrics %s\n",
             bindip,port,upstream,metrics_port?"enabled on loopback":"disabled");
-    int exitcode=0;
-    const size_t cap=3+MAX_CLIENTS+MAX_METRICS_CLIENTS+MAX_CURL_SOCKETS;
-    PollItem *items=calloc(cap,sizeof(*items));
-    struct pollfd *pfds=calloc(cap,sizeof(*pfds));
-    if(!items || !pfds) {free(items);free(pfds);return 1;}
+    exitcode=0;
     while(!stopping) {
         uint64_t now=clock_ms();
         if(curl_deadline>=0 && (int64_t)now>=curl_deadline) {
@@ -719,7 +760,7 @@ int main(int argc,char **argv) {
             short ev=0;
             if(curl_sockets[i].action&CURL_POLL_IN) ev|=POLLIN;
             if(curl_sockets[i].action&CURL_POLL_OUT) ev|=POLLOUT;
-            ADD(P_CURL,curl_sockets[i].fd,ev,0,0);
+            ADD(P_CURL,curl_sockets[i].fd,ev,0,curl_sockets[i].generation);
         }
 #undef ADD
         int timeout=1000; /* signals and client idle expiry */
@@ -761,7 +802,7 @@ int main(int argc,char **argv) {
                     break;
                 }
                 case P_CURL:
-                    if(curl_socket_still_watched(items[i].p.fd)) {
+                    if(curl_socket_still_watched(items[i].p.fd,items[i].generation)) {
                         int ev=0;
                         if(re&POLLIN) ev|=CURL_CSELECT_IN;
                         if(re&POLLOUT) ev|=CURL_CSELECT_OUT;
@@ -773,11 +814,16 @@ int main(int argc,char **argv) {
             if(stopping) break;
         }
     }
+cleanup:
     free(items);free(pfds);
     for(size_t i=0;i<MAX_CLIENTS;i++) close_client(&clients[i]);
     for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) close_metric(&metric_clients[i]);
     while(active) remove_query(active);
-    close(udp);close(tcp);if(mfd>=0) close(mfd);
-    curl_multi_cleanup(multi);curl_global_cleanup();
+    if(udp>=0) close(udp);
+    if(tcp>=0) close(tcp);
+    if(mfd>=0) close(mfd);
+    curl_multi_cleanup(multi);
+    curl_slist_free_all(bootstrap_hosts);
+    curl_global_cleanup();
     return exitcode;
 }

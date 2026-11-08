@@ -9,6 +9,9 @@ dnsp-modern: dnsp-modern.c
 	$(CC) -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic -o $@ $< $(CURL_FLAGS)
 
 modern-check: dnsp-modern
+	@set -e; probe=$$(mktemp); trap 'rm -f "$$probe"' 0; \
+	$(CC) -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic -o "$$probe" tests/test_curl_callbacks.c $(CURL_FLAGS); \
+	"$$probe"
 	python3 tests/test_modern.py
 
 clean:

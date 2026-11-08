@@ -77,7 +77,21 @@ bind **127.0.0.1** regardless of `-l`.
 
 Unknown options or invalid ports exit with status 2. Remote upstreams must use
 HTTPS; plaintext HTTP is permitted **only for a 127.0.0.1 local testing host**.
-TLS certificate/hostname verification is enabled, and redirects are not followed.
+The loopback HTTP test endpoint is contacted directly. HTTPS upstreams use TLS
+certificate and hostname verification, and redirects are disabled.
+
+If the host uses DNSProxy as its system resolver, configure an upstream IP to
+bootstrap the HTTPS connection without consulting the system resolver:
+
+```sh
+./dnsp-modern -s https://cloudflare-dns.com/dns-query --bootstrap-address 1.1.1.1
+```
+
+`--bootstrap-address IP` accepts one numeric IPv4 or unbracketed IPv6 address
+for an HTTPS upstream hostname. It connects directly to that address, bypassing
+proxy environment settings, while keeping the URL hostname for TLS and HTTP.
+Choose an address served by your DoH provider and update it if the provider
+changes addresses.
 
 **Optional benchmark add-on (separate patch):** The HTTP/2 benchmarking patch
 adds `--max-host-connections N` and `--ca-file PATH`, a `bench/` directory,
