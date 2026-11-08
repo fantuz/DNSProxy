@@ -18,6 +18,11 @@ mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/lib/systemd/system" \
 install -m 0755 dnsp-modern "$STAGE/usr/bin/dnsp-modern"
 install -m 0644 packaging/systemd/dnsp-modern.service "$STAGE/lib/systemd/system/dnsp-modern.service"
 install -m 0644 packaging/README-packaging.md "$STAGE/usr/share/doc/dnsp-modern/README.packaging"
+{
+    printf 'Upstream source: https://github.com/fantuz/DNSProxy\n\n'
+    cat LICENSE
+} > "$WORK/copyright"
+install -m 0644 "$WORK/copyright" "$STAGE/usr/share/doc/dnsp-modern/copyright"
 cat > "$WORK/deps/debian/control" <<END
 Source: dnsp-modern
 Section: net
@@ -29,7 +34,9 @@ Package: dnsp-modern
 Architecture: any
 Description: DNS-over-HTTPS forwarding resolver
 END
-DEPS=$(cd "$WORK/deps" && dpkg-shlibdeps -O -l"/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)" -e"$STAGE/usr/bin/dnsp-modern" | sed -n 's/^shlibs:Depends=//p')
+SHLIBS=$(cd "$WORK/deps" && dpkg-shlibdeps -O \
+    -l"/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)" -e"$STAGE/usr/bin/dnsp-modern")
+DEPS=$(printf '%s\n' "$SHLIBS" | sed -n 's/^shlibs:Depends=//p')
 [ -n "$DEPS" ] || { echo 'Could not determine runtime dependencies' >&2; exit 1; }
 cat > "$STAGE/DEBIAN/control" <<END
 Package: dnsp-modern
@@ -38,7 +45,7 @@ Section: net
 Priority: optional
 Architecture: $ARCH
 Maintainer: DNSProxy contributors <noreply@github.com>
-Depends: $DEPS
+Depends: $DEPS, ca-certificates
 Description: Experimental DNS-over-HTTPS forwarding resolver
  Event-driven DoH forwarder with EDNS validation and Prometheus metrics.
 END
