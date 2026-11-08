@@ -10,6 +10,7 @@ DynamicUser=yes
 ExecStart=/usr/bin/dnsp-modern -l 127.0.0.1 -p 5300 -s https://cloudflare-dns.com/dns-query -m 9153
 Restart=on-failure
 RestartSec=3s
+RestartPreventExitStatus=2
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

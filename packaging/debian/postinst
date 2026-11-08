@@ -1,0 +1,24 @@
+#!/bin/sh
+set -e
+
+# Track enable links for purge without creating them on install.
+if [ "$1" = configure ]; then
+    deb-systemd-helper update-state dnsp-modern.service
+fi
+
+# Offline roots have no service manager to reload.
+if [ -n "${DPKG_ROOT:-}" ] || [ ! -d /run/systemd/system ]; then
+    exit 0
+fi
+
+case "$1" in
+    configure|abort-remove|abort-upgrade|abort-deconfigure)
+        systemctl --system daemon-reload
+        ;;
+esac
+
+# A first install or an upgrade of a stopped service stays opt-in.
+if [ "$1" = configure ] && [ -n "${2:-}" ] &&
+   systemctl --system --quiet is-active dnsp-modern.service; then
+    deb-systemd-invoke restart dnsp-modern.service
+fi
