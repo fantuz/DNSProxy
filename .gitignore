@@ -7,8 +7,11 @@ dnsp.c.ori
 # Generated build / package / benchmark artifacts
 /dnsp
 /dnsp.o
+/dnsp-h2
 /dnsp-h2.o
 /dnsp-modern
+/out.txt
+/cache/response.*
 /dist/
 /.bench-venv/
 __pycache__/
