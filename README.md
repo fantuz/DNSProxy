@@ -56,15 +56,60 @@ Run as an unprivileged process; UDP and TCP DNS both listen on port 5300:
 ```bash
 ./dnsp-modern -l 127.0.0.1 -p 5300 \
   -s https://cloudflare-dns.com/dns-query -m 9153
-
-dig @127.0.0.1 -p 5300 example.com A
-dig +tcp @127.0.0.1 -p 5300 example.com AAAA
-curl -fsS http://127.0.0.1:9153/metrics
 ```
 
 Do not replace your system resolver or bind port 53 until the proxy is tested.
 The DNS listeners are IPv4; `-l` expects an IPv4 bind address. Metrics always
 bind **127.0.0.1** regardless of `-l`.
+
+### Quick tests
+
+With the proxy running, open a second terminal. Check a UDP query, a TCP query,
+and an EDNS query that requests DNSSEC records.
+
+```sh
+dig @127.0.0.1 -p 5300 example.com A
+dig @127.0.0.1 -p 5300 +tcp example.com AAAA
+dig @127.0.0.1 -p 5300 +dnssec +bufsize=1232 example.com DNSKEY
+```
+
+**Compare the proxy with direct DoH.** Install `dnsperf` with DoH support
+(`sudo apt install dnsperf` on Debian 13). The same queries go through the
+local UDP listener and directly to the Cloudflare DoH upstream, at up to 20
+queries per second for five seconds per run.
+
+```sh
+queries=$(mktemp)
+printf '%s\n' 'example.com A' 'example.net AAAA' 'example.org MX' > "$queries"
+
+dnsperf -m udp -s 127.0.0.1 -p 5300 -d "$queries" -l 5 -Q 20 -q 10
+dnsperf -m doh -s 1.1.1.1 -p 443 -d "$queries" -l 5 -Q 20 -q 10 \
+  -O doh-uri=https://cloudflare-dns.com/dns-query -O doh-method=POST
+
+rm -f "$queries"
+```
+
+Compare completed and lost queries, response codes, and average latency.
+These runs compare two end-to-end paths with different client transports and
+connection setup. The rate cap makes this a smoke test. For a Google baseline,
+point the proxy upstream at `https://dns.google/dns-query` and use that URI and
+`-s 8.8.8.8` in the direct `dnsperf` command.
+
+**Query a DoH URL with `curl`.** An RFC 8484 GET puts the base64url-encoded DNS
+wire query in `?dns=`. This example asks Cloudflare for `example.com A`, prints
+the HTTP response headers, and saves the binary answer to `doh-answer.bin`.
+Google's separate JSON endpoint returns a readable answer for the same query.
+
+```sh
+curl -fsS -D - -o doh-answer.bin -H 'Accept: application/dns-message' \
+  'https://cloudflare-dns.com/dns-query?dns=AAABAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE'
+
+curl -fsS 'https://dns.google/resolve?name=example.com&type=A'
+```
+
+Both HTTPS requests go directly to the upstream providers. To see what the
+local proxy handled, run `curl -fsS http://127.0.0.1:9153/metrics` if it was
+started with `-m 9153`.
 
 ### `dnsp-modern` options
 
