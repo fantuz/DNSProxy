@@ -28,12 +28,20 @@ def query(qtype=1, edns=None, ident=0x1234):
     return bytes(q)
 
 
+def edns_options(packet, options):
+    return packet[:-2] + struct.pack('!H', len(options)) + options
+
+
+def rr(typ, data, owner=b'\xc0\x0c'):
+    return owner + struct.pack('!HHIH', typ, 1, 60, len(data)) + data
+
+
 def make_response(data):
     typ = struct.unpack('!H', data[len(QUERY)-4:len(QUERY)-2])[0]
     r = bytearray(data[:len(QUERY)])
     r[2:4] = b'\x81\x80'
-    if typ in (65001, 65006, 65007):
-        answers = {65001:65, 65006:140, 65007:350}[typ]
+    if typ in (65001, 65006, 65007, 65016):
+        answers = {65001:65, 65006:140, 65007:350, 65016:65}[typ]
         r[6:8] = struct.pack('!H', answers)
         r += ANSWER * answers
     elif typ == 65002:  # wrong ID
@@ -46,9 +54,21 @@ def make_response(data):
     elif typ == 65005:  # invalid compression pointer
         r[6:8] = b'\0\1'
         r += b'\xc0\xff' + ANSWER[2:]
+    elif typ in (65011, 65012, 65013, 65014):
+        r[6:8] = b'\0\1'
+        r += {
+            65011: rr(5, b'\xff'),                  # incomplete CNAME pointer
+            65012: rr(1, b'\xc0\x00\x02\x01', owner=b'\xc0\x04'),
+            65013: rr(5, b'\xc0\x0c'),             # valid compressed CNAME
+            65014: rr(65400, b'\xc0\x04\xff'),     # opaque unknown RDATA
+        }[typ]
     # Copy any EDNS OPT after the ANSWER section, not before it.
     if len(data) > len(QUERY):
         r.extend(data[len(QUERY):])
+        if typ == 65015:
+            r = edns_options(r, struct.pack('!HH', 65000, 2) + b'x')
+        if typ == 65016:
+            r[-6] = 1  # upstream extended RCODE, kept on local truncation
     return bytes(r)
 
 
@@ -418,6 +438,22 @@ class Tests(unittest.TestCase):
         self.assertEqual(out[2:4], b'\x81\x80')
         self.assertEqual(out[12:], QUERY[12:])
 
+    def test_udp_rejects_oversized_datagram_with_valid_prefix(self):
+        base = query(edns=4096)
+        padding = bytes(4096 - len(base) - 4)
+        packet = edns_options(base, struct.pack('!HH', 12, len(padding)) + padding)
+        self.assertEqual(len(packet), 4096)
+        self.assertEqual(len(self.udp(packet)), 4096)
+        before = self.metrics()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(.25)
+            sock.sendto(packet + b'x', ('127.0.0.1', self.port))
+            with self.assertRaises(socket.timeout):
+                sock.recv(4096)
+        after = self.metrics()
+        self.assertEqual(self.metric(after, 'dnsp_upstream_requests_total'),
+                         self.metric(before, 'dnsp_upstream_requests_total'))
+
     def test_udp_without_edns_truncates_to_512(self):
         out = self.udp(query(65001))
         self.assertLessEqual(len(out), 512)
@@ -432,9 +468,20 @@ class Tests(unittest.TestCase):
         self.assertEqual(out[6:8], b'\0A')
 
     def test_udp_edns_small_size_truncates(self):
-        out = self.udp(query(65001, edns=600))
-        self.assertLessEqual(len(out), 600)
+        packet = bytearray(query(65016, edns=600))
+        packet[len(QUERY)+7] = 0x80  # DO
+        out = self.udp(packet)
         self.assertTrue(out[2] & 0x02)
+        self.assertEqual(out[6:12], b'\0\0\0\0\0\1')
+        self.assertEqual(out[len(QUERY):], bytes.fromhex('0000291000010080000000'))
+
+    def test_local_servfail_keeps_edns(self):
+        for transport in (self.udp, self.tcp):
+            with self.subTest(transport=transport.__name__):
+                out = transport(query(65009, edns=1232))
+                self.assertEqual(out[3] & 15, 2)
+                self.assertEqual(out[10:12], b'\0\1')
+                self.assertEqual(out[len(QUERY):], bytes.fromhex('0000291000000000000000'))
 
     def test_udp_edns_large_advertisement_capped(self):
         out = self.udp(query(65006, edns=65535))
@@ -458,11 +505,32 @@ class Tests(unittest.TestCase):
         self.assertEqual(out[2] & 0x02, 0)
 
     def test_strict_upstream_validation(self):
-        for typ in (65002, 65003, 65004, 65005):
+        for typ in (65002, 65003, 65004, 65005, 65011, 65012):
             with self.subTest(typ=typ):
                 out = self.udp(query(typ))
                 self.assertEqual(out[3] & 15, 2)  # SERVFAIL
                 self.assertEqual(out[6:12], b'\0' * 6)
+
+    def test_known_and_unknown_rr_rdata(self):
+        for typ, rdata in ((65013, b'\xc0\x0c'), (65014, b'\xc0\x04\xff')):
+            with self.subTest(typ=typ):
+                out = self.udp(query(typ))
+                self.assertEqual(out[3] & 15, 0)
+                self.assertEqual(out[6:8], b'\0\1')
+                self.assertTrue(out.endswith(rdata))
+
+    def test_malformed_edns_options(self):
+        for options in (b'\x00', struct.pack('!HH', 65000, 2) + b'x'):
+            with self.subTest(options=options), socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(.25)
+                sock.sendto(edns_options(query(edns=1232), options), ('127.0.0.1', self.port))
+                with self.assertRaises(socket.timeout):
+                    sock.recv(4096)
+        opaque = edns_options(query(edns=1232), struct.pack('!HH', 65000, 1) + b'x')
+        self.assertEqual(self.udp(opaque)[len(QUERY):], opaque[len(QUERY):])
+        out = self.udp(query(65015, edns=1232))
+        self.assertEqual(out[3] & 15, 2)
+        self.assertEqual(out[10:12], b'\0\1')
 
     def test_malformed_edns(self):
         q = bytearray(query(edns=1232))
