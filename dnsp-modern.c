@@ -3,9 +3,11 @@
 #include <curl/curl.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -18,14 +20,21 @@
 #include <time.h>
 #include <unistd.h>
 
-/* Experimental DNS/DoH forwarder. All descriptors and CURL handles are
+/* DNS/DoH forwarder. All descriptors and CURL handles are
  * owned by one event loop. Do not call libcurl from another thread. */
 enum { DNS_HEADER=12, UDP_RX_MAX=65507, UDP_REPLY_MAX=4096, TCP_MAX=65535,
        MAX_ACTIVE=128, MAX_CLIENTS=128,
        MAX_METRICS_CLIENTS=16, MAX_CURL_SOCKETS=1024, TCP_IDLE_MS=15000,
-       TCP_IO_MS=15000, METRICS_IDLE_MS=3000 };
+       TCP_IO_MS=15000, METRICS_IDLE_MS=3000, DOH_CONNECT_MS=1500, DOH_TIMEOUT_MS=3000 };
 static volatile sig_atomic_t stopping;
+/* A process signal can be delivered to a libcurl resolver thread. */
+_Static_assert(ATOMIC_BOOL_LOCK_FREE==2,"SIGUSR1 requires a lock-free atomic flag");
+static atomic_bool report_requested;
 static void stop_now(int sig) { (void)sig; stopping=1; }
+static void request_report(int sig) {
+    (void)sig;
+    atomic_store_explicit(&report_requested,true,memory_order_relaxed);
+}
 static int nonblock(int fd) { int f=fcntl(fd,F_GETFL,0); return f<0?-1:fcntl(fd,F_SETFL,f|O_NONBLOCK); }
 static uint16_t be16(const unsigned char *p) { return (uint16_t)(((unsigned)p[0]<<8)|p[1]); }
 static uint64_t clock_ms(void) {
@@ -164,7 +173,7 @@ typedef struct Query Query;
 struct Client {
     int fd;size_t have,need,sent,out_len;
     unsigned char in[TCP_MAX+2],out[TCP_MAX+2];
-    bool busy,read_eof;uint64_t generation,queries_started;
+    bool busy,read_eof,out_satisfies_query;uint64_t generation,queries_started;
     uint64_t idle_since_ms,frame_deadline,write_deadline;
 };
 struct Query {
@@ -178,7 +187,7 @@ struct Query {
 };
 typedef struct { curl_socket_t fd;int action;uint64_t generation; } CurlSocket;
 typedef struct {
-    uint64_t udp_queries,tcp_queries,invalid_queries,overload,upstream_requests,
+    uint64_t udp_queries,tcp_queries,queries_satisfied,invalid_queries,overload,upstream_requests,
       upstream_ok,upstream_failed,upstream_timeouts,invalid_responses,
       truncated,requests_new_connections,requests_reused_connections,
       http1,http2,http3,socket_callbacks,timer_callbacks,timer_fires,
@@ -293,18 +302,22 @@ static void close_client(Client *c) {
     }
     if(c->fd>=0) {close(c->fd);metrics.tcp_closed++;}
     c->fd=-1;c->have=c->need=c->sent=c->out_len=0;
-    c->busy=c->read_eof=false;c->generation++;c->queries_started=0;
+    c->busy=c->read_eof=c->out_satisfies_query=false;c->generation++;c->queries_started=0;
     c->frame_deadline=c->write_deadline=0;
 }
-static void reply_dns(Query *q,const unsigned char *p,size_t n) {
+static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_query) {
     if(q->client) {
         Client *c=q->client;
         if(c->fd>=0 && c->generation==q->generation) {
             c->out[0]=(unsigned char)(n>>8);c->out[1]=(unsigned char)n;
             memcpy(c->out+2,p,n);c->out_len=n+2;c->sent=0;
+            c->out_satisfies_query=satisfies_query;
             c->write_deadline=clock_ms()+tcp_io_ms;
         }
-    } else sendto(q->udp_fd,p,n,0,(struct sockaddr*)&q->peer,q->peer_len);
+    } else {
+        ssize_t written=sendto(q->udp_fd,p,n,0,(struct sockaddr*)&q->peer,q->peer_len);
+        if(satisfies_query && written==(ssize_t)n) metrics.queries_satisfied++;
+    }
 }
 enum { DNS_OPT_SIZE=11 };
 static size_t append_local_opt(const Query *q,unsigned char *p,size_t n,unsigned char ext_rcode) {
@@ -326,7 +339,7 @@ static void send_error(Query *q,const unsigned char *request,unsigned char rcode
     p[3]=(unsigned char)((p[3]&0x10)|(rcode&0x0f));
     if(length==DNS_HEADER) p[4]=p[5]=0;
     memset(p+6,0,6);
-    reply_dns(q,p,append_local_opt(q,p,length,0));
+    reply_dns(q,p,append_local_opt(q,p,length,0),false);
 }
 static void send_truncated(Query *q,const DnsInfo *response) {
     size_t n=q->info.question_end;
@@ -338,7 +351,7 @@ static void send_truncated(Query *q,const DnsInfo *response) {
     p[4]=0;p[5]=n>DNS_HEADER;
     memset(p+6,0,6);
     memcpy(p+DNS_HEADER,q->request+DNS_HEADER,n-DNS_HEADER);
-    reply_dns(q,p,append_local_opt(q,p,n,response->opt_ext_rcode));
+    reply_dns(q,p,append_local_opt(q,p,n,response->opt_ext_rcode),false);
     metrics.truncated++;
 }
 static bool dns_content_type(const char *type) {
@@ -377,7 +390,12 @@ static void complete(Query *q,CURLcode code) {
     if(failure==LOG_COUNT) {
         metrics.upstream_ok++;
         if(!q->client && q->resp_len>q->info.udp_limit) send_truncated(q,&response);
-        else reply_dns(q,q->response,q->resp_len);
+        else {
+            unsigned rcode=q->response[3]&0x0f;
+            bool satisfies_query=!(q->response[2]&0x02) && !response.opt_ext_rcode &&
+                                 (rcode==0 || rcode==3); /* Complete NOERROR or NXDOMAIN. */
+            reply_dns(q,q->response,q->resp_len,satisfies_query);
+        }
     } else {
         metrics.upstream_failed++;
         if(failure==LOG_TIMEOUT) metrics.upstream_timeouts++;
@@ -433,8 +451,8 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
     OPT(CURLOPT_WRITEFUNCTION,collect);
     OPT(CURLOPT_WRITEDATA,q);
     OPT(CURLOPT_PRIVATE,q);
-    OPT(CURLOPT_TIMEOUT_MS,3000L);
-    OPT(CURLOPT_CONNECTTIMEOUT_MS,1500L);
+    OPT(CURLOPT_TIMEOUT_MS,(long)DOH_TIMEOUT_MS);
+    OPT(CURLOPT_CONNECTTIMEOUT_MS,(long)DOH_CONNECT_MS);
     OPT(CURLOPT_SSL_VERIFYPEER,1L);
     OPT(CURLOPT_SSL_VERIFYHOST,2L);
     if(ca_file) OPT(CURLOPT_CAINFO,ca_file);
@@ -509,6 +527,8 @@ static void tcp_io(Client *c,short events) {
         else if(n<0 && (errno==EAGAIN || errno==EINTR)) return;
         else {close_client(c);return;}
         if(c->sent==c->out_len) {
+            if(c->out_satisfies_query) metrics.queries_satisfied++;
+            c->out_satisfies_query=false;
             c->out_len=c->sent=0;
             c->write_deadline=0;
             c->idle_since_ms=clock_ms();
@@ -583,6 +603,27 @@ static size_t tcp_open_count(void) {
     size_t n=0;for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd>=0) n++;
     return n;
 }
+static void report_status(uint64_t uptime_ms,const char *bindip,int port,int metrics_port,
+                          const char *http_preference,int max_host_connections) {
+    fprintf(stderr,"level=info event=stats uptime_ms=%" PRIu64
+            " address=%s port=%d metrics_port=%d upstream_scheme=%s http_preference=%s bootstrap=%s"
+            " max_host_connections=%d doh_connect_ms=%d doh_timeout_ms=%d"
+            " tcp_idle_ms=%" PRIu64 " tcp_io_ms=%" PRIu64
+            " queries_satisfied=%" PRIu64 " udp_queries=%" PRIu64 " tcp_queries=%" PRIu64
+            " upstream_ok=%" PRIu64 " upstream_failed=%" PRIu64 " upstream_timeouts=%" PRIu64
+            " invalid_queries=%" PRIu64 " invalid_responses=%" PRIu64 " overload=%" PRIu64
+            " udp_truncated=%" PRIu64 " tcp_cancelled_upstream=%" PRIu64
+            " http1_responses=%" PRIu64 " http2_responses=%" PRIu64
+            " new_connections=%" PRIu64 " reused_requests=%" PRIu64
+            " inflight=%zu max_inflight=%d tcp_clients=%zu max_tcp_clients=%d\n",
+            uptime_ms,bindip,port,metrics_port,loopback_http?"http":"https",http_preference,
+            bootstrap_hosts?"enabled":"disabled",max_host_connections,DOH_CONNECT_MS,DOH_TIMEOUT_MS,
+            tcp_idle_ms,tcp_io_ms,metrics.queries_satisfied,metrics.udp_queries,metrics.tcp_queries,
+            metrics.upstream_ok,metrics.upstream_failed,metrics.upstream_timeouts,
+            metrics.invalid_queries,metrics.invalid_responses,metrics.overload,metrics.truncated,
+            metrics.tcp_cancelled_upstream,metrics.http1,metrics.http2,metrics.requests_new_connections,
+            metrics.requests_reused_connections,active_count,MAX_ACTIVE,tcp_open_count(),MAX_CLIENTS);
+}
 static void metric_response(MetricClient *c) {
 #define METRIC(...) do {int z=snprintf(c->reply+c->reply_len,sizeof(c->reply)-c->reply_len,__VA_ARGS__); \
     if(z<0 || (size_t)z>=sizeof(c->reply)-c->reply_len) {close_metric(c);return;} \
@@ -591,6 +632,8 @@ static void metric_response(MetricClient *c) {
         "# TYPE dnsp_queries_total counter\n"
         "dnsp_queries_total{transport=\"udp\"} %llu\n"
         "dnsp_queries_total{transport=\"tcp\"} %llu\n"
+        "# TYPE dnsp_queries_satisfied_total counter\n"
+        "dnsp_queries_satisfied_total %" PRIu64 "\n"
         "# TYPE dnsp_tcp_connections_accepted_total counter\n"
         "dnsp_tcp_connections_accepted_total %llu\n"
         "# TYPE dnsp_tcp_connections_closed_total counter\n"
@@ -632,6 +675,7 @@ static void metric_response(MetricClient *c) {
         "dnsp_tcp_clients %zu\n"
         "dnsp_curl_socket_watches %zu\n",
         (unsigned long long)metrics.udp_queries,(unsigned long long)metrics.tcp_queries,
+        metrics.queries_satisfied,
         (unsigned long long)metrics.tcp_accepted,(unsigned long long)metrics.tcp_closed,
         (unsigned long long)metrics.tcp_keepalive_queries,
         (unsigned long long)metrics.tcp_pipeline_buffered,
@@ -788,6 +832,11 @@ int main(int argc,char **argv) {
        max_host_connections<1 || max_host_connections>16) {
         fprintf(stderr,"invalid port\n");return 2;
     }
+    struct sigaction report_action={.sa_handler=request_report,.sa_flags=SA_RESTART};
+    sigemptyset(&report_action.sa_mask);
+    if(sigaction(SIGUSR1,&report_action,NULL)<0) {
+        perror("sigaction SIGUSR1");return 1;
+    }
     CURLcode global_code=curl_global_init(CURL_GLOBAL_DEFAULT);
     if(global_code!=CURLE_OK) {
         fprintf(stderr,"level=error event=curl_global_init code=%d\n",(int)global_code);
@@ -841,12 +890,17 @@ int main(int argc,char **argv) {
         fprintf(stderr,"level=error event=poll_allocation\n");
         goto cleanup;
     }
+    const char *http_preference=upstream_http_version==CURL_HTTP_VERSION_2TLS && !loopback_http?"h2":"http/1.1";
+    uint64_t started_ms=clock_ms();
     fprintf(stderr,"level=info event=listening address=%s port=%d metrics_port=%d upstream_scheme=%s http_preference=%s\n",
-            bindip,port,metrics_port,loopback_http?"http":"https",
-            upstream_http_version==CURL_HTTP_VERSION_2TLS && !loopback_http?"h2":"http/1.1");
+            bindip,port,metrics_port,loopback_http?"http":"https",http_preference);
     exitcode=0;
     while(!stopping) {
         uint64_t now=clock_ms();
+        if(atomic_load_explicit(&report_requested,memory_order_relaxed)) {
+            atomic_store_explicit(&report_requested,false,memory_order_relaxed);
+            report_status(now-started_ms,bindip,port,metrics_port,http_preference,max_host_connections);
+        }
         if(curl_deadline>=0 && (int64_t)now>=curl_deadline) {
             metrics.timer_fires++;
             if(!drive_curl(CURL_SOCKET_TIMEOUT,0)) {exitcode=1;break;}

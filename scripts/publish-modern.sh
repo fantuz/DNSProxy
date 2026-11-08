@@ -75,4 +75,4 @@ fi
 
 cd "$assets"
 gh release create "$tag" "${packages[@]}" SHA256SUMS --verify-tag \
-    --title "DNSProxy Modern $tag (experimental)" --prerelease --generate-notes
+    --title "DNSProxy Modern $version" --prerelease --generate-notes

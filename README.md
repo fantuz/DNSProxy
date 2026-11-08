@@ -1,13 +1,15 @@
 # DNSProxy — DNS over HTTPS (DoH)
 
-[![golangci-lint](https://img.shields.io/badge/golangci--lint-enabled-brightgreen?logo=go)](https://golangci-lint.run/)
-[![build](https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-modern.yml/badge.svg)](https://github.com/fantuz/DNSProxye/actions/workflows/dnsp-modern.yml)
-![Latest GitHub release](https://img.shields.io/github/release/fantuz/DNSProxy.svg)
-[![GitHub license](https://img.shields.io/github/license/fantuz/DNSProxy)](LICENSE)
-![GitHub all releases](https://img.shields.io/github/downloads/fantuz/DNSProxy/total)
+[![Tests and packages](https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-modern.yml/badge.svg?branch=master)](https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-modern.yml)
+[![CodeQL](https://github.com/fantuz/DNSProxy/actions/workflows/codeql.yml/badge.svg?branch=master)](https://github.com/fantuz/DNSProxy/actions/workflows/codeql.yml)
+[![HTTP/2 benchmark](https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-modern-benchmark.yml/badge.svg)](https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-modern-benchmark.yml)
+[![Latest modern release](https://img.shields.io/github/v/release/fantuz/DNSProxy?include_prereleases&filter=v*-modern&sort=date)](https://github.com/fantuz/DNSProxy/releases)
+[![Total release asset downloads](https://img.shields.io/github/downloads/fantuz/DNSProxy/total?label=asset%20downloads)](https://github.com/fantuz/DNSProxy/releases)
+[![MIT license](https://img.shields.io/github/license/fantuz/DNSProxy)](LICENSE)
+[![RFC 8484](https://img.shields.io/badge/DoH-RFC%208484-blue)](https://www.rfc-editor.org/rfc/rfc8484)
 
 DNSProxy bridges conventional **DNS clients (UDP/TCP)** to upstream
-**DNS-over-HTTPS (DoH)** resolvers. The experimental `dnsp-modern` implementation
+**DNS-over-HTTPS (DoH)** resolvers. The `dnsp-modern` forwarder
 uses RFC 8484 `application/dns-message` POST requests, libcurl's event-driven
 multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
 
@@ -17,16 +19,14 @@ Historical project notes, experiments, and original CLI examples are preserved
 in [docs/README-legacy.md](docs/README-legacy.md). **Those legacy instructions
 do not describe `dnsp-modern`.**
 
-> **Experimental software.** This is a forwarding proxy, not a full recursive
-> resolver, DNSSEC validator, or production-hardened public resolver. It does
-> not guarantee anonymity or prevent all DNS leaks; client routing and the
-> chosen DoH provider still matter.
+The upstream resolver handles recursion and DNSSEC validation. DNS privacy
+also depends on how clients route their DNS traffic and which upstream they use.
 
 ## Which executable?
 
 | Executable | Role | Build | Status |
 | --- | --- | --- | --- |
-| `dnsp-modern` | Event-driven RFC 8484 DoH forwarder | `make -f modern.mk` | Experimental, independent modern implementation |
+| `dnsp-modern` | Event-driven RFC 8484 DoH forwarder | `make -f modern.mk` | Current implementation |
 | `dnsp-h2` | Historical DoH prototype with different features/CLI | Original `Makefile` | Legacy |
 | `dnsp` | Pre-standardization HTTP/DNS experiment | Original `Makefile` | Deprecated |
 
@@ -66,7 +66,7 @@ Do not replace your system resolver or bind port 53 until the proxy is tested.
 The DNS listeners are IPv4; `-l` expects an IPv4 bind address. Metrics always
 bind **127.0.0.1** regardless of `-l`.
 
-### Options available in baseline `dnsp-modern` v0.2.0
+### `dnsp-modern` options
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
@@ -93,14 +93,21 @@ proxy environment settings, while keeping the URL hostname for TLS and HTTP.
 Choose an address served by your DoH provider and update it if the provider
 changes addresses.
 
-**Optional benchmark add-on (separate patch):** The HTTP/2 benchmarking patch
-adds `--max-host-connections N` and `--ca-file PATH`, a `bench/` directory,
-and an independent benchmark workflow. **Those flags are not supported by the
-baseline source**: use them only after applying that follow-up patch. The
-benchmark measures actual streams, QPS, latency percentiles, CPU and RSS on
-local test servers. Refer to `bench/README.md` once installed.
+The bundled [HTTP/2 benchmark](bench/README.md) measures concurrent streams,
+QPS, latency percentiles, CPU and RSS on local test servers. Use
+`--max-host-connections N` to tune the upstream connection cap (1–16, default 8)
+and `--ca-file PATH` to use a custom TLS CA bundle.
 
 ## Architecture and protocol scope
+
+```mermaid
+flowchart LR
+    Client["DNS client"] -->|"UDP or TCP"| Request["Validate DNS query"]
+    Request --> Loop["poll event loop and libcurl"]
+    Loop <-->|"DoH over TLS"| Upstream["Upstream resolver"]
+    Loop --> Reply["Validate reply and apply UDP size limit"]
+    Reply -->|"UDP or TCP"| Client
+```
 
 - Binary DNS wire packets arrive over UDP or framed DNS-over-TCP.
 - DoH requests use a persistent libcurl multi manager; libcurl socket and timer
@@ -135,6 +142,32 @@ connection is encrypted. Do not bind the proxy to an untrusted interface.
 
 ## Metrics and observability
 
+### On-demand status report
+
+Send `SIGUSR1` to a running `dnsp-modern` process built from this source. For a
+manual run, use `kill -USR1 "$pid"` with the proxy's PID and read stderr. For a
+systemd installation, run the following commands.
+
+```sh
+sudo systemctl kill --kill-who=main --signal=SIGUSR1 dnsp-modern
+sudo journalctl -u dnsp-modern -n 20 --grep='event=stats'
+```
+
+The event loop logs one `event=stats` line with uptime, listener and timeout
+settings, queries by transport, upstream outcomes, truncation, connection
+reuse and current load. It works with metrics disabled. Signals sent in quick
+succession may produce one report. The report omits the upstream URL, query
+names and client addresses.
+
+`queries_satisfied` counts complete upstream `NOERROR` and `NXDOMAIN` replies
+written to the client socket, including valid negative answers. Truncation
+and error replies are excluded. `upstream_ok` counts validated DNS messages
+from the upstream, including valid DNS error responses. For UDP, a successful
+socket write means the kernel accepted the datagram for sending. Counters are
+cumulative since start.
+
+### Logs and Prometheus metrics
+
 The proxy writes startup and failure diagnostics to stderr. For a systemd
 installation, read them with `journalctl -u dnsp-modern`. Warnings include an
 event name, client transport, and numeric libcurl and HTTP codes when
@@ -152,6 +185,7 @@ Useful Prometheus-compatible series:
 | Metric | Meaning |
 | --- | --- |
 | `dnsp_queries_total{transport="udp"}` / `{transport="tcp"}` | Submitted queries by protocol |
+| `dnsp_queries_satisfied_total` | Complete `NOERROR` and `NXDOMAIN` replies written to client sockets |
 | `dnsp_queries_inflight` | Active upstream requests |
 | `dnsp_upstream_requests_total` | Submitted upstream DoH requests |
 | `dnsp_upstream_success_total`, `dnsp_upstream_failures_total`, `dnsp_upstream_timeouts_total` | Completion and errors |
@@ -164,7 +198,7 @@ Useful Prometheus-compatible series:
 
 Metrics reset when the process restarts. They do not expose query names or
 client addresses. The HTTP version and connection reuse counters **do not
-measure simultaneous HTTP/2 streams**; use the optional benchmark add-on for
+measure simultaneous HTTP/2 streams**; use the bundled benchmark for
 that measurement.
 
 ## Debian packaging and systemd
@@ -172,8 +206,8 @@ that measurement.
 ```bash
 sudo apt-get install -y dpkg-dev
 sh scripts/build-deb.sh
-# Default VERSION=0.2.0; the package stays under dist/.
-sudo apt install ./dist/dnsp-modern_0.2.0_$(dpkg --print-architecture).deb
+# The default version comes from VERSION.
+sudo apt install "./dist/dnsp-modern_$(cat VERSION)_$(dpkg --print-architecture).deb"
 ```
 
 A different version can be supplied for packaging:
@@ -209,3 +243,14 @@ Set the next version in `VERSION` and merge to `master` to publish once the
 package matrix and sanitizer job pass. See the
 [packaging guide](packaging/README-packaging.md) for installation, local
 builds, and manual release recovery.
+
+## Feature ideas
+
+- **IPv6 DNS listeners.** Accept local DNS traffic on `::1` and explicit IPv6
+  addresses, with independent IPv4 and IPv6 bind tests.
+- **Configured upstream failover.** Retry transport failures within the
+  original time budget, using only resolvers the operator has chosen.
+- **DNS-aware response caching.** Bound memory, honor positive and negative
+  TTLs, and start with queries free of client-specific EDNS options.
+- **Tail-latency metrics.** Add bounded latency buckets by client transport
+  and upstream outcome so operators can see slow replies behind the mean.

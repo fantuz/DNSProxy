@@ -4,6 +4,7 @@ import http.client
 import http.server
 import os
 import shutil
+import signal
 import socket
 import socketserver
 import ssl
@@ -118,6 +119,8 @@ def make_response(data):
     elif typ in (65018, 65019, 65023):  # FORMERR, TC, and bare NOERROR
         flags = {65018: 0x8181, 65019: 0x8380, 65023: 0x8180}[typ]
         return data[:2] + struct.pack('!HHHHH', flags, 0, 0, 0, 0)
+    elif typ == 65024:  # NXDOMAIN
+        r[3] |= 3
     elif typ in RR_FIXTURES or typ == 255:
         r[6:8] = b'\0\1'
         r += rr(typ, RR_FIXTURES[typ]) if typ != 255 else rr(13, b'\x07RFC8482\0')
@@ -722,6 +725,46 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.metric(after, 'dnsp_queries_inflight'), 0)
         self.assertGreater(self.metric(after, 'dnsp_upstream_http_responses_total{version="1"}'), 0)
         self.assertGreater(self.metric(after, 'dnsp_upstream_duration_seconds_count'), 0)
+
+    def test_sigusr1_report(self):
+        before = self.metrics()
+        for exchange, packet in ((self.udp, query()), (self.tcp, query(65024))):
+            self.assertEqual(exchange(packet), make_response(packet))
+        self.assertEqual(self.udp(query(65002))[3] & 15, 2)  # Local SERVFAIL.
+        self.assertEqual(self.udp(query(65018))[3] & 15, 1)  # Upstream FORMERR.
+        self.assertTrue(self.udp(query(65019))[2] & 2)       # Upstream TC.
+        self.assertTrue(self.udp(query(65001))[2] & 2)       # Local TC.
+        self.assertEqual(self.udp(query(65022, edns=1232))[-6], 1)  # BADVERS.
+
+        after = self.metrics()
+        satisfied = 'dnsp_queries_satisfied_total'
+        self.assertEqual(self.metric(after, satisfied) - self.metric(before, satisfied), 2)
+
+        fd = self.proxy_log.fileno()
+        start = os.fstat(fd).st_size
+        self.process.send_signal(signal.SIGUSR1)
+        deadline = time.monotonic() + 3
+        log = ''
+        while time.monotonic() < deadline and self.process.poll() is None:
+            log = os.pread(fd, os.fstat(fd).st_size - start, start).decode()
+            if log.endswith('\n') and 'event=stats ' in log:
+                break
+            time.sleep(.02)
+        else:
+            self.fail(f'SIGUSR1 report missing (exit={self.process.poll()}): {log!r}')
+
+        line = next(line for line in log.splitlines() if 'event=stats ' in line)
+        report = dict(field.split('=', 1) for field in line.split())
+        self.assertEqual(int(report['queries_satisfied']), self.metric(after, satisfied))
+        self.assertEqual(int(report['upstream_failed']), self.metric(after, 'dnsp_upstream_failures_total'))
+        self.assertEqual(int(report['udp_truncated']), self.metric(after, 'dnsp_truncated_responses_total'))
+        self.assertEqual(int(report['port']), self.port)
+        self.assertEqual(int(report['metrics_port']), self.metrics_port)
+        self.assertEqual(int(report['inflight']), 0)
+        self.assertGreater(int(report['uptime_ms']), 0)
+        self.assertNotIn('fixture-log-secret', log)
+        self.assertNotIn('google.com', log)
+        self.assertEqual(self.udp(query()), make_response(query()))
 
     def test_accepts_successful_http_status_with_dns_body(self):
         out = self.udp(query(65017))
