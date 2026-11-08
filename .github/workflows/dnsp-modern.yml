@@ -139,6 +139,7 @@ jobs:
           VERSION: ${{ needs.plan.outputs.version }}
         run: |
           test "$(rpm --eval '%{_arch}')" = "${{ matrix.arch }}"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           sh scripts/build-rpm.sh
       - name: Install, query, and remove the RPM
         env:
@@ -184,7 +185,7 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      group: dnsp-modern-release
+      group: dnsp-modern-release-${{ needs.plan.outputs.tag }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
