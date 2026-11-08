@@ -149,7 +149,7 @@ manual run, use `kill -USR1 "$pid"` with the proxy's PID and read stderr. For a
 systemd installation, run the following commands.
 
 ```sh
-sudo systemctl kill --kill-whom=main --signal=SIGUSR1 dnsp-modern
+sudo systemctl kill --kill-who=main --signal=SIGUSR1 dnsp-modern
 sudo journalctl -u dnsp-modern -n 20 --grep='event=stats'
 ```
 
@@ -161,8 +161,10 @@ names and client addresses.
 
 `queries_satisfied` counts complete upstream `NOERROR` and `NXDOMAIN` replies
 written to the client socket, including valid negative answers. Truncation
-and error replies are excluded. For UDP, a successful socket write means the
-kernel accepted the datagram for sending. Counters are cumulative since start.
+and error replies are excluded. `upstream_ok` counts validated DNS messages
+from the upstream, including valid DNS error responses. For UDP, a successful
+socket write means the kernel accepted the datagram for sending. Counters are
+cumulative since start.
 
 ### Logs and Prometheus metrics
 
