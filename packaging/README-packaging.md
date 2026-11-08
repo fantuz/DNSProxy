@@ -28,6 +28,11 @@ sudo systemctl enable --now dnsp-modern
 journalctl -u dnsp-modern -f
 ```
 
+On a live systemd host, upgrading restarts an already-running instance and
+leaves a stopped instance stopped. Removal stops the service. These actions
+honor `policy-rc.d`. Purge clears the service enable links and preserves
+operator-owned drop-ins. Fresh installation leaves first start to the operator.
+
 The packaged service listens on `127.0.0.1:5300` (UDP and TCP), forwards to
 `https://cloudflare-dns.com/dns-query`, and exposes metrics on the loopback
 interface at `http://127.0.0.1:9153/metrics`. It never binds metrics to a public
@@ -53,28 +58,17 @@ addresses, or other high-cardinality labels.
 
 ## GitHub Actions releases
 
-`.github/workflows/dnsp-modern.yml` builds and tests on Ubuntu 22.04 and 24.04
-on pull requests and pushes to `master`. Two distribution-specific `.deb`
-artifacts are uploaded to successful workflow runs; ordinary branch pushes do
-not create GitHub Releases. An annotated tag matching
-`vMAJOR.MINOR.PATCH-modern`, for example `v0.2.0-modern`, triggers the same
-checks and (only if both pass) publishes an **experimental GitHub pre-release**
-with both packages and `SHA256SUMS`.
+`.github/workflows/dnsp-modern.yml` builds packages for Debian 13, Ubuntu 22.04,
+and Ubuntu 24.04. Ubuntu runners exercise the service lifecycle with systemd.
+The Debian container checks installation and purge with APT.
 
-```sh
-# Inspect and test locally before creating a release tag:
-make -f modern.mk modern-check
-sh scripts/build-deb.sh
-# Once you are satisfied and have committed the patch:
-git tag -a v0.2.0-modern -m "DNSProxy modern v0.2.0 (experimental)"
-git push origin v0.2.0-modern
-```
+The top-level `VERSION` file supplies the base version for local builds and CI.
+A branch build uses a version such as `0.2.4~pre17.ci+debian13`. A release tag must
+match the file, for example `v0.2.4-modern` for `VERSION` containing `0.2.4`.
+The tag build publishes an experimental pre-release with all three packages
+and `SHA256SUMS` after the checks pass.
 
-CI branch builds use versions such as `0.2.0~ci1+ubuntu22.04` and
-`0.2.0~ci1+ubuntu24.04`. Tagged releases instead use `0.2.0+ubuntu22.04` and
-`0.2.0+ubuntu24.04`. The workflow uses an exact package filename for its
-`dpkg-deb` inspection and artifact upload to avoid accidentally inspecting an
-older `.deb` under `dist/`. Generated packages should not be committed.
+Generated packages belong in workflow artifacts and GitHub Releases.
 
 Install the artifact built for your own distribution/version; binary
 packages are not guaranteed to be portable across Debian and Ubuntu releases.
