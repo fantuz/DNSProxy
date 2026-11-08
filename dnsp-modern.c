@@ -25,7 +25,8 @@
 enum { DNS_HEADER=12, UDP_RX_MAX=65507, UDP_REPLY_MAX=4096, TCP_MAX=65535,
        MAX_ACTIVE=128, MAX_CLIENTS=128,
        MAX_METRICS_CLIENTS=16, MAX_CURL_SOCKETS=1024, TCP_IDLE_MS=15000,
-       TCP_IO_MS=15000, METRICS_IDLE_MS=3000, DOH_CONNECT_MS=1500, DOH_TIMEOUT_MS=3000 };
+       TCP_IO_MS=15000, METRICS_IDLE_MS=3000, DOH_CONNECT_MS=1500, DOH_TIMEOUT_MS=3000,
+       MIN_TIMEOUT_MS=100, MAX_DOH_TIMEOUT_MS=60000, MAX_TCP_TIMEOUT_MS=600000 };
 static volatile sig_atomic_t stopping;
 /* A process signal can be delivered to a libcurl resolver thread. */
 _Static_assert(ATOMIC_BOOL_LOCK_FREE==2,"SIGUSR1 requires a lock-free atomic flag");
@@ -203,13 +204,14 @@ static const char *upstream;
 static bool loopback_http;
 static long upstream_http_version=CURL_HTTP_VERSION_1_1;
 static struct curl_slist *bootstrap_hosts;
-static const char *ca_file; /* optional additional trusted CA bundle; TLS checks remain enabled */
+static const char *ca_file; /* custom CA bundle for upstream TLS verification */
 static Client clients[MAX_CLIENTS];
 static CurlSocket curl_sockets[MAX_CURL_SOCKETS];
 static size_t curl_socket_count;
 static uint64_t curl_socket_generation;
 static int64_t curl_deadline=-1;
 static uint64_t tcp_idle_ms=TCP_IDLE_MS,tcp_io_ms=TCP_IO_MS;
+static long doh_connect_ms=DOH_CONNECT_MS,doh_timeout_ms=DOH_TIMEOUT_MS;
 
 typedef struct {
     int fd;uint64_t generation,last_ms;
@@ -451,8 +453,8 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
     OPT(CURLOPT_WRITEFUNCTION,collect);
     OPT(CURLOPT_WRITEDATA,q);
     OPT(CURLOPT_PRIVATE,q);
-    OPT(CURLOPT_TIMEOUT_MS,(long)DOH_TIMEOUT_MS);
-    OPT(CURLOPT_CONNECTTIMEOUT_MS,(long)DOH_CONNECT_MS);
+    OPT(CURLOPT_TIMEOUT_MS,doh_timeout_ms);
+    OPT(CURLOPT_CONNECTTIMEOUT_MS,doh_connect_ms);
     OPT(CURLOPT_SSL_VERIFYPEER,1L);
     OPT(CURLOPT_SSL_VERIFYHOST,2L);
     if(ca_file) OPT(CURLOPT_CAINFO,ca_file);
@@ -607,7 +609,7 @@ static void report_status(uint64_t uptime_ms,const char *bindip,int port,int met
                           const char *http_preference,int max_host_connections) {
     fprintf(stderr,"level=info event=stats uptime_ms=%" PRIu64
             " address=%s port=%d metrics_port=%d upstream_scheme=%s http_preference=%s bootstrap=%s"
-            " max_host_connections=%d doh_connect_ms=%d doh_timeout_ms=%d"
+            " max_host_connections=%d doh_connect_ms=%ld doh_timeout_ms=%ld"
             " tcp_idle_ms=%" PRIu64 " tcp_io_ms=%" PRIu64
             " queries_satisfied=%" PRIu64 " udp_queries=%" PRIu64 " tcp_queries=%" PRIu64
             " upstream_ok=%" PRIu64 " upstream_failed=%" PRIu64 " upstream_timeouts=%" PRIu64
@@ -617,7 +619,7 @@ static void report_status(uint64_t uptime_ms,const char *bindip,int port,int met
             " new_connections=%" PRIu64 " reused_requests=%" PRIu64
             " inflight=%zu max_inflight=%d tcp_clients=%zu max_tcp_clients=%d\n",
             uptime_ms,bindip,port,metrics_port,loopback_http?"http":"https",http_preference,
-            bootstrap_hosts?"enabled":"disabled",max_host_connections,DOH_CONNECT_MS,DOH_TIMEOUT_MS,
+            bootstrap_hosts?"enabled":"disabled",max_host_connections,doh_connect_ms,doh_timeout_ms,
             tcp_idle_ms,tcp_io_ms,metrics.queries_satisfied,metrics.udp_queries,metrics.tcp_queries,
             metrics.upstream_ok,metrics.upstream_failed,metrics.upstream_timeouts,
             metrics.invalid_queries,metrics.invalid_responses,metrics.overload,metrics.truncated,
@@ -796,9 +798,28 @@ static bool configure_upstream(const char *s,const char *bootstrap_address) {
     curl_free(scheme);curl_free(host);curl_url_cleanup(url);
     return ok;
 }
-static int parse_port(const char *s) {
+static long parse_range(const char *s,long min,long max) {
     char *end=NULL;errno=0;long v=strtol(s,&end,10);
-    return errno || end==s || *end || v<1 || v>65535 ? -1 : (int)v;
+    return errno || end==s || *end || v<min || v>max ? -1 : v;
+}
+static void usage(FILE *stream,const char *program) {
+    fprintf(stream,"Usage: %s [options]\n"
+            "  -l IPv4                     DNS bind address (default 127.0.0.1)\n"
+            "  -p PORT                     UDP/TCP DNS port, 1..65535 (default 5300)\n"
+            "  -s URL                      Upstream DoH URL (default https://cloudflare-dns.com/dns-query)\n"
+            "  -m PORT                     Loopback metrics port, 1..65535 (default disabled)\n"
+            "  --bootstrap-address IP      Numeric IPv4 or IPv6 address for the HTTPS upstream\n"
+            "  --ca-file PEM                CA bundle for upstream TLS verification\n"
+            "  --max-host-connections N     Upstream connections, 1..16 (default 8)\n"
+            "  --tcp-idle-ms MS             Idle TCP session, %d..%d (default %d)\n"
+            "  --tcp-io-ms MS               TCP frame read/write deadline, %d..%d (default %d)\n"
+            "  --doh-connect-ms MS          Upstream connection deadline, %d..%d (default %d)\n"
+            "  --doh-timeout-ms MS          Total upstream deadline, %d..%d (default %d)\n"
+            "  -h, --help                   Show this help\n",
+            program,MIN_TIMEOUT_MS,MAX_TCP_TIMEOUT_MS,TCP_IDLE_MS,
+            MIN_TIMEOUT_MS,MAX_TCP_TIMEOUT_MS,TCP_IO_MS,
+            MIN_TIMEOUT_MS,MAX_DOH_TIMEOUT_MS,DOH_CONNECT_MS,
+            MIN_TIMEOUT_MS,MAX_DOH_TIMEOUT_MS,DOH_TIMEOUT_MS);
 }
 int main(int argc,char **argv) {
     const char *bindip="127.0.0.1",*bootstrap_address=NULL;
@@ -806,31 +827,41 @@ int main(int argc,char **argv) {
     int max_host_connections=8;
     upstream="https://cloudflare-dns.com/dns-query";
     for(int i=1;i<argc;i++) {
-        if(!strcmp(argv[i],"-l") && i+1<argc) bindip=argv[++i];
-        else if(!strcmp(argv[i],"-p") && i+1<argc) port=parse_port(argv[++i]);
+        if(!strcmp(argv[i],"--help") || !strcmp(argv[i],"-h")) {usage(stdout,argv[0]);return 0;}
+        else if(!strcmp(argv[i],"-l") && i+1<argc) bindip=argv[++i];
+        else if(!strcmp(argv[i],"-p") && i+1<argc) port=(int)parse_range(argv[++i],1,65535);
         else if(!strcmp(argv[i],"-s") && i+1<argc) upstream=argv[++i];
         else if(!strcmp(argv[i],"--bootstrap-address")) {
             if(i+1==argc) {fprintf(stderr,"--bootstrap-address requires an IPv4 or IPv6 address\n");return 2;}
             bootstrap_address=argv[++i];
         }
-        else if(!strcmp(argv[i],"-m") && i+1<argc) metrics_port=parse_port(argv[++i]);
+        else if(!strcmp(argv[i],"-m") && i+1<argc) metrics_port=(int)parse_range(argv[++i],1,65535);
         else if(!strcmp(argv[i],"--ca-file") && i+1<argc) ca_file=argv[++i];
-        else if((!strcmp(argv[i],"--tcp-idle-ms") || !strcmp(argv[i],"--tcp-io-ms")) && i+1<argc) {
-            const char *option=argv[i],*raw=argv[++i];char *end=NULL;errno=0;
-            unsigned long v=strtoul(raw,&end,10);
-            if(errno || end==raw || *end || v<100 || v>600000) {
-                fprintf(stderr,"invalid %s (100..600000)\n",option);return 2;
+        else if(i+1<argc && (!strcmp(argv[i],"--tcp-idle-ms") || !strcmp(argv[i],"--tcp-io-ms") ||
+                            !strcmp(argv[i],"--doh-connect-ms") || !strcmp(argv[i],"--doh-timeout-ms"))) {
+            const char *option=argv[i];
+            int max=!strncmp(option,"--tcp-",6)?MAX_TCP_TIMEOUT_MS:MAX_DOH_TIMEOUT_MS;
+            long value=parse_range(argv[++i],MIN_TIMEOUT_MS,max);
+            if(value<0) {
+                fprintf(stderr,"invalid %s (%d..%d)\n",option,MIN_TIMEOUT_MS,max);return 2;
             }
-            if(!strcmp(option,"--tcp-idle-ms")) tcp_idle_ms=v;
-            else tcp_io_ms=v;
+            if(!strcmp(option,"--tcp-idle-ms")) tcp_idle_ms=(uint64_t)value;
+            else if(!strcmp(option,"--tcp-io-ms")) tcp_io_ms=(uint64_t)value;
+            else if(!strcmp(option,"--doh-connect-ms")) doh_connect_ms=value;
+            else doh_timeout_ms=value;
         }
         else if(!strcmp(argv[i],"--max-host-connections") && i+1<argc)
-            max_host_connections=parse_port(argv[++i]);
-        else {fprintf(stderr,"usage: %s [-l IPv4] [-p port] [-s https://DoH-URL] [-m loopback-metrics-port] [--ca-file PEM] [--max-host-connections 1..16] [--tcp-idle-ms 100..600000] [--tcp-io-ms 100..600000]\n",argv[0]);return 2;}
+            max_host_connections=(int)parse_range(argv[++i],1,16);
+        else {usage(stderr,argv[0]);return 2;}
     }
-    if(port<1 || port>65535 || metrics_port<0 || metrics_port>65535 || metrics_port==port ||
-       max_host_connections<1 || max_host_connections>16) {
+    if(port<0 || metrics_port<0 || metrics_port==port) {
         fprintf(stderr,"invalid port\n");return 2;
+    }
+    if(max_host_connections<0) {
+        fprintf(stderr,"invalid --max-host-connections (1..16)\n");return 2;
+    }
+    if(doh_connect_ms>doh_timeout_ms) {
+        fprintf(stderr,"--doh-connect-ms must be no greater than --doh-timeout-ms\n");return 2;
     }
     struct sigaction report_action={.sa_handler=request_report,.sa_flags=SA_RESTART};
     sigemptyset(&report_action.sa_mask);
