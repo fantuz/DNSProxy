@@ -125,6 +125,16 @@ connection is encrypted. Do not bind the proxy to an untrusted interface.
 
 ## Metrics and observability
 
+The proxy writes startup and failure diagnostics to stderr. For a systemd
+installation, read them with `journalctl -u dnsp-modern`. Warnings include an
+event name, client transport, and numeric libcurl and HTTP codes when
+available. Each warning category emits at most once per ten seconds. The next
+warning in that category reports how many messages it suppressed. The log
+omits the upstream URL, DNS questions, payloads, and client addresses.
+
+When all upstream slots are in use, a valid query receives `SERVFAIL`.
+`dnsp_overload_total` includes these replies and local request setup failures.
+
 The packaged systemd unit enables HTTP metrics at
 `http://127.0.0.1:9153/metrics`; manual runs enable metrics only with `-m`.
 Useful Prometheus-compatible series:

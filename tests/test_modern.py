@@ -86,7 +86,7 @@ class DoH(http.server.BaseHTTPRequestHandler):
         typ = struct.unpack('!H', data[len(QUERY)-4:len(QUERY)-2])[0]
         if typ == 65010:  # test intentional upstream delay and cancellation
             time.sleep(0.7)
-        self.send_response(502 if typ == 65009 else 200)
+        self.send_response({65009: 502, 65017: 201}.get(typ, 200))
         self.send_header('Content-Type', 'text/plain' if typ == 65008 else 'application/dns-message')
         self.send_header('Content-Length', str(len(r)))
         self.end_headers()
@@ -126,7 +126,7 @@ class Tests(unittest.TestCase):
         cls.addClassCleanup(cls.proxy_log.close)
         cls.process = subprocess.Popen([
             str(BASE/'dnsp-modern'), '-p', str(cls.port), '-m', str(cls.metrics_port),
-            '-s', f'http://127.0.0.1:{cls.server.server_port}/dns-query'
+            '-s', f'http://user:fixture-log-secret@127.0.0.1:{cls.server.server_port}/dns-query'
         ], stdout=subprocess.DEVNULL, stderr=cls.proxy_log)
         cls.addClassCleanup(cls.stop_proxy)
 
@@ -565,6 +565,32 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.metric(after, 'dnsp_queries_inflight'), 0)
         self.assertGreater(self.metric(after, 'dnsp_upstream_http_responses_total{version="1"}'), 0)
         self.assertGreater(self.metric(after, 'dnsp_upstream_duration_seconds_count'), 0)
+
+    def test_accepts_successful_http_status_with_dns_body(self):
+        out = self.udp(query(65017))
+        self.assertEqual(out[2:4], b'\x81\x80')
+
+    def test_failure_logs_are_redacted_and_rate_limited(self):
+        for _ in range(5):
+            self.assertEqual(self.udp(query(65009))[3] & 15, 2)
+        self.assertEqual(self.udp(query(65008))[3] & 15, 2)
+        self.proxy_log.seek(0)
+        log = self.proxy_log.read().decode()
+        self.assertNotIn('fixture-log-secret', log)
+        self.assertNotIn('google.com', log)
+        self.assertEqual(log.count('event=upstream_http_status'), 1)
+        self.assertIn('event=upstream_http_status transport=udp curl_code=0 http_status=502', log)
+        self.assertIn('event=upstream_content_type', log)
+
+    def test_listener_failure_reports_role(self):
+        with socket.socket() as occupied:
+            occupied.bind(('127.0.0.1', 0))
+            occupied.listen()
+            port = occupied.getsockname()[1]
+            result = subprocess.run([str(BASE/'dnsp-modern'), '-p', str(port)],
+                                    capture_output=True, timeout=3)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f'event=listener_failed role=dns_tcp port={port}'.encode(), result.stderr)
 
     def test_reject_insecure_remote_url_and_bad_port(self):
         for args in (['-s', 'http://127.0.0.1:80@not-local.example/dns-query'],
