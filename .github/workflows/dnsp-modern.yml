@@ -51,6 +51,9 @@ jobs:
           dpkg-deb --contents "$pkg"
           test "$(dpkg-deb --field "$pkg" Package)" = dnsp-modern
           test "$(dpkg-deb --field "$pkg" Version)" = "${version}+${{ matrix.distro }}"
+          dpkg-deb --field "$pkg" Depends | grep -Eq '(^|, )ca-certificates(,|$)'
+          dpkg-deb --fsys-tarfile "$pkg" | tar -xOf - ./usr/share/doc/dnsp-modern/copyright > "$RUNNER_TEMP/dnsp-modern-copyright"
+          tail -n +3 "$RUNNER_TEMP/dnsp-modern-copyright" | cmp LICENSE -
           echo "package=$pkg" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:

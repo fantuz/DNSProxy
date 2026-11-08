@@ -1,8 +1,9 @@
-# dnsp-modern experimental v0.2.0
+# Packaging dnsp-modern
 
 `dnsp-modern` is an **opt-in** DNS-over-HTTPS forwarder. It does not replace the
 legacy `dnsp`/`dnsp-h2` binaries, modify `/etc/resolv.conf`, or take over port 53.
-It is not a recursive resolver and currently handles **one query per TCP client**.
+Persistent TCP clients can pipeline requests. The proxy sends replies in order
+and handles one upstream request at a time per connection.
 
 ## Manual build and integration tests
 
@@ -10,13 +11,17 @@ On supported Debian/Ubuntu systems:
 
 ```sh
 sudo apt install build-essential pkg-config libcurl4-openssl-dev dpkg-dev python3
-make -f modern.mk
-make -f modern.mk modern-check
-sh scripts/build-deb.sh
-sudo apt install ./dist/dnsp-modern_0.2.0_$(dpkg --print-architecture).deb
+version=0.2.4~local1
+VERSION="$version" sh scripts/build-deb.sh
+sudo apt install "./dist/dnsp-modern_${version}_$(dpkg --print-architecture).deb"
 ```
 
-The service is installed **disabled and stopped**. Start it explicitly:
+The build script runs the integration tests before packaging. Build on your
+target distribution so `dpkg-shlibdeps` can read its installed libc and libcurl
+package metadata. Choose a version that sorts after any build you are upgrading.
+
+A fresh installation leaves the service **disabled and stopped**. Start it
+explicitly:
 
 ```sh
 sudo systemctl enable --now dnsp-modern
@@ -28,7 +33,10 @@ The packaged service listens on `127.0.0.1:5300` (UDP and TCP), forwards to
 interface at `http://127.0.0.1:9153/metrics`. It never binds metrics to a public
 interface. If port 9153 is already in use, override `ExecStart` with
 `sudo systemctl edit dnsp-modern` (first clear it with a blank `ExecStart=`).
-Manual launch can disable metrics by omitting `-m PORT`.
+Manual launch can disable metrics by omitting `-m PORT`. The package installs
+the system CA bundle as a dependency for TLS verification. If the host will
+resolve its own DoH upstream through DNSProxy, configure `--bootstrap-address`
+with an address for that provider before switching the system resolver.
 
 ```sh
 dig @127.0.0.1 -p 5300 example.com A
@@ -80,8 +88,6 @@ UDP reply limits are 512 bytes without EDNS and the client's advertised EDNS
 buffer size (clamped to 512–4096) otherwise. Oversized UDP replies are returned
 with `TC=1` and can be retried over TCP. The upstream DoH response must pass
 HTTP status, Content-Type, DNS header/ID/question, and record-boundary checks.
-It is not yet a production-hardened public recursive resolver. Client TCP
-pipelining, EDNS(0) option semantics, request rate limiting and comprehensive
-fuzz testing are future work. The separate benchmark patch adds local TLS/ALPN
-HTTP/2/HTTP/1.1 measurements and `--max-host-connections` / `--ca-file` flags;
-**those flags are not in the baseline v0.2.0 binary**.
+Use the default loopback bind for local forwarding. The project also includes
+local TLS/ALPN benchmarks for HTTP/2 and HTTP/1.1. See
+[bench/README.md](../bench/README.md) for setup and measurements.
