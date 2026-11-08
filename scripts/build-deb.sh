@@ -50,7 +50,7 @@ Priority: optional
 Architecture: $ARCH
 Maintainer: DNSProxy contributors <noreply@github.com>
 Depends: $DEPS, ca-certificates, init-system-helpers
-Description: Experimental DNS-over-HTTPS forwarding resolver
+Description: DNS-over-HTTPS forwarding resolver
  Event-driven DoH forwarder with EDNS validation and Prometheus metrics.
 END
 OUT="dist/dnsp-modern_${VERSION}_${ARCH}.deb"
