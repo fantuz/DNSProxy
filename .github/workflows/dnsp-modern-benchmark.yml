@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install compiler, curl and Python venv
         run: |
           sudo apt-get update
@@ -38,7 +38,7 @@ jobs:
             --protocol both --concurrency 1,8,32 --warmup 0.3 --duration 1 \
             --max-host-connections 1 --assert-h2-multiplex \
             --output dist/bench-ci.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: dnsp-modern-benchmark-smoke

@@ -67,7 +67,7 @@ jobs:
         env:
           PACKAGE: ${{ steps.build.outputs.package }}
         run: sudo sh scripts/test-deb-lifecycle.sh "$PACKAGE"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: dnsp-modern-${{ matrix.distro }}-${{ matrix.arch }}
           path: ${{ steps.build.outputs.package }}
@@ -108,7 +108,7 @@ jobs:
           cmp dnsp-modern /usr/bin/dnsp-modern
           apt-get purge -y dnsp-modern
           test ! -e /usr/bin/dnsp-modern
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: dnsp-modern-debian13-${{ matrix.arch }}
           path: ${{ steps.build.outputs.package }}
@@ -150,7 +150,7 @@ jobs:
           python3 tests/test_modern.py Tests.test_udp Tests.test_tcp
           dnf remove -y dnsp-modern
           test ! -e /usr/bin/dnsp-modern
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: dnsp-modern-rocky9-${{ matrix.arch }}
           path: ${{ steps.build.outputs.package }}
@@ -191,7 +191,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.plan.outputs.commit }}
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           pattern: dnsp-modern-*
           merge-multiple: true
