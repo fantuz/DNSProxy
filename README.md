@@ -299,3 +299,8 @@ builds, and manual release recovery.
   TTLs, and start with queries free of client-specific EDNS options.
 - **Tail-latency metrics.** Add bounded latency buckets by client transport
   and upstream outcome so operators can see slow replies behind the mean.
+
+## Contributing
+
+See the [C maintenance guide](docs/C_MAINTENANCE.md) for repository layout
+criteria, C review checks, and commands to run before opening a PR.
