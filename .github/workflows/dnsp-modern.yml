@@ -75,8 +75,7 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
           DNSP_TEST_STARTUP_TIMEOUT: '12'
         run: |
-          make -B -f modern.mk dnsp-modern CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
-          make -f modern.mk modern-check
+          make -B -f modern.mk modern-check CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
 
   publish:
     name: Publish pre-release from version tag

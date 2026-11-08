@@ -3,8 +3,10 @@
 import http.client
 import http.server
 import os
+import shutil
 import socket
 import socketserver
+import ssl
 import struct
 import subprocess
 import threading
@@ -473,6 +475,90 @@ class Tests(unittest.TestCase):
                 r = subprocess.run([str(BASE/'dnsp-modern')] + args,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=2)
                 self.assertEqual(r.returncode, 2, r.stderr)
+
+    def isolated_udp(self, upstream, *args, env):
+        port, _ = unused_ports()
+        with tempfile.TemporaryFile() as logfile:
+            proc = subprocess.Popen([str(BASE/'dnsp-modern'), '-p', str(port), '-s', upstream, *args],
+                                    env=env, stderr=logfile)
+            try:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and proc.poll() is None:
+                    try:
+                        with socket.create_connection(('127.0.0.1', port), timeout=.2):
+                            break
+                    except OSError:
+                        time.sleep(.02)
+                else:
+                    logfile.seek(0)
+                    self.fail(f'isolated proxy failed to start: {logfile.read()!r}')
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.settimeout(4)
+                    sock.sendto(query(), ('127.0.0.1', port))
+                    return sock.recv(4096)
+            finally:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=3)
+                logfile.seek(0)
+                self.assertEqual(proc.returncode, 0, logfile.read())
+
+    def test_loopback_http_bypasses_ambient_proxy(self):
+        # Hold an unused port so the inherited proxy cannot complete a connection.
+        with socket.socket() as dead_proxy:
+            dead_proxy.bind(('127.0.0.1', 0))
+            proxy = f'http://127.0.0.1:{dead_proxy.getsockname()[1]}'
+            env = dict(os.environ, http_proxy=proxy, no_proxy='', NO_PROXY='')
+            answer = self.isolated_udp(f'http://127.0.0.1:{self.server.server_port}/dns-query', env=env)
+        self.assertEqual(answer[2:4], b'\x81\x80')
+
+    @unittest.skipUnless(shutil.which('openssl'), 'openssl required to generate a local TLS certificate')
+    def test_bootstrap_address_connects_directly_and_verifies_hostname(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cert, key = str(Path(tmp)/'cert.pem'), str(Path(tmp)/'key.pem')
+            subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+                            '-days', '1', '-subj', '/CN=dnsp-bootstrap.invalid',
+                            '-addext', 'subjectAltName=DNS:dnsp-bootstrap.invalid',
+                            '-out', cert, '-keyout', key], check=True, timeout=10,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(cert, key)
+            class TLSDoH(DoH):
+                protocol_version = 'HTTP/1.0'  # close the fixture after each reply
+
+                def handle(self):
+                    try:
+                        super().handle()
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass  # A rejected certificate can close before HTTP starts.
+
+            with HTTP(('127.0.0.1', 0), TLSDoH) as server:
+                server.socket = context.wrap_socket(server.socket, server_side=True)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    env = dict(os.environ, https_proxy='http://127.0.0.1:1', no_proxy='', NO_PROXY='')
+                    for host, rcode in (('dnsp-bootstrap.invalid', 0), ('wrong.invalid', 2)):
+                        with self.subTest(host=host):
+                            url = f'https://{host}:{server.server_port}/dns-query'
+                            answer = self.isolated_udp(url, '--ca-file', cert,
+                                                       '--bootstrap-address', '127.0.0.1', env=env)
+                            self.assertEqual(answer[3] & 15, rcode)
+                finally:
+                    server.shutdown()
+                    thread.join(timeout=3)
+
+    def test_reject_invalid_bootstrap_options(self):
+        for args in (['--bootstrap-address'],
+                     ['--bootstrap-address', 'resolver.invalid'],
+                     ['--bootstrap-address', '127.0.0.1', '-s', 'http://127.0.0.1/dns-query']):
+            with self.subTest(args=args):
+                proc = subprocess.run([str(BASE/'dnsp-modern'), *args], timeout=3,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                self.assertEqual(proc.returncode, 2, proc.stderr)
 
     def test_sequential_curl_reuse(self):
         before = self.metrics()
