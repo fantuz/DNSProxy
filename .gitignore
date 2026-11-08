@@ -4,7 +4,10 @@ dnsp.c.backup
 dnsp.c.bac
 dnsp.c.ori
 
-# Generated modern build / package / benchmark artifacts
+# Generated build / package / benchmark artifacts
+/dnsp
+/dnsp.o
+/dnsp-h2.o
 /dnsp-modern
 /dist/
 /.bench-venv/
