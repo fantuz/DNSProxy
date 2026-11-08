@@ -188,54 +188,14 @@ Change settings with `sudo systemctl edit dnsp-modern`, clearing `ExecStart=`
 before supplying a replacement. See
 [packaging/README-packaging.md](packaging/README-packaging.md) for details.
 
-## GitHub Actions, CI artifacts and releases
+## Linux packages and releases
 
-The [DNSProxy modern workflow](.github/workflows/dnsp-modern.yml) executes on
-pull requests, pushes to `master`, version-tag pushes, and manual dispatch.
-Two matrix jobs compile, run the **16 loopback DNS integration tests**, and
-build distribution-specific `.deb` files on Ubuntu 22.04 and 24.04; a third
-job runs AddressSanitizer/UndefinedBehaviorSanitizer tests.
+GitHub Actions builds DEBs for Debian 13 and Ubuntu 22.04/24.04, and RPMs for
+Rocky Linux 9. Each distribution has native x86-64 and ARM64 builds. Download
+the matching package and `SHA256SUMS` from
+[GitHub Releases](https://github.com/fantuz/DNSProxy/releases).
 
-- A successful **branch push** uploads build artifacts to the workflow run; it
-  does **not** create a GitHub Release.
-- An annotated tag of the form `vMAJOR.MINOR.PATCH-modern`, such as
-  `v0.2.1-modern`, starts the same tests. Only after both package jobs and the
-  sanitizer job succeed does the workflow create an experimental GitHub
-  **pre-release** with both DEBs and `SHA256SUMS`.
-- CI builds on branches use Debian versions such as
-  `0.2.0~ci1+ubuntu24.04`; a `v0.2.0-modern` tag builds version
-  `0.2.0+ubuntu24.04`. These are distinct versions.
-- Packages are not cryptographically signed and not published to an APT
-  repository. Select the artifact matching your distribution and verify
-  SHA-256 checksums before installation.
-
-After fixing and confirming a green branch workflow, create an **unused** tag:
-
-```bash
-git tag -a v0.2.1-modern -m 'DNSProxy modern v0.2.1 (experimental)'
-git push origin v0.2.1-modern
-```
-
-### The `dpkg-deb --info` workflow failure (November 2026)
-
-A prior build passed tests and built a DEB on both distributions, then failed
-at `dpkg-deb --info dist/*.deb`. That glob matched a previously committed DEB
-plus the new CI package. `dpkg-deb --info` interprets additional filenames as
-control-component names, **not** as additional packages. The workflow now
-inspects and uploads the **exact package filename produced by each matrix job**.
-The Node 20 deprecation warning was unrelated; checkout/download actions were
-upgraded to their Node-24-based major versions.
-
-The repository already tracks `dist/dnsp-modern_0.2.0_amd64.deb`. This patch
-ignores future `/dist/` files, but `.gitignore` never untracks an existing
-commit. Optionally remove that generated binary *from the Git index only*:
-
-```bash
-git rm --cached dist/dnsp-modern_0.2.0_amd64.deb
-```
-
-The fixed CI pipeline works even if this old file remains tracked. Historical
-builds and legacy CLI examples are archived in
-[docs/README-legacy.md](docs/README-legacy.md); statements in that archive
-about mandatory HTTP/2 or lack of connection reuse do **not** apply to the
-modern implementation.
+Set the next version in `VERSION` and merge to `master` to publish once the
+package matrix and sanitizer job pass. See the
+[packaging guide](packaging/README-packaging.md) for installation, local
+builds, and manual release recovery.

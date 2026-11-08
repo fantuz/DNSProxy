@@ -56,24 +56,55 @@ HTTP/1.1 only and do not prove remote HTTP/2 throughput. Metrics are process-
 local and reset on restart; they do not include DNS question names, client
 addresses, or other high-cardinality labels.
 
-## GitHub Actions releases
+## Packages and architectures
 
-`.github/workflows/dnsp-modern.yml` builds packages for Debian 13, Ubuntu 22.04,
-and Ubuntu 24.04. Ubuntu runners exercise the service lifecycle with systemd.
-The Debian container checks installation and purge with APT.
+| Distribution | Format | x86-64 | ARM64 |
+| --- | --- | --- | --- |
+| Ubuntu 22.04 | DEB | amd64 | arm64 |
+| Ubuntu 24.04 | DEB | amd64 | arm64 |
+| Debian 13 | DEB | amd64 | arm64 |
+| Rocky Linux 9 | RPM | x86_64 | aarch64 |
 
-The top-level `VERSION` file supplies the base version for local builds and CI.
-A branch build uses a version such as `0.2.4~pre17.ci+debian13`. A release tag must
-match the file, for example `v0.2.4-modern` for `VERSION` containing `0.2.4`.
-The tag build publishes an experimental pre-release with all three packages
-and `SHA256SUMS` after the checks pass.
+Build RPMs from a committed checkout on Rocky Linux 9:
 
-Generated packages belong in workflow artifacts and GitHub Releases.
+```sh
+sudo dnf install gcc make git rpm-build redhat-rpm-config libcurl-devel openssl python3 systemd-rpm-macros
+sh scripts/build-rpm.sh
+sudo dnf install "./dist/dnsp-modern-$(cat VERSION)-1.el9.$(rpm --eval '%{_arch}').rpm"
+```
 
-Install the artifact built for your own distribution/version; binary
-packages are not guaranteed to be portable across Debian and Ubuntu releases.
-These packages are **not signed** or published to an APT repository. Verify
-checksums and the GitHub release source before installing.
+Install a downloaded DEB with `sudo apt install ./package.deb` or a downloaded
+RPM with `sudo dnf install ./package.rpm`. Use your distribution's package and
+its architecture. First start is opt-in for both formats. On a live systemd
+host, the RPM uses the distribution's restart-on-upgrade and stop-on-removal
+helpers.
+
+## Automatic and manual releases
+
+1. Set the next release number in the top-level `VERSION` file and merge to
+   `master`.
+2. The first successful build for the new version creates the matching
+   `vVERSION-modern` tag at the tested commit and publishes a GitHub pre-release
+   with eight packages and `SHA256SUMS`. Other commits at the published version
+   produce CI artifacts. A failed check prevents publication.
+3. For a manual run, open **Actions → DNSProxy modern - test and package →
+   Run workflow**, choose `master`, and enable **publish**. Pushing an explicit
+   tag such as `v0.2.4-modern` also works when it matches the checked-out
+   `VERSION`.
+
+If publication fails after creating the tag, rerun the failed workflow for the
+tagged commit. If an incomplete GitHub release draft exists, inspect it and
+clear it before retrying. Package assets for a published version are immutable
+from the workflow. To change them, increment `VERSION`.
+
+Ubuntu runners test install, upgrade and purge with live systemd. Debian
+containers exercise APT install and purge. Rocky containers exercise DNF
+install and removal and run UDP and TCP queries against the installed binary.
+
+Release assets are direct downloads with SHA-256 checksums. Download the
+matching package and `SHA256SUMS` to the same directory and run
+`sha256sum --ignore-missing -c SHA256SUMS`. Use the GitHub release page as the
+source for both files.
 
 ## Protocol and performance limitations
 
