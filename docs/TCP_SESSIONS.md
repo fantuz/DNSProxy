@@ -32,11 +32,17 @@ This is independent of the persistent upstream libcurl/DoH connection pool.
   -s https://cloudflare-dns.com/dns-query
 ```
 
-`--tcp-idle-ms` accepts **100–600000 milliseconds** (default: **15000**).
-The idle timer is refreshed by successful client socket reads and writes.
-An idle connection may be closed without notice; clients must be able to
-reconnect. This setting controls **client** TCP sessions; upstream libcurl's
-3-second request timeout and connection pool settings are unchanged.
+Both TCP settings accept **100–600000 milliseconds** and default to **15000**.
+
+- `--tcp-idle-ms` limits the wait for the next query after accepting the
+  connection or writing a response. libcurl's 3-second upstream timeout applies
+  while a complete query is in flight.
+- `--tcp-io-ms` sets the maximum time to assemble a DNS frame from its first
+  byte and, independently, to send a queued response. Partial reads and writes
+  do not extend these deadlines.
+
+An expired connection may be closed without notice. Clients must be able to
+reconnect.
 
 The current implementation is intended for trusted/local networks. It is not
 hardened for use as a public DNS resolver: no per-client request rate limits,
@@ -55,6 +61,7 @@ With `-m 9153`, inspect `http://127.0.0.1:9153/metrics`:
 | `dnsp_tcp_pipeline_buffered_total` | Complete successor frames buffered while prior work is outstanding |
 | `dnsp_tcp_half_closes_total` | Client write-side EOFs observed |
 | `dnsp_tcp_idle_timeouts_total` | Client connections closed by the idle timer |
+| `dnsp_tcp_io_timeouts_total` | Client connections closed by a frame assembly or response write deadline |
 | `dnsp_tcp_cancelled_upstream_total` | In-flight upstream queries cancelled when their TCP client is closed |
 | `dnsp_tcp_clients` | Currently open TCP client connections (existing gauge) |
 | `dnsp_queries_inflight` | Currently active upstream requests (existing gauge) |

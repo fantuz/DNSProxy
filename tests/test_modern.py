@@ -245,7 +245,7 @@ class Tests(unittest.TestCase):
         self.assertFalse(errors, errors)
 
     def test_tcp_half_close_preserves_last_reply(self):
-        packets = [query(ident=4000+i) for i in range(3)]
+        packets = [query(65010, ident=4000), query(ident=4001), query(ident=4002)]
         before = self.metrics()
         with socket.create_connection(('127.0.0.1', self.port), timeout=4) as sock:
             sock.settimeout(5)
@@ -260,14 +260,25 @@ class Tests(unittest.TestCase):
                            self.metric(before, 'dnsp_tcp_half_closes_total'))
 
     def test_tcp_rst_cancels_orphaned_upstream(self):
+        for buffered in (False, True):
+            with self.subTest(buffered=buffered):
+                self.assert_rst_cancels_orphaned_upstream(buffered)
+
+    def assert_rst_cancels_orphaned_upstream(self, buffered):
         before = self.metrics()
         sock = socket.create_connection(('127.0.0.1', self.port), timeout=4)
         try:
-            sock.sendall(self.frame(query(qtype=65010, ident=4500)))
-            # Wait until the delayed request is actually in flight.
+            frames = self.frame(query(qtype=65010, ident=4500))
+            if buffered:
+                frames += self.frame(query(ident=4501))
+            sock.sendall(frames)
             deadline = time.monotonic() + 2
             while time.monotonic() < deadline:
-                if self.metric(self.metrics(), 'dnsp_queries_inflight') >= 1:
+                stats = self.metrics()
+                has_inflight = self.metric(stats, 'dnsp_queries_inflight') >= 1
+                has_successor = self.metric(stats, 'dnsp_tcp_pipeline_buffered_total') > self.metric(
+                    before, 'dnsp_tcp_pipeline_buffered_total')
+                if has_inflight and (not buffered or has_successor):
                     break
                 time.sleep(.01)
             else:
@@ -297,13 +308,13 @@ class Tests(unittest.TestCase):
                 time.sleep(0.005)
             self.assertEqual(self.tcp_frame(sock)[:2], packet[:2])
 
-    def test_tcp_idle_expiry(self):
-        # A dedicated instance avoids changing the shared tests' idle settings.
+    def test_tcp_deadlines(self):
+        # A dedicated instance allows shorter client deadlines.
         port, metrics_port = unused_ports()
         with tempfile.TemporaryFile(mode='w+b') as logfile:
             proc = subprocess.Popen([
                 str(BASE/'dnsp-modern'), '-p', str(port), '-m', str(metrics_port),
-                '--tcp-idle-ms', '250',
+                '--tcp-idle-ms', '250', '--tcp-io-ms', '250',
                 '-s', f'http://127.0.0.1:{self.server.server_port}/dns-query'
             ], stdout=subprocess.DEVNULL, stderr=logfile)
             try:
@@ -321,6 +332,24 @@ class Tests(unittest.TestCase):
                 with sock:
                     sock.settimeout(3)
                     self.assertEqual(sock.recv(1), b'')  # idle connection closed
+                with socket.create_connection(('127.0.0.1', port), timeout=2) as sock:
+                    delayed = query(qtype=65010, ident=4231)
+                    sock.sendall(self.frame(delayed))
+                    self.assertEqual(self.tcp_frame(sock)[:2], delayed[:2])
+                    self.assertEqual(sock.recv(1), b'')  # idle only after response
+                with socket.create_connection(('127.0.0.1', port), timeout=2) as sock:
+                    sock.settimeout(.04)
+                    for byte in self.frame(query())[:20]:
+                        try:
+                            sock.sendall(bytes([byte]))
+                            self.assertEqual(sock.recv(1), b'')
+                            break
+                        except socket.timeout:
+                            continue
+                        except ConnectionResetError:
+                            break
+                    else:
+                        self.fail('partial reads kept the frame assembly deadline alive')
             finally:
                 proc.terminate()
                 try:
@@ -328,13 +357,14 @@ class Tests(unittest.TestCase):
                 except subprocess.TimeoutExpired:
                     proc.kill();proc.wait(timeout=3)
 
-    def test_reject_invalid_tcp_idle(self):
-        for raw in ('0', '99', '600001', '-1', 'anything'):
-            with self.subTest(raw=raw):
-                proc = subprocess.run([str(BASE/'dnsp-modern'), '--tcp-idle-ms', raw],
-                                      stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                                      timeout=2)
-                self.assertEqual(proc.returncode, 2, proc.stderr)
+    def test_reject_invalid_tcp_deadlines(self):
+        for option in ('--tcp-idle-ms', '--tcp-io-ms'):
+            for raw in ('0', '99', '600001', '-1', 'anything'):
+                with self.subTest(option=option, raw=raw):
+                    proc = subprocess.run([str(BASE/'dnsp-modern'), option, raw],
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                          timeout=2)
+                    self.assertEqual(proc.returncode, 2, proc.stderr)
 
     def metrics(self):
         c = http.client.HTTPConnection('127.0.0.1', self.metrics_port, timeout=4)

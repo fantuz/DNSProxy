@@ -102,8 +102,9 @@ local test servers. Refer to `bench/README.md` once installed.
   advertise a size clamped to 512–4096. Oversized replies use `TC=1`; clients
   can retry over TCP.
 - There is **no DNSSEC cryptographic validation, local DNS caching, recursion,
-  TTL manipulation, EDNS option negotiation, or DNS-over-TCP pipelining**.
-- Currently one DNS query is processed per TCP client connection.
+  TTL manipulation, or EDNS option negotiation**.
+- A persistent TCP session accepts pipelined queries and sends replies in
+  order, with one upstream request in flight per session.
 
 The client-to-proxy DNS leg is not encrypted merely because the upstream DoH
 connection is encrypted. Do not bind the proxy to an untrusted interface.
