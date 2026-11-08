@@ -112,17 +112,27 @@ started with `-m 9153`.
 
 ### `dnsp-modern` options
 
+Run `./dnsp-modern --help` for the options available in your build.
+
 | Flag | Meaning | Default |
 | --- | --- | --- |
 | `-l IPv4` | DNS UDP/TCP bind address | `127.0.0.1` |
 | `-p PORT` | DNS listener port, 1–65535 | `5300` |
 | `-s URL` | Upstream DoH endpoint | `https://cloudflare-dns.com/dns-query` |
-| `-m PORT` | Loopback-only metrics listener port; must differ from `-p` | Disabled for manual runs |
+| `-m PORT` | Loopback-only metrics port, 1–65535 and different from `-p` | Disabled for manual runs. The packaged service uses `9153`. |
+| `--bootstrap-address IP` | Numeric IPv4 or unbracketed IPv6 address for an HTTPS upstream hostname | Resolve the hostname normally |
+| `--ca-file PEM` | CA certificate bundle for upstream TLS verification | libcurl's default CA bundle |
+| `--max-host-connections N` | Maximum upstream connections per host, 1–16 | `8` |
+| `--tcp-idle-ms MS` | How long a TCP session can wait idle for its next query, 100–600000 ms | `15000` |
+| `--tcp-io-ms MS` | Separate deadlines to read a TCP request frame and write a response frame, 100–600000 ms | `15000` |
+| `--doh-connect-ms MS` | Deadline for the upstream connection phase, 100–60000 ms | `1500` |
+| `--doh-timeout-ms MS` | Total deadline for an upstream request, 100–60000 ms | `3000` |
+| `-h`, `--help` | Print options and exit | |
 
-Unknown options or invalid ports exit with status 2. Remote upstreams must use
-HTTPS; plaintext HTTP is permitted **only for a 127.0.0.1 local testing host**.
-The loopback HTTP test endpoint is contacted directly. HTTPS upstreams use TLS
-certificate and hostname verification, and redirects are disabled.
+Unknown options or invalid numeric options exit with status 2. Remote upstreams
+must use HTTPS. Plaintext HTTP is limited to the `127.0.0.1` testing endpoint
+and bypasses proxy environment settings. HTTPS upstreams use TLS certificate
+and hostname verification, and redirects are disabled.
 
 If the host uses DNSProxy as its system resolver, configure an upstream IP to
 bootstrap the HTTPS connection without consulting the system resolver:
@@ -137,10 +147,20 @@ proxy environment settings, while keeping the URL hostname for TLS and HTTP.
 Choose an address served by your DoH provider and update it if the provider
 changes addresses.
 
+The upstream connection deadline covers name resolution and handshakes for a
+new connection. The total deadline includes time queued by libcurl. Set
+`--doh-connect-ms` no higher than `--doh-timeout-ms`. This example allows a
+slower connection and more time for the reply.
+
+```sh
+./dnsp-modern --doh-connect-ms 2500 --doh-timeout-ms 5000
+```
+
+Check the active deadlines in the [on-demand status report](#on-demand-status-report).
+For systemd overrides, see the [packaging guide](packaging/README-packaging.md).
+
 The bundled [HTTP/2 benchmark](bench/README.md) measures concurrent streams,
-QPS, latency percentiles, CPU and RSS on local test servers. Use
-`--max-host-connections N` to tune the upstream connection cap (1–16, default 8)
-and `--ca-file PATH` to use a custom TLS CA bundle.
+QPS, latency percentiles, CPU and RSS on local test servers.
 
 ## Architecture and protocol scope
 

@@ -800,7 +800,7 @@ class Tests(unittest.TestCase):
                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=2)
                 self.assertEqual(r.returncode, 2, r.stderr)
 
-    def isolated_udp(self, upstream, *args, env):
+    def isolated_udp(self, upstream, *args, env, packet=QUERY):
         port, _ = unused_ports()
         with tempfile.TemporaryFile() as logfile:
             proc = subprocess.Popen([str(BINARY), '-p', str(port), '-s', upstream, *args],
@@ -818,7 +818,7 @@ class Tests(unittest.TestCase):
                     self.fail(f'isolated proxy failed to start: {logfile.read()!r}')
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                     sock.settimeout(4)
-                    sock.sendto(query(), ('127.0.0.1', port))
+                    sock.sendto(packet, ('127.0.0.1', port))
                     return sock.recv(4096)
             finally:
                 proc.terminate()
@@ -829,6 +829,31 @@ class Tests(unittest.TestCase):
                     proc.wait(timeout=3)
                 logfile.seek(0)
                 self.assertEqual(proc.returncode, 0, logfile.read())
+
+    def test_doh_deadlines(self):
+        upstream = f'http://127.0.0.1:{self.server.server_port}/dns-query'
+        packet = query(65010)  # The upstream waits 700 ms before responding.
+        for timeout in (200, 3000):
+            with self.subTest(timeout=timeout):
+                answer = self.isolated_udp(upstream, '--doh-connect-ms', '100',
+                                           '--doh-timeout-ms', str(timeout),
+                                           env=os.environ, packet=packet)
+                self.assertEqual(answer[:2], packet[:2])
+                self.assertEqual(answer[3] & 15, 2 if timeout == 200 else 0)
+
+    def test_help_and_invalid_doh_deadlines(self):
+        for option in ('-h', '--help'):
+            result = subprocess.run([str(BINARY), option], capture_output=True, timeout=3)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for flag in (b'--bootstrap-address', b'--tcp-io-ms', b'--doh-connect-ms', b'--doh-timeout-ms'):
+                self.assertIn(flag, result.stdout)
+        for args in (('--doh-connect-ms',), ('--doh-connect-ms', '99'),
+                     ('--doh-timeout-ms', '60001'), ('--doh-timeout-ms', '-1'),
+                     ('--doh-timeout-ms', '1000')):
+            with self.subTest(args=args):
+                result = subprocess.run([str(BINARY), *args], capture_output=True, timeout=3)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(args[0].encode(), result.stderr)
 
     def test_loopback_http_bypasses_ambient_proxy(self):
         # Hold an unused port so the inherited proxy cannot complete a connection.
