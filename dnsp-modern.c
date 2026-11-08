@@ -21,7 +21,7 @@
  * owned by one event loop. Do not call libcurl from another thread. */
 enum { DNS_MAX=4096, TCP_MAX=65535, MAX_ACTIVE=128, MAX_CLIENTS=128,
        MAX_METRICS_CLIENTS=16, MAX_CURL_SOCKETS=1024, TCP_IDLE_MS=15000,
-       METRICS_IDLE_MS=3000 };
+       TCP_IO_MS=15000, METRICS_IDLE_MS=3000 };
 static volatile sig_atomic_t stopping;
 static void stop_now(int sig) { (void)sig; stopping=1; }
 static int nonblock(int fd) { int f=fcntl(fd,F_GETFL,0); return f<0?-1:fcntl(fd,F_SETFL,f|O_NONBLOCK); }
@@ -114,7 +114,8 @@ typedef struct Query Query;
 struct Client {
     int fd;size_t have,need,sent,out_len;
     unsigned char in[TCP_MAX+2],out[TCP_MAX+2];
-    bool busy,read_eof;uint64_t generation,last_ms,queries_started;
+    bool busy,read_eof;uint64_t generation,queries_started;
+    uint64_t idle_since_ms,frame_deadline,write_deadline;
 };
 struct Query {
     CURL *easy;struct curl_slist *headers;
@@ -132,7 +133,7 @@ typedef struct {
       truncated,requests_new_connections,requests_reused_connections,
       http1,http2,http3,socket_callbacks,timer_callbacks,timer_fires,
       tcp_accepted,tcp_closed,tcp_keepalive_queries,tcp_pipeline_buffered,
-      tcp_half_closes,tcp_idle_timeouts,tcp_cancelled_upstream;
+      tcp_half_closes,tcp_idle_timeouts,tcp_io_timeouts,tcp_cancelled_upstream;
     double upstream_seconds;
 } Metrics;
 static Metrics metrics;
@@ -145,7 +146,7 @@ static Client clients[MAX_CLIENTS];
 static CurlSocket curl_sockets[MAX_CURL_SOCKETS];
 static size_t curl_socket_count;
 static int64_t curl_deadline=-1;
-static uint64_t tcp_idle_ms=TCP_IDLE_MS;
+static uint64_t tcp_idle_ms=TCP_IDLE_MS,tcp_io_ms=TCP_IO_MS;
 
 typedef struct {
     int fd;uint64_t generation,last_ms;
@@ -219,6 +220,7 @@ static void close_client(Client *c) {
     if(c->fd>=0) {close(c->fd);metrics.tcp_closed++;}
     c->fd=-1;c->have=c->need=c->sent=c->out_len=0;
     c->busy=c->read_eof=false;c->generation++;c->queries_started=0;
+    c->frame_deadline=c->write_deadline=0;
 }
 static void reply_dns(Query *q,const unsigned char *p,size_t n) {
     if(q->client) {
@@ -226,6 +228,7 @@ static void reply_dns(Query *q,const unsigned char *p,size_t n) {
         if(c->fd>=0 && c->generation==q->generation) {
             c->out[0]=(unsigned char)(n>>8);c->out[1]=(unsigned char)n;
             memcpy(c->out+2,p,n);c->out_len=n+2;c->sent=0;
+            c->write_deadline=clock_ms()+tcp_io_ms;
         }
     } else sendto(q->udp_fd,p,n,0,(struct sockaddr*)&q->peer,q->peer_len);
 }
@@ -372,17 +375,19 @@ static void tcp_io(Client *c,short events) {
     if(c->fd<0) return;
     if(c->out_len && (events&POLLOUT)) {
         ssize_t n=send(c->fd,c->out+c->sent,c->out_len-c->sent,MSG_NOSIGNAL);
-        if(n>0) {c->sent+=(size_t)n;c->last_ms=clock_ms();}
+        if(n>0) c->sent+=(size_t)n;
         else if(n<0 && (errno==EAGAIN || errno==EINTR)) return;
         else {close_client(c);return;}
         if(c->sent==c->out_len) {
             c->out_len=c->sent=0;
+            c->write_deadline=0;
+            c->idle_since_ms=clock_ms();
             if(c->need && c->have==c->need && !start_tcp_query(c)) return;
             if(c->read_eof && !c->busy) close_client(c);
         }
     }
     if(c->fd<0 || c->read_eof ||
-       !(!c->need || c->have<c->need) || !(events&(POLLIN|POLLHUP))) return;
+       (c->need && c->have==c->need) || !(events&POLLIN)) return;
     size_t target=c->need?c->need:2;
     ssize_t n=recv(c->fd,c->in+c->have,target-c->have,0);
     if(n==0) {
@@ -394,13 +399,15 @@ static void tcp_io(Client *c,short events) {
         return;
     }
     if(n<0) {if(errno!=EAGAIN && errno!=EINTR) close_client(c);return;}
-    c->have+=(size_t)n;c->last_ms=clock_ms();
+    if(!c->have) c->frame_deadline=clock_ms()+tcp_io_ms;
+    c->have+=(size_t)n;
     if(c->have==2 && !c->need) {
         size_t length=be16(c->in);
         if(length<17 || length>TCP_MAX) {close_client(c);return;}
         c->need=length+2;
     }
     if(c->need && c->have==c->need) {
+        c->frame_deadline=0;
         if(c->busy || c->out_len) metrics.tcp_pipeline_buffered++;
         else (void)start_tcp_query(c);
     }
@@ -458,6 +465,8 @@ static void metric_response(MetricClient *c) {
         "dnsp_tcp_half_closes_total %llu\n"
         "# TYPE dnsp_tcp_idle_timeouts_total counter\n"
         "dnsp_tcp_idle_timeouts_total %llu\n"
+        "# TYPE dnsp_tcp_io_timeouts_total counter\n"
+        "dnsp_tcp_io_timeouts_total %llu\n"
         "# TYPE dnsp_tcp_cancelled_upstream_total counter\n"
         "dnsp_tcp_cancelled_upstream_total %llu\n"
         "# TYPE dnsp_upstream_requests_total counter\n"
@@ -490,6 +499,7 @@ static void metric_response(MetricClient *c) {
         (unsigned long long)metrics.tcp_pipeline_buffered,
         (unsigned long long)metrics.tcp_half_closes,
         (unsigned long long)metrics.tcp_idle_timeouts,
+        (unsigned long long)metrics.tcp_io_timeouts,
         (unsigned long long)metrics.tcp_cancelled_upstream,
         (unsigned long long)metrics.upstream_requests,(unsigned long long)metrics.upstream_ok,
         (unsigned long long)metrics.upstream_failed,(unsigned long long)metrics.upstream_timeouts,
@@ -544,17 +554,28 @@ static void accept_tcp(int server,bool is_metrics) {
             size_t j=0;while(j<MAX_CLIENTS && clients[j].fd>=0) j++;
             if(j==MAX_CLIENTS) close(fd);
             else {uint64_t g=clients[j].generation+1;
-                  clients[j]=(Client){.fd=fd,.generation=g,.last_ms=clock_ms()};
+                  clients[j]=(Client){.fd=fd,.generation=g,.idle_since_ms=clock_ms()};
                   metrics.tcp_accepted++;}
         }
     }
 }
 typedef enum {P_UDP,P_TCP_LISTEN,P_METRIC_LISTEN,P_TCP_CLIENT,P_METRIC_CLIENT,P_CURL} PollType;
 typedef struct {struct pollfd p;PollType kind;size_t idx;uint64_t generation;} PollItem;
+static uint64_t tcp_deadline(const Client *c) {
+    if(c->frame_deadline && (!c->write_deadline || c->frame_deadline<c->write_deadline))
+        return c->frame_deadline;
+    if(c->write_deadline) return c->write_deadline;
+    if(c->busy) return 0; /* libcurl owns the in-flight deadline */
+    return c->idle_since_ms+tcp_idle_ms;
+}
 static void expire_clients(uint64_t now) {
-    for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd>=0 &&
-       now-clients[i].last_ms>=tcp_idle_ms) {
-        metrics.tcp_idle_timeouts++;close_client(&clients[i]);
+    for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd>=0) {
+        Client *c=&clients[i];
+        uint64_t deadline=tcp_deadline(c);
+        if(!deadline || now<deadline) continue;
+        if(c->frame_deadline || c->write_deadline) metrics.tcp_io_timeouts++;
+        else metrics.tcp_idle_timeouts++;
+        close_client(c);
     }
     for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) if(metric_clients[i].fd>=0 &&
        now-metric_clients[i].last_ms>METRICS_IDLE_MS) close_metric(&metric_clients[i]);
@@ -585,17 +606,18 @@ int main(int argc,char **argv) {
         else if(!strcmp(argv[i],"-s") && i+1<argc) upstream=argv[++i];
         else if(!strcmp(argv[i],"-m") && i+1<argc) metrics_port=parse_port(argv[++i]);
         else if(!strcmp(argv[i],"--ca-file") && i+1<argc) ca_file=argv[++i];
-        else if(!strcmp(argv[i],"--tcp-idle-ms") && i+1<argc) {
-            const char *raw=argv[++i];char *end=NULL;errno=0;
+        else if((!strcmp(argv[i],"--tcp-idle-ms") || !strcmp(argv[i],"--tcp-io-ms")) && i+1<argc) {
+            const char *option=argv[i],*raw=argv[++i];char *end=NULL;errno=0;
             unsigned long v=strtoul(raw,&end,10);
             if(errno || end==raw || *end || v<100 || v>600000) {
-                fprintf(stderr,"invalid --tcp-idle-ms (100..600000)\n");return 2;
+                fprintf(stderr,"invalid %s (100..600000)\n",option);return 2;
             }
-            tcp_idle_ms=v;
+            if(!strcmp(option,"--tcp-idle-ms")) tcp_idle_ms=v;
+            else tcp_io_ms=v;
         }
         else if(!strcmp(argv[i],"--max-host-connections") && i+1<argc)
             max_host_connections=parse_port(argv[++i]);
-        else {fprintf(stderr,"usage: %s [-l IPv4] [-p port] [-s https://DoH-URL] [-m loopback-metrics-port] [--ca-file PEM] [--max-host-connections 1..16] [--tcp-idle-ms 100..600000]\n",argv[0]);return 2;}
+        else {fprintf(stderr,"usage: %s [-l IPv4] [-p port] [-s https://DoH-URL] [-m loopback-metrics-port] [--ca-file PEM] [--max-host-connections 1..16] [--tcp-idle-ms 100..600000] [--tcp-io-ms 100..600000]\n",argv[0]);return 2;}
     }
     if(port<1 || port>65535 || metrics_port<0 || metrics_port>65535 || metrics_port==port ||
        max_host_connections<1 || max_host_connections>16) {
@@ -628,7 +650,6 @@ int main(int argc,char **argv) {
     if(!items || !pfds) {free(items);free(pfds);return 1;}
     while(!stopping) {
         uint64_t now=clock_ms();
-        expire_clients(now);
         if(curl_deadline>=0 && (int64_t)now>=curl_deadline) {
             metrics.timer_fires++;
             if(!drive_curl(CURL_SOCKET_TIMEOUT,0)) {exitcode=1;break;}
@@ -639,8 +660,8 @@ int main(int argc,char **argv) {
         ADD(P_TCP_LISTEN,tcp,POLLIN,0,0);
         if(mfd>=0) ADD(P_METRIC_LISTEN,mfd,POLLIN,0,0);
         for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd>=0) {
-            short ev=tcp_events(&clients[i]);
-            if(ev) ADD(P_TCP_CLIENT,clients[i].fd,ev,i,clients[i].generation);
+            /* Even events=0 reports resets/errors while reads are paused. */
+            ADD(P_TCP_CLIENT,clients[i].fd,tcp_events(&clients[i]),i,clients[i].generation);
         }
         for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) if(metric_clients[i].fd>=0)
             ADD(P_METRIC_CLIENT,metric_clients[i].fd,metric_clients[i].reply_len?POLLOUT:POLLIN,i,metric_clients[i].generation);
@@ -657,17 +678,17 @@ int main(int argc,char **argv) {
             if(left<0) left=0;
             if(left<timeout) timeout=(int)left;
         }
-        /* Wake for the nearest idle client; a 1000 ms floor would delay
-         * configured short timeouts even with no incoming traffic. */
         for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd>=0) {
-            uint64_t age=now-clients[i].last_ms;
-            uint64_t left=age>=tcp_idle_ms?0:tcp_idle_ms-age;
+            uint64_t deadline=tcp_deadline(&clients[i]);
+            if(!deadline) continue;
+            uint64_t left=now>=deadline?0:deadline-now;
             if(left<(uint64_t)timeout) timeout=(int)left;
         }
         for(size_t i=0;i<n;i++) pfds[i]=items[i].p;
         int result=poll(pfds,n,timeout);
         for(size_t i=0;i<n;i++) items[i].p.revents=pfds[i].revents;
         if(result<0 && errno!=EINTR) {perror("poll");exitcode=1;break;}
+        expire_clients(clock_ms());
         if(result>0) for(size_t i=0;i<n;i++) {
             short re=items[i].p.revents;
             if(!re) continue;
@@ -678,8 +699,8 @@ int main(int argc,char **argv) {
                 case P_TCP_CLIENT: {
                     Client *c=&clients[items[i].idx];
                     if(c->fd!=items[i].p.fd || c->generation!=items[i].generation) break;
-                    if(re&(POLLERR|POLLNVAL)) close_client(c);
-                    else tcp_io(c,re); /* POLLHUP can follow a valid final query */
+                    if(re&(POLLERR|POLLNVAL|POLLHUP)) close_client(c);
+                    else tcp_io(c,re); /* Peer SHUT_WR arrives as readable EOF. */
                     break;
                 }
                 case P_METRIC_CLIENT: {
