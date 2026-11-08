@@ -21,3 +21,6 @@ clean:
 .PHONY: benchmark-smoke
 benchmark-smoke: dnsp-modern
 	python3 -m unittest discover -s tests -p 'test_benchmark.py' -v
+
+# Prevent implicit builds of retired source files.
+MAKEFLAGS += --no-builtin-rules

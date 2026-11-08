@@ -26,14 +26,13 @@ also depends on how clients route their DNS traffic and which upstream they use.
 
 | Executable | Role | Build | Status |
 | --- | --- | --- | --- |
-| `dnsp-modern` | Event-driven RFC 8484 DoH forwarder | `make -f modern.mk` | Current implementation |
-| `dnsp-h2` | Historical DoH prototype with different features/CLI | Original `Makefile` | Legacy |
-| `dnsp` | Pre-standardization HTTP/DNS experiment | Original `Makefile` | Deprecated |
+| `dnsp-modern` | Event-driven RFC 8484 DoH forwarder | `make` | Current implementation |
+| `dnsp-h2` | Historical DoH prototype with different features and CLI | `make dnsp-h2` | Legacy, requires a compatible toolchain |
+| `dnsp` | Pre-standardization HTTP/DNS experiment | Historical source in `dnsp.c` | Retired build target |
 
-The modern build does **not** replace the legacy binaries. Historical features
-such as disk caching, custom TTL rewriting, HTTP proxy-chain options, and raw
-message dumps have **not** been migrated. Do not interchange CLI flags between
-these executables.
+The default build produces `dnsp-modern`. The old implementations use their own
+CLI flags and include features such as disk caching and custom TTL rewriting.
+See the [historical notes](docs/README-legacy.md) for their behavior.
 
 `dnsp-modern` now supports **persistent DNS-over-TCP client sessions**, ordered
 sequential/pipelined messages, and an adjustable `--tcp-idle-ms` timeout. See
@@ -47,8 +46,8 @@ On Ubuntu or Debian:
 ```bash
 sudo apt-get update
 sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev python3 dnsutils
-make -f modern.mk
-make -f modern.mk modern-check
+make
+make modern-check
 ```
 
 Run as an unprivileged process; UDP and TCP DNS both listen on port 5300:
