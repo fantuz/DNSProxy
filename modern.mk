@@ -1,16 +1,17 @@
 CC ?= cc
 CFLAGS ?= -O2 -g
-CURL_FLAGS := $(shell pkg-config --cflags --libs libcurl)
+PKG_CONFIG ?= pkg-config
+CURL_FLAGS := $(shell $(PKG_CONFIG) --cflags --libs libcurl)
 
 .PHONY: all modern-check clean
 all: dnsp-modern
 
-dnsp-modern: dnsp-modern.c
-	$(CC) -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic -o $@ $< $(CURL_FLAGS)
+dnsp-modern: dnsp-modern.c modern.mk
+	$(CC) $(CPPFLAGS) -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic $(LDFLAGS) -o $@ $< $(CURL_FLAGS) $(LDLIBS)
 
 modern-check: dnsp-modern
 	@set -e; probe=$$(mktemp); trap 'rm -f "$$probe"' 0; \
-	$(CC) -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic -o "$$probe" tests/test_curl_callbacks.c $(CURL_FLAGS); \
+	$(CC) $(CPPFLAGS) -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic $(LDFLAGS) -o "$$probe" tests/test_curl_callbacks.c $(CURL_FLAGS) $(LDLIBS); \
 	"$$probe"
 	python3 tests/test_modern.py
 
