@@ -20,7 +20,8 @@
 
 /* Experimental DNS/DoH forwarder. All descriptors and CURL handles are
  * owned by one event loop. Do not call libcurl from another thread. */
-enum { DNS_MAX=4096, TCP_MAX=65535, MAX_ACTIVE=128, MAX_CLIENTS=128,
+enum { DNS_HEADER=12, UDP_RX_MAX=65507, UDP_REPLY_MAX=4096, TCP_MAX=65535,
+       MAX_ACTIVE=128, MAX_CLIENTS=128,
        MAX_METRICS_CLIENTS=16, MAX_CURL_SOCKETS=1024, TCP_IDLE_MS=15000,
        TCP_IO_MS=15000, METRICS_IDLE_MS=3000 };
 static volatile sig_atomic_t stopping;
@@ -45,7 +46,7 @@ static bool dns_name(const unsigned char *p,size_t n,size_t *offset,
         if((len&0xc0)==0xc0) {
             if(!compression || at+1>=n) return false;
             size_t target=((size_t)(len&0x3f)<<8)|p[at+1];
-            if(target<12 || target>=at) return false; /* header or forward reference */
+            if(target<DNS_HEADER || target>=at) return false; /* header or forward reference */
             if(!jumped) end=at+2;
             at=target; jumped=true;
             continue;
@@ -99,50 +100,63 @@ typedef struct {
     unsigned char opcode,opt_ext_rcode;
     bool has_opt,opt_do;
 } DnsInfo;
-static bool dns_parse(const unsigned char *p,size_t n,bool response,
-                      const DnsInfo *request,DnsInfo *info) {
-    if(n<17 || (n>TCP_MAX) || !!(p[2]&0x80)!=response || be16(p+4)!=1 || (p[3]&0x40)) return false;
-    if(!response && (be16(p+6)!=0 || be16(p+8)!=0)) return false;
-    unsigned char opcode=(unsigned char)(p[2]&0x78);
-    if(response && (!request || opcode!=request->opcode)) return false;
-    if(!response && (opcode!=0 || (p[3]&0x0f)!=0)) return false; /* standard QUERY only */
-    size_t pos=12;
-    unsigned char name[256]; size_t name_len=0;
-    if(!dns_name(p,n,&pos,name,&name_len,response) || pos+4>n) return false;
-    uint16_t qt=be16(p+pos),qc=be16(p+pos+2);
-    pos+=4;
-    if(response && (name_len!=request->qname_len ||
-        memcmp(name,request->qname,name_len)!=0 || qt!=request->qtype || qc!=request->qclass)) return false;
-    info->question_end=pos; info->udp_limit=512;
-    info->has_opt=info->opt_do=false;info->opt_ext_rcode=0;
-    info->qtype=qt;info->qclass=qc;info->opcode=opcode;
-    info->qname_len=name_len; memcpy(info->qname,name,name_len);
+typedef enum { DNS_OK, DNS_DROP, DNS_FORMERR, DNS_NOTIMP } DnsResult;
+
+/* Parse the DNS envelope without imposing a QTYPE or QCLASS allowlist.
+ * Preserve a complete question for local errors, or use a header-only reply. */
+static DnsResult dns_parse(const unsigned char *p,size_t n,const DnsInfo *request,DnsInfo *info) {
+    bool response=request!=NULL;
+    if(n<DNS_HEADER || n>TCP_MAX || !!(p[2]&0x80)!=response) return DNS_DROP;
+    *info=(DnsInfo){.question_end=DNS_HEADER,.udp_limit=512,.opcode=(unsigned char)(p[2]&0x78)};
+    if(response && info->opcode!=request->opcode) return DNS_FORMERR;
+    if(!response && info->opcode!=0) return DNS_NOTIMP; /* single-exchange QUERY service */
+
+    uint16_t questions=be16(p+4);
+    if(questions>1 || (p[3]&0x40) || (!response && (p[3]&0x0f))) return DNS_FORMERR;
+    size_t pos=DNS_HEADER;
+    unsigned char name[256];size_t name_len=0;
+    if(questions) {
+        if(!dns_name(p,n,&pos,info->qname,&info->qname_len,response) || pos+4>n) return DNS_FORMERR;
+        info->qtype=be16(p+pos);info->qclass=be16(p+pos+2);
+        pos+=4;
+        info->question_end=pos;
+        if(response && (info->qname_len!=request->qname_len ||
+           memcmp(info->qname,request->qname,info->qname_len)!=0 ||
+           info->qtype!=request->qtype || info->qclass!=request->qclass)) return DNS_FORMERR;
+    }
+
     size_t counts[3]={be16(p+6),be16(p+8),be16(p+10)};
+    bool transfer=!response && (info->qtype==251 || info->qtype==252); /* IXFR, AXFR */
+    if(!response && !transfer && (counts[0] || counts[1])) return DNS_FORMERR;
     for(size_t section=0;section<3;section++) {
         for(size_t i=0;i<counts[section];i++) {
             size_t owner=pos;
-            if(!dns_name(p,n,&pos,name,&name_len,true) || pos+10>n) return false;
+            if(!dns_name(p,n,&pos,name,&name_len,true) || pos+10>n) return DNS_FORMERR;
             uint16_t type=be16(p+pos),klass=be16(p+pos+2),rdlen=be16(p+pos+8);
             unsigned char ext_rcode=p[pos+4];
             bool opt_do=(p[pos+6]&0x80)!=0;
             pos+=10;
-            if(rdlen>n-pos) return false;
-            size_t end=pos+rdlen;
-            if(type==41) { /* EDNS OPT: one literal root owner in ADDITIONAL */
-                if(section!=2 || info->has_opt || p[owner]!=0 || !dns_opt_options(p,pos,end)) return false;
-                info->has_opt=true;
-                info->opt_ext_rcode=ext_rcode;
-                info->opt_do=opt_do;
+            if(type==41) {
+                if(section!=2 || info->has_opt) return DNS_FORMERR;
+                info->has_opt=true; /* retain a minimal OPT even for malformed option data */
+                info->opt_ext_rcode=ext_rcode;info->opt_do=opt_do;
                 if(!response) {
-                    unsigned sz=klass;
-                    if(sz<512) sz=512;
-                    info->udp_limit=(uint16_t)(sz>DNS_MAX?DNS_MAX:sz);
+                    unsigned sz=klass<512?512:klass;
+                    info->udp_limit=(uint16_t)(sz>UDP_REPLY_MAX?UDP_REPLY_MAX:sz);
                 }
-            } else if(!dns_rr_names(p,pos,end,type)) return false;
-            pos=end;
+                if(p[owner]!=0 || rdlen>n-pos || !dns_opt_options(p,pos,pos+rdlen)) return DNS_FORMERR;
+            } else if(rdlen>n-pos || !dns_rr_names(p,pos,pos+rdlen,type)) return DNS_FORMERR;
+            pos+=rdlen;
         }
     }
-    return pos==n; /* reject trailing garbage and truncated RRs */
+    if(pos!=n) return DNS_FORMERR;
+    if(response) {
+        if(info->has_opt && !request->has_opt) return DNS_FORMERR;
+        /* An upstream error or TC reply can omit the original question. */
+        if(!questions && request->qname_len && !(p[2]&0x02) &&
+           !(p[3]&0x0f) && !info->opt_ext_rcode) return DNS_FORMERR;
+    }
+    return transfer?DNS_NOTIMP:DNS_OK;
 }
 
 typedef struct Client Client;
@@ -296,7 +310,7 @@ enum { DNS_OPT_SIZE=11 };
 static size_t append_local_opt(const Query *q,unsigned char *p,size_t n,unsigned char ext_rcode) {
     if(!q->info.has_opt) return n;
     unsigned char opt[DNS_OPT_SIZE]={
-        0,0,41, DNS_MAX>>8,DNS_MAX&0xff, ext_rcode,0, q->info.opt_do?0x80:0,0, 0,0
+        0,0,41, UDP_REPLY_MAX>>8,UDP_REPLY_MAX&0xff, ext_rcode,0, q->info.opt_do?0x80:0,0, 0,0
     };
     p[11]=1; /* The local OPT is the only additional record. */
     memcpy(p+n,opt,sizeof(opt));
@@ -304,12 +318,13 @@ static size_t append_local_opt(const Query *q,unsigned char *p,size_t n,unsigned
 }
 static void send_error(Query *q,const unsigned char *request,unsigned char rcode) {
     size_t length=q->info.question_end;
-    if(length<17 || length>q->req_len) return;
+    if(length<DNS_HEADER || length>q->req_len) return;
     unsigned char p[512];
     if(length>sizeof(p)-DNS_OPT_SIZE) return;
     memcpy(p,request,length);
     p[2]=(unsigned char)((p[2]&0x79)|0x80); /* QR=1, clear TC/AA */
     p[3]=(unsigned char)((p[3]&0x10)|(rcode&0x0f));
+    if(length==DNS_HEADER) p[4]=p[5]=0;
     memset(p+6,0,6);
     reply_dns(q,p,append_local_opt(q,p,length,0));
 }
@@ -317,13 +332,21 @@ static void send_truncated(Query *q,const DnsInfo *response) {
     size_t n=q->info.question_end;
     unsigned char p[512];
     if(n>sizeof(p)-DNS_OPT_SIZE) {send_error(q,q->request,2);return;}
-    memcpy(p,q->response,12);
+    memcpy(p,q->response,DNS_HEADER);
     p[2]|=0x02; /* TC: client can retry over TCP */
-    p[4]=0;p[5]=1;
+    p[3]&=(unsigned char)~0x20; /* no AD claim in a synthetic reply */
+    p[4]=0;p[5]=n>DNS_HEADER;
     memset(p+6,0,6);
-    memcpy(p+12,q->request+12,n-12);
+    memcpy(p+DNS_HEADER,q->request+DNS_HEADER,n-DNS_HEADER);
     reply_dns(q,p,append_local_opt(q,p,n,response->opt_ext_rcode));
     metrics.truncated++;
+}
+static bool dns_content_type(const char *type) {
+    static const char media[]="application/dns-message";
+    if(!type || strncasecmp(type,media,sizeof(media)-1)!=0) return false;
+    type+=sizeof(media)-1;
+    type+=strspn(type," \t");
+    return *type==0 || *type==';';
 }
 static void complete(Query *q,CURLcode code) {
     long status=0,version=0,connects=0;
@@ -344,15 +367,13 @@ static void complete(Query *q,CURLcode code) {
 #endif
     DnsInfo response;
     bool success_status=status>=200 && status<300;
-    bool dns_media=content_type && strncasecmp(content_type,"application/dns-message",23)==0 &&
-                   (content_type[23]==0 || content_type[23]==';');
     Failure failure=LOG_COUNT;
     if(code==CURLE_OPERATION_TIMEDOUT) failure=LOG_TIMEOUT;
     else if(code!=CURLE_OK) failure=LOG_TRANSPORT;
     else if(!success_status) failure=LOG_STATUS;
-    else if(!dns_media) failure=LOG_CONTENT;
-    else if(q->resp_len<12 || q->response[0]!=q->request[0] || q->response[1]!=q->request[1] ||
-            !dns_parse(q->response,q->resp_len,true,&q->info,&response)) failure=LOG_DNS;
+    else if(!dns_content_type(content_type)) failure=LOG_CONTENT;
+    else if(q->resp_len<DNS_HEADER || be16(q->response)!=be16(q->request) ||
+            dns_parse(q->response,q->resp_len,&q->info,&response)!=DNS_OK) failure=LOG_DNS;
     if(failure==LOG_COUNT) {
         metrics.upstream_ok++;
         if(!q->client && q->resp_len>q->info.udp_limit) send_truncated(q,&response);
@@ -371,10 +392,16 @@ static void complete(Query *q,CURLcode code) {
 static bool submit(const unsigned char *data,size_t len,Client *client,int udp_fd,
                    const struct sockaddr_storage *peer,socklen_t peer_len) {
     DnsInfo info;
-    if(!dns_parse(data,len,false,NULL,&info)) {metrics.invalid_queries++;return false;}
+    DnsResult result=dns_parse(data,len,NULL,&info);
+    if(result==DNS_DROP) {metrics.invalid_queries++;return false;}
     Query pending={.req_len=len,.info=info,.client=client,.generation=client?client->generation:0,
                    .udp_fd=udp_fd,.peer_len=peer_len};
     if(peer) pending.peer=*peer;
+    if(result!=DNS_OK) {
+        if(result==DNS_FORMERR) metrics.invalid_queries++;
+        send_error(&pending,data,result==DNS_NOTIMP?4:1);
+        return true;
+    }
     if(active_count>=MAX_ACTIVE) {
         log_failure(LOG_CAPACITY,client!=NULL,CURLE_OK,0);
         goto reject;
@@ -486,7 +513,7 @@ static void tcp_io(Client *c,short events) {
             c->write_deadline=0;
             c->idle_since_ms=clock_ms();
             if(c->need && c->have==c->need && !start_tcp_query(c)) return;
-            if(c->read_eof && !c->busy) close_client(c);
+            if(c->read_eof && !c->busy && !c->out_len) close_client(c);
         }
     }
     if(c->fd<0 || c->read_eof ||
@@ -506,7 +533,7 @@ static void tcp_io(Client *c,short events) {
     c->have+=(size_t)n;
     if(c->have==2 && !c->need) {
         size_t length=be16(c->in);
-        if(length<17 || length>TCP_MAX) {close_client(c);return;}
+        if(length<DNS_HEADER) {close_client(c);return;}
         c->need=length+2;
     }
     if(c->need && c->have==c->need) {
@@ -516,7 +543,7 @@ static void tcp_io(Client *c,short events) {
     }
 }
 static void udp_io(int fd) {
-    unsigned char buf[DNS_MAX];
+    static unsigned char buf[UDP_RX_MAX]; /* maximum IPv4 UDP payload */
     for(int i=0;i<32;i++) {
         struct sockaddr_storage peer={0};
         struct iovec iov={.iov_base=buf,.iov_len=sizeof(buf)};

@@ -108,7 +108,9 @@ source for both files.
 
 ## Protocol and performance limitations
 
-The proxy forwards DNS wire messages without caching or DNSSEC validation.
+The proxy forwards standard DNS QUERY messages and carries arbitrary DNS
+record types and EDNS options to the upstream resolver. IPv4 UDP requests
+can be up to 65,507 bytes and DNS/TCP and DoH bodies up to 65,535 bytes.
 UDP reply limits are 512 bytes without EDNS and the client's advertised EDNS
 buffer size (clamped to 512–4096) otherwise. Oversized UDP replies are returned
 with `TC=1` and can be retried over TCP. The upstream DoH response must pass
