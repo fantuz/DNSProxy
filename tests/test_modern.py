@@ -39,10 +39,60 @@ def rr(typ, data, owner=b'\xc0\x0c'):
     return owner + struct.pack('!HHIH', typ, 1, 60, len(data)) + data
 
 
+def question_end(data):
+    pos = 12
+    if data[4:6] == b'\0\0':
+        return pos
+    while data[pos]:
+        pos += 1 + data[pos]
+    return pos + 5
+
+
+def padding_option(size):
+    return struct.pack('!HH', 12, size - 4) + bytes(size - 4)
+
+
+def sized_query(size):
+    base = query(edns=4096)
+    return edns_options(base, padding_option(size - len(base)))
+
+
+ALT = b'\x03alt\x07example\0'
+SOA = ALT + ALT + struct.pack('!IIIII', 1, 3600, 600, 86400, 60)
+ADDRESS = socket.inet_pton(socket.AF_INET6, '2001:db8::1')
+RR_FIXTURES = {
+    2: ALT,                               # NS
+    5: b'\xc0\x10',                      # CNAME to google.com
+    6: SOA,                               # SOA
+    12: ALT,                              # PTR
+    15: b'\0\x0a' + ALT,                 # MX
+    16: b'\x03txt',                       # TXT
+    28: ADDRESS,                          # AAAA
+    33: struct.pack('!HHH', 1, 2, 443) + ALT,  # SRV
+    35: b'\0\x01\0\x01\x01S\x03SIP\0' + ALT,  # NAPTR
+    39: ALT,                              # DNAME
+    43: b'\x12\x34\x0d\x02' + bytes(32),   # DS
+    44: b'\x04\x02' + bytes(32),          # SSHFP
+    46: struct.pack('!HBBIIIH', 1, 13, 3, 60, 1800000000, 1700000000, 0x1234)
+        + ALT + bytes(64),                # RRSIG
+    47: ALT + b'\0\x01\x40',              # NSEC
+    48: b'\x01\x01\x03\x0d' + bytes(64),  # DNSKEY
+    50: b'\x01\0\0\0\0\x14' + bytes(20) + b'\0\x01\x40',  # NSEC3
+    52: b'\x03\x01\x01' + bytes(32),      # TLSA
+    53: b'\x03\x01\x01' + bytes(32),      # SMIMEA
+    64: b'\0\x01' + ALT + b'\0\x03\0\x02\x01\xbb',  # SVCB port
+    65: b'\0\x01' + ALT + b'\0\x01\0\x03\x02h2',  # HTTPS ALPN
+    256: b'\0\x01\0\x01https://example.com/',  # URI
+    257: b'\0\x05issueletsencrypt.org',    # CAA
+    65400: b'\xc0\x04\xff',               # unknown/private-use type
+}
+
+
 def make_response(data):
-    typ = struct.unpack('!H', data[len(QUERY)-4:len(QUERY)-2])[0]
-    r = bytearray(data[:len(QUERY)])
-    r[2:4] = b'\x81\x80'
+    end = question_end(data)
+    typ = struct.unpack('!H', data[end-4:end-2])[0] if end > 12 else 0
+    r = bytearray(data[:end])
+    r[2:4] = bytes([0x81, 0x80 | (data[3] & 0x10)])
     if typ in (65001, 65006, 65007, 65016):
         answers = {65001:65, 65006:140, 65007:350, 65016:65}[typ]
         r[6:8] = struct.pack('!H', answers)
@@ -65,15 +115,29 @@ def make_response(data):
             65013: rr(5, b'\xc0\x0c'),             # valid compressed CNAME
             65014: rr(65400, b'\xc0\x04\xff'),     # opaque unknown RDATA
         }[typ]
+    elif typ in (65018, 65019, 65023):  # FORMERR, TC, and bare NOERROR
+        flags = {65018: 0x8181, 65019: 0x8380, 65023: 0x8180}[typ]
+        return data[:2] + struct.pack('!HHHHH', flags, 0, 0, 0, 0)
+    elif typ in RR_FIXTURES or typ == 255:
+        r[6:8] = b'\0\1'
+        r += rr(typ, RR_FIXTURES[typ]) if typ != 255 else rr(13, b'\x07RFC8482\0')
+        if typ == 48:
+            r[3] |= 0x20  # upstream AD bit
     # Copy any EDNS OPT after the ANSWER section, not before it.
-    if len(data) > len(QUERY):
-        r.extend(data[len(QUERY):])
+    if len(data) > end:
+        r.extend(data[end:])
         if typ == 65015:
             r = edns_options(r, struct.pack('!HH', 65000, 2) + b'x')
         if typ == 65016:
             r[-6] = 1  # upstream extended RCODE, kept on local truncation
+        if typ == 65020:
+            r = edns_options(r, padding_option(65536 - len(r)))
+        if typ == 65022:
+            r[-6:-4] = b'\x01\0'  # BADVERS, supported version 0
+        if typ == 0:
+            cookie = data[end+15:end+23] + bytes(16)
+            r = edns_options(r[:end+11], struct.pack('!HH', 10, len(cookie)) + cookie)
     return bytes(r)
-
 
 class DoH(http.server.BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
@@ -84,11 +148,13 @@ class DoH(http.server.BaseHTTPRequestHandler):
             self.send_error(400)
             return
         r = make_response(data)
-        typ = struct.unpack('!H', data[len(QUERY)-4:len(QUERY)-2])[0]
+        end = question_end(data)
+        typ = struct.unpack('!H', data[end-4:end-2])[0] if end > 12 else 0
         if typ == 65010:  # test intentional upstream delay and cancellation
             time.sleep(0.7)
         self.send_response({65009: 502, 65017: 201}.get(typ, 200))
-        self.send_header('Content-Type', 'text/plain' if typ == 65008 else 'application/dns-message')
+        media = {65008: 'text/plain', 65021: 'Application/DNS-Message ; fixture=ok'}
+        self.send_header('Content-Type', media.get(typ, 'application/dns-message'))
         self.send_header('Content-Length', str(len(r)))
         self.end_headers()
         try:
@@ -441,21 +507,44 @@ class Tests(unittest.TestCase):
         self.assertEqual(out[2:4], b'\x81\x80')
         self.assertEqual(out[12:], QUERY[12:])
 
-    def test_udp_rejects_oversized_datagram_with_valid_prefix(self):
-        base = query(edns=4096)
-        padding = bytes(4096 - len(base) - 4)
-        packet = edns_options(base, struct.pack('!HH', 12, len(padding)) + padding)
-        self.assertEqual(len(packet), 4096)
-        self.assertEqual(len(self.udp(packet)), 4096)
+    def test_udp_input_bounds_and_valid_prefix(self):
+        self.assertEqual(len(self.udp(sized_query(4096))), 4096)
+        for size in (4097, 65507):
+            with self.subTest(size=size):
+                before = self.metrics()
+                packet = sized_query(size)
+                self.assertEqual(len(packet), size)
+                out = self.udp(packet)
+                self.assertTrue(out[2] & 2)
+                self.assertEqual(out[3] & 15, 0)
+                self.assertEqual(out[10:12], b'\0\1')
+                after = self.metrics()
+                self.assertEqual(self.metric(after, 'dnsp_upstream_requests_total'),
+                                 self.metric(before, 'dnsp_upstream_requests_total') + 1)
         before = self.metrics()
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.settimeout(.25)
-            sock.sendto(packet + b'x', ('127.0.0.1', self.port))
-            with self.assertRaises(socket.timeout):
-                sock.recv(4096)
+        out = self.udp(sized_query(4096) + b'x')
+        self.assertEqual(out[3] & 15, 1)
         after = self.metrics()
         self.assertEqual(self.metric(after, 'dnsp_upstream_requests_total'),
                          self.metric(before, 'dnsp_upstream_requests_total'))
+
+    def test_tcp_and_doh_wire_limit(self):
+        packet = sized_query(65535)
+        self.assertEqual(len(packet), 65535)
+        self.assertEqual(self.tcp(packet), make_response(packet))
+        too_large = self.tcp(query(65020, edns=4096))
+        self.assertEqual(too_large[3] & 15, 2)
+
+    def test_question_name_wire_limit(self):
+        prefix = b'\x3f' + b'a'*63
+        max_name = prefix*3 + b'\x3d' + b'b'*61 + b'\0'
+        question = QUERY[:12] + max_name + QUERY[-4:]
+        self.assertEqual(len(max_name), 255)
+        self.assertEqual(self.udp(question), make_response(question))
+        too_long = QUERY[:12] + prefix*3 + b'\x3e' + b'b'*62 + b'\0' + QUERY[-4:]
+        out = self.udp(too_long)
+        self.assertEqual(out[3] & 15, 1)
+        self.assertEqual(len(out), 12)
 
     def test_udp_without_edns_truncates_to_512(self):
         out = self.udp(query(65001))
@@ -524,11 +613,13 @@ class Tests(unittest.TestCase):
 
     def test_malformed_edns_options(self):
         for options in (b'\x00', struct.pack('!HH', 65000, 2) + b'x'):
-            with self.subTest(options=options), socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-                sock.settimeout(.25)
-                sock.sendto(edns_options(query(edns=1232), options), ('127.0.0.1', self.port))
-                with self.assertRaises(socket.timeout):
-                    sock.recv(4096)
+            with self.subTest(options=options):
+                packet = edns_options(query(edns=1232), options)
+                for transport in (self.udp, self.tcp):
+                    out = transport(packet)
+                    self.assertEqual(out[3] & 15, 1)
+                    self.assertEqual(out[10:12], b'\0\1')
+                    self.assertEqual(len(out), len(QUERY)+11)
         opaque = edns_options(query(edns=1232), struct.pack('!HH', 65000, 1) + b'x')
         self.assertEqual(self.udp(opaque)[len(QUERY):], opaque[len(QUERY):])
         out = self.udp(query(65015, edns=1232))
@@ -538,20 +629,85 @@ class Tests(unittest.TestCase):
     def test_malformed_edns(self):
         q = bytearray(query(edns=1232))
         q[10:12] = b'\0\2'  # lies about the number of additional RRs
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.settimeout(.25)
-            s.sendto(q, ('127.0.0.1', self.port))
-            with self.assertRaises(socket.timeout):
-                s.recvfrom(4096)
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.settimeout(.25)
-            q = bytearray(query(edns=1232))
-            q[10:12] = b'\0\2'
-            q.extend(q[-11:])  # duplicate EDNS OPT
-            s.sendto(q, ('127.0.0.1', self.port))
-            with self.assertRaises(socket.timeout):
-                s.recvfrom(4096)
+        for packet in (q, q + q[-11:]):
+            out = self.udp(packet)
+            self.assertEqual(out[3] & 15, 1)
+            self.assertEqual(out[10:12], b'\0\1')
         self.assertTrue(self.udp(query())[2] & 0x80)
+
+    def test_questionless_cookie_query_and_upstream_errors(self):
+        cookie = bytearray(query(edns=1232))
+        cookie[4:6] = b'\0\0'
+        cookie = edns_options(cookie[:12] + cookie[len(QUERY):],
+                              struct.pack('!HH', 10, 8) + b'12345678')
+        self.assertEqual(self.udp(cookie), make_response(cookie))
+        self.assertEqual(self.tcp(cookie), make_response(cookie))
+        header = cookie[:10] + b'\0\0'
+        self.assertEqual(self.tcp(header), make_response(header))
+        for typ in (65018, 65019):
+            packet = query(typ, edns=1232)
+            self.assertEqual(self.udp(packet), make_response(packet))
+        self.assertEqual(self.udp(query(65023))[3] & 15, 2)
+
+    def test_multiple_questions_and_unsupported_operations(self):
+        multi = bytearray(QUERY + QUERY[12:])
+        multi[4:6] = b'\0\2'
+        out = self.udp(multi)
+        self.assertEqual(out[3] & 15, 1)
+        self.assertEqual(len(out), 12)
+        self.assertEqual(out[4:6], b'\0\0')
+
+        update = bytearray(QUERY)
+        update[2] = 5 << 3
+        out = self.tcp(update)
+        self.assertEqual(out[2] & 0x78, 5 << 3)
+        self.assertEqual(out[3] & 15, 4)
+        ixfr = bytearray(query(251))
+        ixfr[8:10] = b'\0\1'
+        ixfr += rr(6, SOA)
+        for packet in (query(252), ixfr):
+            self.assertEqual(self.tcp(packet)[3] & 15, 4)
+
+    def test_local_format_error_preserves_tcp_pipeline(self):
+        bad = edns_options(query(edns=1232, ident=0x4444), b'\0')
+        good = query(28, ident=0x4445)
+        with socket.create_connection(('127.0.0.1', self.port), timeout=4) as sock:
+            sock.sendall(self.frame(bad) + self.frame(good))
+            sock.shutdown(socket.SHUT_WR)
+            out = self.tcp_frame(sock)
+            self.assertEqual(out[:2], bad[:2])
+            self.assertEqual(out[3] & 15, 1)
+            self.assertEqual(self.tcp_frame(sock), make_response(good))
+            self.assertEqual(sock.recv(1), b'')
+
+    def test_edns_version_and_udp_minimum(self):
+        packet = bytearray(query(65022, edns=1232))
+        packet[len(QUERY)+6] = 1  # ask upstream for EDNS version 1
+        self.assertEqual(self.udp(packet), make_response(packet))
+        out = self.udp(query(65001, edns=128))
+        self.assertTrue(out[2] & 2)
+        self.assertLessEqual(len(out), 512)
+
+    def test_supported_record_and_question_formats(self):
+        for typ in (*RR_FIXTURES, 255):
+            with self.subTest(typ=typ):
+                packet = query(typ)
+                expected = make_response(packet)
+                self.assertEqual(self.udp(packet), expected)
+                self.assertEqual(self.tcp(packet), expected)
+        chaos = bytearray(query(16))
+        chaos[-2:] = b'\0\x03'  # CHAOS class
+        self.assertEqual(self.udp(chaos), make_response(chaos))
+        dnssec = bytearray(query(48, edns=1232))
+        dnssec[3] |= 0x10  # CD
+        dnssec[len(QUERY)+7] |= 0x80  # DO
+        out = self.udp(dnssec)
+        self.assertEqual(out, make_response(dnssec))
+        self.assertEqual(out[3] & 0x30, 0x30)  # upstream AD plus CD
+
+    def test_doh_media_type_accepts_parameter_whitespace(self):
+        packet = query(65021)
+        self.assertEqual(self.udp(packet), make_response(packet))
 
     def test_metrics(self):
         before = self.metrics()

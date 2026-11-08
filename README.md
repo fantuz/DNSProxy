@@ -112,11 +112,21 @@ local test servers. Refer to `bench/README.md` once installed.
   bounded; upstream requests have connection and overall timeouts.
 - Incoming DNS packets and upstream HTTP status, `Content-Type`, transaction ID,
   question and DNS record boundaries are validated before replies are sent.
-- UDP replies are limited to 512 bytes for non-EDNS clients; EDNS(0) clients
-  advertise a size clamped to 512–4096. Oversized replies use `TC=1`; clients
-  can retry over TCP.
-- There is **no DNSSEC cryptographic validation, local DNS caching, recursion,
-  TTL manipulation, or EDNS option negotiation**.
+- The IPv4 UDP listener accepts up to 65,507 bytes per datagram. TCP and the
+  DoH wire body accept DNS messages up to 65,535 bytes. DNS/TCP carries a
+  two-byte length prefix outside that limit.
+- UDP replies are limited to 512 bytes without EDNS. With EDNS, the client's
+  advertised size is clamped to 512–4096. Larger replies use `TC=1` for TCP
+  retry. The input and reply limits are independent.
+- DoH transports arbitrary QTYPEs and QCLASSes in standard DNS QUERY messages.
+  Unknown record types and well-framed EDNS options are relayed as opaque
+  data. The upstream resolver determines the actual answer and supported EDNS
+  versions. DNSSEC records and flags pass through. The proxy keeps the original
+  DNS transaction ID and supports questionless exchanges such as DNS Cookie
+  negotiation when the upstream implements them.
+- Query format errors receive `FORMERR` when the DNS header is available.
+  AXFR, IXFR and unsupported opcodes receive `NOTIMP`. This service forwards
+  single DNS exchanges. DNSSEC validation and caching are upstream functions.
 - A persistent TCP session accepts pipelined queries and sends replies in
   order, with one upstream request in flight per session.
 
