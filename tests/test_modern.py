@@ -16,6 +16,7 @@ import unittest
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
+BINARY = Path(os.environ.get('DNSP_TEST_BINARY', BASE/'dnsp-modern'))
 QUERY = bytes.fromhex('1234010000010000000000000377777706676f6f676c6503636f6d0000010001')
 ANSWER = bytes.fromhex('c00c000100010000003c0004c0000201')
 
@@ -125,7 +126,7 @@ class Tests(unittest.TestCase):
         cls.proxy_log = tempfile.TemporaryFile(mode='w+b')
         cls.addClassCleanup(cls.proxy_log.close)
         cls.process = subprocess.Popen([
-            str(BASE/'dnsp-modern'), '-p', str(cls.port), '-m', str(cls.metrics_port),
+            str(BINARY), '-p', str(cls.port), '-m', str(cls.metrics_port),
             '-s', f'http://user:fixture-log-secret@127.0.0.1:{cls.server.server_port}/dns-query'
         ], stdout=subprocess.DEVNULL, stderr=cls.proxy_log)
         cls.addClassCleanup(cls.stop_proxy)
@@ -335,7 +336,7 @@ class Tests(unittest.TestCase):
         port, metrics_port = unused_ports()
         with tempfile.TemporaryFile(mode='w+b') as logfile:
             proc = subprocess.Popen([
-                str(BASE/'dnsp-modern'), '-p', str(port), '-m', str(metrics_port),
+                str(BINARY), '-p', str(port), '-m', str(metrics_port),
                 '--tcp-idle-ms', '250', '--tcp-io-ms', '250',
                 '-s', f'http://127.0.0.1:{self.server.server_port}/dns-query'
             ], stdout=subprocess.DEVNULL, stderr=logfile)
@@ -383,7 +384,7 @@ class Tests(unittest.TestCase):
         for option in ('--tcp-idle-ms', '--tcp-io-ms'):
             for raw in ('0', '99', '600001', '-1', 'anything'):
                 with self.subTest(option=option, raw=raw):
-                    proc = subprocess.run([str(BASE/'dnsp-modern'), option, raw],
+                    proc = subprocess.run([str(BINARY), option, raw],
                                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                           timeout=2)
                     self.assertEqual(proc.returncode, 2, proc.stderr)
@@ -587,7 +588,7 @@ class Tests(unittest.TestCase):
             occupied.bind(('127.0.0.1', 0))
             occupied.listen()
             port = occupied.getsockname()[1]
-            result = subprocess.run([str(BASE/'dnsp-modern'), '-p', str(port)],
+            result = subprocess.run([str(BINARY), '-p', str(port)],
                                     capture_output=True, timeout=3)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn(f'event=listener_failed role=dns_tcp port={port}'.encode(), result.stderr)
@@ -596,14 +597,14 @@ class Tests(unittest.TestCase):
         for args in (['-s', 'http://127.0.0.1:80@not-local.example/dns-query'],
                      ['-p', '99999999999999999999999999']):
             with self.subTest(args=args):
-                r = subprocess.run([str(BASE/'dnsp-modern')] + args,
+                r = subprocess.run([str(BINARY)] + args,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=2)
                 self.assertEqual(r.returncode, 2, r.stderr)
 
     def isolated_udp(self, upstream, *args, env):
         port, _ = unused_ports()
         with tempfile.TemporaryFile() as logfile:
-            proc = subprocess.Popen([str(BASE/'dnsp-modern'), '-p', str(port), '-s', upstream, *args],
+            proc = subprocess.Popen([str(BINARY), '-p', str(port), '-s', upstream, *args],
                                     env=env, stderr=logfile)
             try:
                 deadline = time.monotonic() + 5
@@ -680,7 +681,7 @@ class Tests(unittest.TestCase):
                      ['--bootstrap-address', 'resolver.invalid'],
                      ['--bootstrap-address', '127.0.0.1', '-s', 'http://127.0.0.1/dns-query']):
             with self.subTest(args=args):
-                proc = subprocess.run([str(BASE/'dnsp-modern'), *args], timeout=3,
+                proc = subprocess.run([str(BINARY), *args], timeout=3,
                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                 self.assertEqual(proc.returncode, 2, proc.stderr)
 

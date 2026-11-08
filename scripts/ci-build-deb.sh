@@ -3,22 +3,7 @@ set -eu
 cd "$(dirname "$0")/.."
 
 distro=$1
-base=$(cat VERSION)
-if ! printf '%s\n' "$base" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-    echo "VERSION must contain MAJOR.MINOR.PATCH" >&2
-    exit 1
-fi
-case "${GITHUB_REF:-}" in
-    refs/tags/*)
-        if [ "${GITHUB_REF_NAME:-}" != "v$base-modern" ]; then
-            echo "Release tag must match VERSION (v$base-modern)" >&2
-            exit 1
-        fi
-        version=$base
-        ;;
-    *) version="$base~pre${GITHUB_RUN_NUMBER:?}.ci" ;;
-esac
-version="$version+$distro"
+version="${BUILD_VERSION:?}+$distro"
 pkg="dist/dnsp-modern_${version}_$(dpkg --print-architecture).deb"
 
 VERSION="$version" sh scripts/build-deb.sh

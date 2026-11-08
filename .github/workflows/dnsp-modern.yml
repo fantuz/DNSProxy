@@ -6,13 +6,33 @@ name: DNSProxy modern - test and package
     branches: [master]
     tags: ['v*-modern']
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the current master VERSION if it is new
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      mode: ${{ steps.plan.outputs.mode }}
+      commit: ${{ steps.plan.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: plan
+        env:
+          PUBLISH_REQUESTED: ${{ inputs.publish || false }}
+        run: sh scripts/ci-release-plan.sh
+
   deb:
-    name: Build and test (${{ matrix.distro }})
+    needs: plan
+    name: DEB ${{ matrix.distro }} ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -20,8 +40,16 @@ jobs:
         include:
           - runner: ubuntu-22.04
             distro: ubuntu22.04
+            arch: amd64
+          - runner: ubuntu-22.04-arm
+            distro: ubuntu22.04
+            arch: arm64
           - runner: ubuntu-24.04
             distro: ubuntu24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            distro: ubuntu24.04
+            arch: arm64
     steps:
       - uses: actions/checkout@v5
       - name: Install dependencies
@@ -30,22 +58,35 @@ jobs:
           sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev dpkg-dev python3
       - name: Build and inspect the package
         id: build
-        run: sh scripts/ci-build-deb.sh "${{ matrix.distro }}"
+        env:
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          test "$(dpkg --print-architecture)" = "${{ matrix.arch }}"
+          sh scripts/ci-build-deb.sh "${{ matrix.distro }}"
       - name: Exercise install, upgrade and purge with systemd
         env:
           PACKAGE: ${{ steps.build.outputs.package }}
         run: sudo sh scripts/test-deb-lifecycle.sh "$PACKAGE"
       - uses: actions/upload-artifact@v4
         with:
-          name: dnsp-modern-${{ matrix.distro }}
+          name: dnsp-modern-${{ matrix.distro }}-${{ matrix.arch }}
           path: ${{ steps.build.outputs.package }}
           if-no-files-found: error
           retention-days: 14
 
   debian:
-    name: Build and install (debian13)
-    runs-on: ubuntu-24.04
+    needs: plan
+    name: DEB debian13 ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
     container: debian:13-slim
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
     steps:
       - name: Install dependencies
         run: |
@@ -54,7 +95,11 @@ jobs:
       - uses: actions/checkout@v5
       - name: Build and inspect the package
         id: build
-        run: sh scripts/ci-build-deb.sh debian13
+        env:
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          test "$(dpkg --print-architecture)" = "${{ matrix.arch }}"
+          sh scripts/ci-build-deb.sh debian13
       - name: Verify the packaged binary installs and purges
         env:
           PACKAGE: ${{ steps.build.outputs.package }}
@@ -65,7 +110,48 @@ jobs:
           test ! -e /usr/bin/dnsp-modern
       - uses: actions/upload-artifact@v4
         with:
-          name: dnsp-modern-debian13
+          name: dnsp-modern-debian13-${{ matrix.arch }}
+          path: ${{ steps.build.outputs.package }}
+          if-no-files-found: error
+          retention-days: 14
+
+  rpm:
+    needs: plan
+    name: RPM rocky9 ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    container: quay.io/rockylinux/rockylinux:9
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    steps:
+      - name: Install dependencies
+        run: |
+          dnf install -y gcc make git rpm-build redhat-rpm-config libcurl-devel openssl python3 systemd-rpm-macros
+      - uses: actions/checkout@v5
+      - name: Build and inspect the package
+        id: build
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          test "$(rpm --eval '%{_arch}')" = "${{ matrix.arch }}"
+          sh scripts/build-rpm.sh
+      - name: Install, query, and remove the RPM
+        env:
+          PACKAGE: ${{ steps.build.outputs.package }}
+          DNSP_TEST_BINARY: /usr/bin/dnsp-modern
+        run: |
+          dnf install -y "./$PACKAGE"
+          python3 tests/test_modern.py Tests.test_udp Tests.test_tcp
+          dnf remove -y dnsp-modern
+          test ! -e /usr/bin/dnsp-modern
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dnsp-modern-rocky9-${{ matrix.arch }}
           path: ${{ steps.build.outputs.package }}
           if-no-files-found: error
           retention-days: 14
@@ -89,38 +175,32 @@ jobs:
           make -B -f modern.mk modern-check CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
 
   publish:
-    name: Publish pre-release from version tag
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [deb, debian, sanitizers]
+    name: Publish the tested package set
+    if: >-
+      github.event_name != 'pull_request' &&
+      (needs.plan.outputs.mode == 'master' || needs.plan.outputs.mode == 'tag')
+    needs: [plan, deb, debian, rpm, sanitizers]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    concurrency:
+      group: dnsp-modern-release
+      cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
       - uses: actions/download-artifact@v5
         with:
           pattern: dnsp-modern-*
           merge-multiple: true
-          path: dist
-      - name: Publish distro-specific DEBs and checksums
+          path: release-assets
+      - name: Publish DEBs, RPMs, and checksums
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          mapfile -t packages < <(find dist -maxdepth 1 -type f -name '*.deb' | sort)
-          if (( ${#packages[@]} != 3 )); then
-            echo "Expected three distribution-specific packages, found ${#packages[@]}" >&2
-            exit 1
-          fi
-          for distro in ubuntu22.04 ubuntu24.04 debian13; do
-            matches=(dist/*+"$distro"_*.deb)
-            if (( ${#matches[@]} != 1 )) || [[ ! -f "${matches[0]}" ]]; then
-              echo "Expected one package for $distro, found ${#matches[@]}" >&2
-              exit 1
-            fi
-          done
-          (cd dist && sha256sum *.deb > SHA256SUMS && sha256sum -c SHA256SUMS)
-          gh release create "$GITHUB_REF_NAME" "${packages[@]}" dist/SHA256SUMS \
-            --title "DNSProxy Modern ${GITHUB_REF_NAME} (experimental)" \
-            --prerelease --generate-notes
+          RELEASE_MODE: ${{ needs.plan.outputs.mode }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.plan.outputs.commit }}
+        run: bash scripts/publish-modern.sh release-assets
