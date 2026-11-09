@@ -210,6 +210,8 @@ class CacheDoH(DoH):
         if label in controls:
             self.send_header('Cache-Control', controls[label])
         if label == b'vary':
+            self.send_header('Vary', 'Cookie')
+        elif label == b'vary-accept':
             self.send_header('Vary', 'Accept')
         self.send_header('Content-Length', str(len(response)))
         self.end_headers()
@@ -1005,11 +1007,17 @@ class Tests(unittest.TestCase):
                 self.assertEqual(counter('cache_misses'), 1)
                 self.assertEqual(counter('upstream_requests'), 1)
 
+                data = packet(b'vary-accept')
+                exchange(data)
+                exchange(data)
+                self.assertEqual(counter('upstream_requests'), 2)
+                self.assertEqual(counter('cache_hits'), 2)
+
                 # Exact-key match protects case, flags and EDNS parameters.
                 exchange(packet(b'Aged', qtype=28, edns=1232))
                 exchange(packet(b'Aged', qtype=28, edns=1400))
                 exchange(packet(b'aged', qtype=28, edns=1232))
-                self.assertEqual(counter('upstream_requests'), 4)  # One-slot eviction.
+                self.assertEqual(counter('upstream_requests'), 5)  # One-slot eviction.
 
                 for label in (b'short-dns', b'short-http'):
                     with self.subTest(expiration=label):

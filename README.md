@@ -224,7 +224,9 @@ Entries expire at the earliest answer TTL or upstream HTTP freshness limit,
 with a local retention cap of one hour. Cache hits restore the caller's ID and
 age each answer TTL, including the HTTP `Age` of the original DoH response.
 Zero-TTL answers and HTTP responses with reuse restrictions such as `no-store`,
-`no-cache`, `private`, or `Vary` skip storage. The cache accepts numeric
+`no-cache`, or `private` skip storage. `Vary: Accept` is eligible because the
+proxy always sends the same upstream `Accept` value. Other `Vary` values skip
+storage. The cache accepts numeric
 `max-age` and `s-maxage` and conservatively skips unfamiliar cache directives.
 Expired entries are never served, even during upstream failure.
 [RFC 8484 cache interaction](https://www.rfc-editor.org/rfc/rfc8484.html#section-5.1)
