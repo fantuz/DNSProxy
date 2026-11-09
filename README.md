@@ -209,8 +209,8 @@ connection is encrypted. Do not bind the proxy to an untrusted interface.
 
 ```sh
 ./dnsp-modern --cache-entries 512 -m 9153
-dig @127.0.0.1 -p 5300 example.com A
-dig @127.0.0.1 -p 5300 example.com A
+dig @127.0.0.1 -p 5300 +noedns example.com A
+dig @127.0.0.1 -p 5300 +noedns example.com A
 curl -fsS http://127.0.0.1:9153/metrics | grep '^dnsp_cache_'
 ```
 
