@@ -403,6 +403,12 @@ class Tests(unittest.TestCase):
             with self.subTest(buffered=buffered):
                 self.assert_rst_cancels_orphaned_upstream(buffered)
 
+    def test_tcp_half_close_after_successor_length_cancels_request(self):
+        with socket.create_connection(('127.0.0.1', self.port), timeout=4) as sock:
+            sock.sendall(self.frame(query(65010)) + self.frame(query())[:2])
+            sock.shutdown(socket.SHUT_WR)
+            self.assertEqual(sock.recv(1), b'')
+
     def assert_rst_cancels_orphaned_upstream(self, buffered):
         before = self.metrics()
         sock = socket.create_connection(('127.0.0.1', self.port), timeout=4)

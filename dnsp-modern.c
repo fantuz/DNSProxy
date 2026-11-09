@@ -200,7 +200,8 @@ typedef struct {
 } CacheHeaders;
 struct Client {
     int fd;size_t have,need,sent,out_len;
-    unsigned char in[TCP_MAX+2],out[TCP_MAX+2];
+    unsigned char length[2];
+    unsigned char *in,*out;
     bool busy,read_eof,out_satisfies_query;uint64_t generation,queries_started;
     uint64_t idle_since_ms,frame_deadline,write_deadline;
 };
@@ -260,12 +261,13 @@ typedef struct {
 static MetricClient metric_clients[MAX_METRICS_CLIENTS];
 
 typedef enum {
-    LOG_CAPACITY,LOG_SETUP,LOG_TIMEOUT,LOG_TRANSPORT,LOG_STATUS,LOG_CONTENT,LOG_DNS,LOG_COUNT
+    LOG_CAPACITY,LOG_SETUP,LOG_TIMEOUT,LOG_TRANSPORT,LOG_STATUS,LOG_CONTENT,LOG_DNS,
+    LOG_TCP_BUFFER,LOG_COUNT
 } Failure;
 static void log_failure(Failure event,bool tcp,CURLcode code,long status) {
     static const char *const names[LOG_COUNT]={
         "capacity","upstream_setup","upstream_timeout","upstream_transport",
-        "upstream_http_status","upstream_content_type","upstream_dns_response"
+        "upstream_http_status","upstream_content_type","upstream_dns_response","tcp_buffer_allocation"
     };
     static struct {uint64_t next,suppressed;} rate[LOG_COUNT];
     uint64_t now=clock_ms();
@@ -364,6 +366,7 @@ static void close_client(Client *c) {
         q=next;
     }
     if(c->fd>=0) {close(c->fd);metrics.tcp_closed++;}
+    free(c->in);free(c->out);c->in=c->out=NULL;
     c->fd=-1;c->have=c->need=c->sent=c->out_len=0;
     c->busy=c->read_eof=c->out_satisfies_query=false;c->generation++;c->queries_started=0;
     c->frame_deadline=c->write_deadline=0;
@@ -372,6 +375,11 @@ static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_qu
     if(q->client) {
         Client *c=q->client;
         if(c->fd>=0 && c->generation==q->generation) {
+            c->out=malloc(n+2);
+            if(!c->out) {
+                log_failure(LOG_TCP_BUFFER,true,CURLE_OUT_OF_MEMORY,0);
+                return;
+            }
             c->out[0]=(unsigned char)(n>>8);c->out[1]=(unsigned char)n;
             memcpy(c->out+2,p,n);c->out_len=n+2;c->sent=0;
             c->out_satisfies_query=satisfies_query;
@@ -743,9 +751,11 @@ static void complete(Query *q,CURLcode code) {
         log_failure(failure,q->client!=NULL,code,status);
         send_error(q,q->request,2);
     }
-    if(q->client && q->client->fd>=0 && q->client->generation==q->generation)
-        q->client->busy=false;
+    Client *client=q->client;
+    bool attached=client && client->fd>=0 && client->generation==q->generation;
+    if(attached) client->busy=false;
     detach_query(q);
+    if(attached && !client->out_len) close_client(client);
     if(retries) retry_udp_waiters(q,retries);
     free_query(q);
 }
@@ -878,10 +888,11 @@ static int listener(const char *role,int type,const char *bindip,int port) {
  * Responses are emitted in request order. */
 static bool start_tcp_query(Client *c) {
     if(c->fd<0 || c->busy || c->out_len || !c->need || c->have!=c->need) return true;
-    if(!submit(c->in+2,c->need-2,c,-1,NULL,0)) {
+    if(!submit(c->in,c->need,c,-1,NULL,0) || (!c->busy && !c->out_len)) {
         close_client(c);
         return false;
     }
+    free(c->in);c->in=NULL;
     c->have=c->need=0; /* submit() owns a copy of the complete wire request */
     return true;
 }
@@ -902,6 +913,7 @@ static void tcp_io(Client *c,short events) {
         if(c->sent==c->out_len) {
             if(c->out_satisfies_query) metrics.queries_satisfied++;
             c->out_satisfies_query=false;
+            free(c->out);c->out=NULL;
             c->out_len=c->sent=0;
             c->write_deadline=0;
             c->idle_since_ms=clock_ms();
@@ -911,23 +923,30 @@ static void tcp_io(Client *c,short events) {
     }
     if(c->fd<0 || c->read_eof ||
        (c->need && c->have==c->need) || !(events&POLLIN)) return;
-    size_t target=c->need?c->need:2;
-    ssize_t n=recv(c->fd,c->in+c->have,target-c->have,0);
+    unsigned char *frame=c->need?c->in:c->length;
+    size_t target=c->need?c->need:sizeof(c->length);
+    ssize_t n=recv(c->fd,frame+c->have,target-c->have,0);
     if(n==0) {
         c->read_eof=true;
         metrics.tcp_half_closes++;
         /* A half-closed writer may still be waiting to read its replies. */
-        if(c->have && (!c->need || c->have!=c->need)) {close_client(c);return;}
+        if(c->have || c->need) {close_client(c);return;}
         if(!c->busy && !c->out_len) close_client(c);
         return;
     }
     if(n<0) {if(errno!=EAGAIN && errno!=EINTR) close_client(c);return;}
-    if(!c->have) c->frame_deadline=clock_ms()+tcp_io_ms;
+    if(!c->have && !c->need) c->frame_deadline=clock_ms()+tcp_io_ms;
     c->have+=(size_t)n;
-    if(c->have==2 && !c->need) {
-        size_t length=be16(c->in);
+    if(!c->need && c->have==sizeof(c->length)) {
+        size_t length=be16(c->length);
         if(length<DNS_HEADER) {close_client(c);return;}
-        c->need=length+2;
+        c->in=malloc(length);
+        if(!c->in) {
+            log_failure(LOG_TCP_BUFFER,true,CURLE_OUT_OF_MEMORY,0);
+            close_client(c);
+            return;
+        }
+        c->need=length;c->have=0;
     }
     if(c->need && c->have==c->need) {
         c->frame_deadline=0;

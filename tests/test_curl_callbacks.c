@@ -35,7 +35,8 @@ int main(void) {
     active_count=MAX_ACTIVE;
     if(!submit(request,sizeof(request),&client,-1,NULL,0) || client.busy ||
        active_count!=MAX_ACTIVE || metrics.overload!=1) return 10;
-    if(client.out_len!=sizeof(request)+2 || be16(client.out)!=sizeof(request) ||
-       be16(client.out+2)!=0x1234 || (client.out[5]&15)!=2) return 11;
-    return 0;
+    bool valid=client.out && client.out_len==sizeof(request)+2 && be16(client.out)==sizeof(request) &&
+               be16(client.out+2)==0x1234 && (client.out[5]&15)==2;
+    free(client.out);
+    return valid?0:11;
 }
