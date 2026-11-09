@@ -50,6 +50,10 @@ make
 make modern-check
 ```
 
+With Clang and its sanitizer runtime installed, `make modern-fuzz` runs the
+DNS wire and HTTP cache parser fuzzer for 30 seconds. Set `FUZZ_SECONDS` for
+longer runs.
+
 Run as an unprivileged process; UDP and TCP DNS both listen on port 5300:
 
 ```bash
