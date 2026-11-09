@@ -464,8 +464,11 @@ static size_t collect_cache_header(char *p,size_t size,size_t count,void *arg) {
             if(headers->date==(time_t)-1) headers->blocked=true;
         }
         headers->date_seen=true;
-    } else if(span_is(p,name_len,"Vary") || span_is(p,name_len,"Expires") ||
-              span_is(p,name_len,"Pragma") || span_is(p,name_len,"Set-Cookie")) headers->blocked=true;
+    } else if(span_is(p,name_len,"Vary")) {
+        /* Every upstream request sends the same application/dns-message Accept. */
+        if(!span_is(value,len,"Accept")) headers->blocked=true;
+    } else if(span_is(p,name_len,"Expires") || span_is(p,name_len,"Pragma") ||
+              span_is(p,name_len,"Set-Cookie")) headers->blocked=true;
     return n;
 }
 /* The normal DNS parser has already checked all wire bounds. Narrow reuse to
