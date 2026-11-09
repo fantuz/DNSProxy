@@ -127,6 +127,7 @@ Run `./dnsp-modern --help` for the options available in your build.
 | `--tcp-io-ms MS` | Separate deadlines to read a TCP request frame and write a response frame, 100–600000 ms | `15000` |
 | `--doh-connect-ms MS` | Deadline for the upstream connection phase, 100–60000 ms | `1500` |
 | `--doh-timeout-ms MS` | Total deadline for an upstream request, 100–60000 ms | `3000` |
+| `--cache-entries N` | In-memory DNS answer cache slots, 0–1024 | `0` (disabled) |
 | `-h`, `--help` | Print options and exit | |
 
 Unknown options or invalid numeric options exit with status 2. Remote upstreams
@@ -197,12 +198,41 @@ flowchart LR
   negotiation when the upstream implements them.
 - Query format errors receive `FORMERR` when the DNS header is available.
   AXFR, IXFR and unsupported opcodes receive `NOTIMP`. This service forwards
-  single DNS exchanges. DNSSEC validation and caching are upstream functions.
+  single DNS exchanges. The upstream handles DNSSEC validation.
 - A persistent TCP session accepts pipelined queries and sends replies in
   order, with one upstream request in flight per session.
 
 The client-to-proxy DNS leg is not encrypted merely because the upstream DoH
 connection is encrypted. Do not bind the proxy to an untrusted interface.
+
+## Optional in-memory answer cache
+
+```sh
+./dnsp-modern --cache-entries 512 -m 9153
+dig @127.0.0.1 -p 5300 +noedns example.com A
+dig @127.0.0.1 -p 5300 +noedns example.com A
+curl -fsS http://127.0.0.1:9153/metrics | grep '^dnsp_cache_'
+```
+
+The cache is disabled by default. It reuses complete positive `IN A` and
+`IN AAAA` answers, including CNAME chains, for matching UDP and TCP queries.
+The wire query must match byte for byte apart from the transaction ID. An
+empty EDNS(0) OPT is eligible. EDNS options, DNSSEC DO/CD requests, negative
+answers, and truncated upstream replies go through the upstream path.
+
+Entries expire at the earliest answer TTL or upstream HTTP freshness limit,
+with a local retention cap of one hour. Cache hits restore the caller's ID and
+age each answer TTL, including the HTTP `Age` of the original DoH response.
+Zero-TTL answers and HTTP responses with reuse restrictions such as `no-store`,
+`no-cache`, `private`, or `Vary` skip storage. The cache accepts numeric
+`max-age` and `s-maxage` and conservatively skips unfamiliar cache directives.
+Expired entries are never served, even during upstream failure.
+[RFC 8484 cache interaction](https://www.rfc-editor.org/rfc/rfc8484.html#section-5.1)
+
+Storage is allocated once, with at most 4 KiB of reply data per slot plus
+metadata. A hash collision replaces the previous entry in that slot. Restarting
+the process clears the cache. Hit and miss counts are also in the `SIGUSR1`
+status report. Misses count eligible queries that did not get a cached reply.
 
 ## Metrics and observability
 

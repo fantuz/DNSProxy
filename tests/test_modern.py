@@ -173,6 +173,45 @@ class HTTP(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
 
 
+class CacheDoH(DoH):
+    def do_POST(self):
+        data = self.rfile.read(int(self.headers['Content-Length']))
+        end = question_end(data)
+        label = data[13:13+data[12]].lower()
+        qtype = struct.unpack('!H', data[end-4:end-2])[0]
+        address = ADDRESS if qtype == 28 else bytes([192, 0, 2, 1])
+        ttl = 0 if label == b'zero' else 30
+        answer = struct.pack('!2sHHIH', b'\xc0\x0c', qtype, 1, ttl, len(address)) + address
+        count, flags = 1, 0x8180
+        if label == b'short-dns':
+            answer = (struct.pack('!2sHHIH', b'\xc0\x0c', 5, 1, 1, len(ALT)) + ALT
+                      + rr(qtype, address, owner=ALT))
+            count = 2
+        elif label in (b'negative', b'nodata'):
+            count, answer = 0, b''
+            flags |= 3 if label == b'negative' else 0
+        elif label == b'tc':
+            flags |= 0x0200
+        response = (data[:2] + struct.pack('!H', flags) + data[4:6] + struct.pack('!H', count)
+                    + data[8:end] + answer + data[end:])
+        # Keep short lifetimes independent of whole-second Date rounding.
+        self.send_response_only(200)
+        if label == b'old-date':
+            self.send_header('Date', self.date_time_string(time.time()-60))
+        self.send_header('Content-Type', 'application/dns-message')
+        if label in (b'aged', b'short-http', b'already-stale'):
+            self.send_header('Age', '31' if label == b'already-stale' else '7')
+        controls = {b'short-http': 'public, max-age=8', b'nostore': 'public, no-store, max-age=30',
+                    b'nocache': 'no-cache', b'private': 'private, max-age=30'}
+        if label in controls:
+            self.send_header('Cache-Control', controls[label])
+        if label == b'vary':
+            self.send_header('Vary', 'Accept')
+        self.send_header('Content-Length', str(len(response)))
+        self.end_headers()
+        self.wfile.write(response)
+
+
 def unused_ports():
     with socket.socket() as a, socket.socket() as b:
         a.bind(('127.0.0.1', 0))
@@ -458,8 +497,8 @@ class Tests(unittest.TestCase):
                                           timeout=2)
                     self.assertEqual(proc.returncode, 2, proc.stderr)
 
-    def metrics(self):
-        c = http.client.HTTPConnection('127.0.0.1', self.metrics_port, timeout=4)
+    def metrics(self, port=None):
+        c = http.client.HTTPConnection('127.0.0.1', port or self.metrics_port, timeout=4)
         try:
             c.request('GET', '/metrics')
             r = c.getresponse()
@@ -854,6 +893,101 @@ class Tests(unittest.TestCase):
                 result = subprocess.run([str(BINARY), *args], capture_output=True, timeout=3)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn(args[0].encode(), result.stderr)
+
+    def test_answer_cache(self):
+        upstream = HTTP(('127.0.0.1', 0), CacheDoH)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        self.addCleanup(upstream.server_close)
+        self.addCleanup(upstream.shutdown)
+        port, metrics_port = unused_ports()
+
+        def packet(name, ident=0x1234, qtype=1, edns=None):
+            base = query(qtype, edns, ident)
+            return base[:12] + bytes([len(name)]) + name + base[16:]
+
+        def exchange(data, tcp=False):
+            if tcp:
+                with socket.create_connection(('127.0.0.1', port), timeout=3) as sock:
+                    sock.sendall(self.frame(data))
+                    return self.tcp_frame(sock)
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(3)
+                sock.sendto(data, ('127.0.0.1', port))
+                return sock.recv(4096)
+
+        def counter(name):
+            return self.metric(self.metrics(metrics_port), f'dnsp_{name}_total')
+
+        def ttl(reply):
+            return struct.unpack_from('!I', reply, question_end(reply)+6)[0]
+
+        with tempfile.TemporaryFile() as log, subprocess.Popen([
+            str(BINARY), '-p', str(port), '-m', str(metrics_port), '--cache-entries', '1',
+            '-s', f'http://127.0.0.1:{upstream.server_port}/dns-query'
+        ], stderr=log) as proc:
+            try:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and proc.poll() is None:
+                    try:
+                        self.metrics(metrics_port)
+                        break
+                    except OSError:
+                        time.sleep(.02)
+                else:
+                    log.seek(0)
+                    self.fail(f'cache proxy failed to start: {log.read()!r}')
+
+                first = exchange(packet(b'aged', qtype=28, edns=1232))
+                self.assertEqual(ttl(first), 23)
+                time.sleep(1.05)
+                hit = exchange(packet(b'aged', ident=0x2222, qtype=28, edns=1232), tcp=True)
+                self.assertEqual(hit[:2], b'\x22\x22')
+                self.assertEqual(hit[-11:], first[-11:])  # OPT contents survive replay.
+                self.assertGreater(ttl(hit), 0)
+                self.assertLess(ttl(hit), 23)
+                self.assertEqual(counter('cache_hits'), 1)
+                self.assertEqual(counter('cache_misses'), 1)
+                self.assertEqual(counter('upstream_requests'), 1)
+
+                # Exact-key match protects case, flags and EDNS parameters.
+                exchange(packet(b'Aged', qtype=28, edns=1232))
+                exchange(packet(b'Aged', qtype=28, edns=1400))
+                exchange(packet(b'aged', qtype=28, edns=1232))
+                self.assertEqual(counter('upstream_requests'), 4)  # One-slot eviction.
+
+                for label in (b'short-dns', b'short-http'):
+                    with self.subTest(expiration=label):
+                        data = packet(label)
+                        exchange(data)
+                        hits = counter('cache_hits')
+                        exchange(data)
+                        self.assertEqual(counter('cache_hits'), hits+1)
+                        before = counter('upstream_requests')
+                        time.sleep(1.1)
+                        exchange(data)
+                        self.assertEqual(counter('upstream_requests'), before+1)
+
+                option = edns_options(packet(b'opts', edns=1232), padding_option(4))
+                do = bytearray(packet(b'dnssec', edns=1232))
+                do[-4] |= 0x80
+                cd = bytearray(packet(b'checking'))
+                cd[3] |= 0x10
+                bypass = (b'zero', b'negative', b'nodata', b'tc', b'already-stale', b'old-date',
+                          b'nostore', b'nocache', b'private', b'vary')
+                for data in (*map(packet, bypass), option, do, cd):
+                    before = counter('upstream_requests')
+                    exchange(data)
+                    exchange(data)
+                    self.assertEqual(counter('upstream_requests'), before+2, data)
+            finally:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=3)
+                log.seek(0)
+                self.assertEqual(proc.returncode, 0, log.read())
 
     def test_loopback_http_bypasses_ambient_proxy(self):
         # Hold an unused port so the inherited proxy cannot complete a connection.
