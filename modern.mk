@@ -23,5 +23,17 @@ clean:
 benchmark-smoke: dnsp-modern
 	python3 -m unittest discover -s tests -p 'test_benchmark.py' -v
 
+# Optional parser fuzzing with Clang and libFuzzer.
+FUZZ_CC ?= clang
+FUZZ_SECONDS ?= 30
+.PHONY: modern-fuzz
+modern-fuzz:
+	@set -eu; run=$$(mktemp -d); trap 'rm -rf "$$run"' 0; \
+	$(FUZZ_CC) $(CPPFLAGS) -std=c11 -O1 -g -Wall -Wextra -Wpedantic \
+		-fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
+		$(LDFLAGS) -o "$$run/fuzz-dns" tests/fuzz_dns.c $(CURL_FLAGS) $(LDLIBS); \
+	python3 tests/make_fuzz_corpus.py "$$run/corpus"; \
+	"$$run/fuzz-dns" "$$run/corpus" -max_total_time=$(FUZZ_SECONDS) -max_len=65536 -timeout=5
+
 # Prevent implicit builds of retired source files.
 MAKEFLAGS += --no-builtin-rules
