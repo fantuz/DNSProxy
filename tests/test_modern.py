@@ -1121,6 +1121,14 @@ class Tests(unittest.TestCase):
             answer = self.isolated_udp(f'http://127.0.0.1:{self.server.server_port}/dns-query', env=env)
         self.assertEqual(answer[2:4], b'\x81\x80')
 
+    def test_invalid_upstream_http_preference(self):
+        for args in (['--upstream-http'], ['--upstream-http='], ['--upstream-http', 'h3-only']):
+            with self.subTest(args=args):
+                proc = subprocess.run([str(BINARY), *args], timeout=3,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                self.assertIn(b'--upstream-http requires auto or prefer-h3', proc.stderr)
+
     @unittest.skipUnless(shutil.which('openssl'), 'openssl required to generate a local TLS certificate')
     def test_bootstrap_address_connects_directly_and_verifies_hostname(self):
         with tempfile.TemporaryDirectory() as tmp:

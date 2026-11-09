@@ -280,7 +280,15 @@ static void log_failure(Failure event,bool tcp,CURLcode code,long status) {
     rate[event].next=now+10000;
     rate[event].suppressed=0;
 }
-static long select_http_version(int features) {
+static long select_http_version(int features,unsigned version_num,bool prefer_h3) {
+    if(prefer_h3) {
+        /* HTTP/3 raced with a TCP fallback starting in libcurl 7.88.0. */
+        if(version_num<0x075800) return CURL_HTTP_VERSION_NONE;
+#if LIBCURL_VERSION_NUM >= 0x074200 /* 7.66.0 */
+        if(features&CURL_VERSION_HTTP3) return CURL_HTTP_VERSION_3;
+#endif
+        return CURL_HTTP_VERSION_NONE;
+    }
     return features&CURL_VERSION_HTTP2?CURL_HTTP_VERSION_2TLS:CURL_HTTP_VERSION_1_1;
 }
 
@@ -742,7 +750,7 @@ static void complete(Query *q,CURLcode code) {
     else if(code==CURLE_OK) metrics.requests_reused_connections++;
     if(version==CURL_HTTP_VERSION_1_0 || version==CURL_HTTP_VERSION_1_1) metrics.http1++;
     else if(version==CURL_HTTP_VERSION_2_0) metrics.http2++;
-#ifdef CURL_HTTP_VERSION_3
+#if LIBCURL_VERSION_NUM >= 0x074200 /* 7.66.0 */
     else if(version==CURL_HTTP_VERSION_3) metrics.http3++;
 #endif
     DnsInfo response;
@@ -851,7 +859,7 @@ static bool submit_until(const unsigned char *data,size_t len,Client *client,int
     OPT(CURLOPT_POSTFIELDS,post);
     OPT(CURLOPT_POSTFIELDSIZE_LARGE,(curl_off_t)(len+extra));
     OPT(CURLOPT_HTTP_VERSION,upstream_http_version);
-    if(upstream_http_version==CURL_HTTP_VERSION_2TLS && !loopback_http)
+    if(upstream_http_version!=CURL_HTTP_VERSION_1_1)
         OPT(CURLOPT_PIPEWAIT,1L);
     OPT(CURLOPT_TCP_KEEPALIVE,1L);
     OPT(CURLOPT_WRITEFUNCTION,collect);
@@ -1253,6 +1261,7 @@ static void usage(FILE *stream,const char *program) {
             "  --bootstrap-address IP      Numeric IPv4 or IPv6 address for the HTTPS upstream\n"
             "  --edns-padding               Pad eligible upstream HTTPS DNS queries to 128-byte blocks\n"
             "  --ca-file PEM                CA bundle for upstream TLS verification\n"
+            "  --upstream-http MODE          auto (default) or prefer-h3 (HTTPS with fallback)\n"
             "  --max-host-connections N     Upstream connections, 1..16 (default 8)\n"
             "  --tcp-idle-ms MS             Idle TCP session, %d..%d (default %d)\n"
             "  --tcp-io-ms MS               TCP frame read/write deadline, %d..%d (default %d)\n"
@@ -1268,6 +1277,7 @@ static void usage(FILE *stream,const char *program) {
 }
 int main(int argc,char **argv) {
     const char *bindip="127.0.0.1",*bootstrap_address=NULL;
+    bool prefer_h3=false;
     int port=5300,metrics_port=0;
     int max_host_connections=8;
     upstream="https://cloudflare-dns.com/dns-query";
@@ -1283,6 +1293,15 @@ int main(int argc,char **argv) {
         else if(!strcmp(argv[i],"-m") && i+1<argc) metrics_port=(int)parse_range(argv[++i],1,65535);
         else if(!strcmp(argv[i],"--ca-file") && i+1<argc) ca_file=argv[++i];
         else if(!strcmp(argv[i],"--edns-padding")) edns_padding=true;
+        else if(!strcmp(argv[i],"--upstream-http") ||
+                !strncmp(argv[i],"--upstream-http=",sizeof("--upstream-http=")-1)) {
+            const char *mode=strchr(argv[i],'=');
+            if(mode) mode++;
+            else if(i+1<argc) mode=argv[++i];
+            if(mode && !strcmp(mode,"prefer-h3")) prefer_h3=true;
+            else if(mode && !strcmp(mode,"auto")) prefer_h3=false;
+            else {fprintf(stderr,"--upstream-http requires auto or prefer-h3\n");return 2;}
+        }
         else if(i+1<argc && (!strcmp(argv[i],"--tcp-idle-ms") || !strcmp(argv[i],"--tcp-io-ms") ||
                             !strcmp(argv[i],"--doh-connect-ms") || !strcmp(argv[i],"--doh-timeout-ms"))) {
             const char *option=argv[i];
@@ -1330,11 +1349,23 @@ int main(int argc,char **argv) {
         return 1;
     }
     const curl_version_info_data *curl_info=curl_version_info(CURLVERSION_NOW);
-    if(curl_info) upstream_http_version=select_http_version(curl_info->features);
+    upstream_http_version=select_http_version(curl_info?curl_info->features:0,
+                                              curl_info?curl_info->version_num:0,prefer_h3);
+    if(upstream_http_version==CURL_HTTP_VERSION_NONE) {
+        fprintf(stderr,"--upstream-http=prefer-h3 requires libcurl with HTTP/3 support and TCP fallback (7.88.0 or newer)\n");
+        curl_global_cleanup();return 2;
+    }
     if(!configure_upstream(upstream,bootstrap_address)) {
         if(bootstrap_address) fprintf(stderr,"--bootstrap-address requires a numeric IP and an HTTPS upstream hostname\n");
         else fprintf(stderr,"invalid upstream (only HTTPS or loopback HTTP test endpoint)\n");
         curl_global_cleanup();return 2;
+    }
+    if(loopback_http) {
+        if(prefer_h3) {
+            fprintf(stderr,"--upstream-http=prefer-h3 requires an HTTPS upstream\n");
+            curl_global_cleanup();return 2;
+        }
+        upstream_http_version=CURL_HTTP_VERSION_1_1;
     }
     signal(SIGINT,stop_now);signal(SIGTERM,stop_now);signal(SIGPIPE,SIG_IGN);
     for(size_t i=0;i<MAX_CLIENTS;i++) clients[i].fd=-1;
@@ -1369,7 +1400,7 @@ int main(int argc,char **argv) {
 } while(0)
     MULTI_OPT(CURLMOPT_MAX_TOTAL_CONNECTIONS,16L);
     MULTI_OPT(CURLMOPT_MAX_HOST_CONNECTIONS,(long)max_host_connections);
-    MULTI_OPT(CURLMOPT_PIPELINING,upstream_http_version==CURL_HTTP_VERSION_2TLS?CURLPIPE_MULTIPLEX:CURLPIPE_NOTHING);
+    MULTI_OPT(CURLMOPT_PIPELINING,upstream_http_version!=CURL_HTTP_VERSION_1_1?CURLPIPE_MULTIPLEX:CURLPIPE_NOTHING);
     MULTI_OPT(CURLMOPT_SOCKETFUNCTION,on_curl_socket);
     MULTI_OPT(CURLMOPT_TIMERFUNCTION,curl_timer_callback);
 #undef MULTI_OPT
@@ -1388,7 +1419,8 @@ int main(int argc,char **argv) {
         fprintf(stderr,"level=error event=poll_allocation\n");
         goto cleanup;
     }
-    const char *http_preference=upstream_http_version==CURL_HTTP_VERSION_2TLS && !loopback_http?"h2":"http/1.1";
+    const char *http_preference=prefer_h3?"h3":"http/1.1";
+    if(upstream_http_version==CURL_HTTP_VERSION_2TLS) http_preference="h2";
     uint64_t started_ms=clock_ms();
     fprintf(stderr,"level=info event=listening address=%s port=%d metrics_port=%d upstream_scheme=%s http_preference=%s\n",
             bindip,port,metrics_port,loopback_http?"http":"https",http_preference);

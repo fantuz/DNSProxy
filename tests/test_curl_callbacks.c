@@ -25,8 +25,15 @@ int main(void) {
        on_curl_socket(NULL,fd,CURL_POLL_OUT,NULL,NULL)) return 7;
     if(curl_socket_still_watched(fd,current)) return 8;
 
-    if(select_http_version(0)!=CURL_HTTP_VERSION_1_1 ||
-       select_http_version(CURL_VERSION_HTTP2)!=CURL_HTTP_VERSION_2TLS) return 9;
+    if(select_http_version(0,0,false)!=CURL_HTTP_VERSION_1_1 ||
+       select_http_version(CURL_VERSION_HTTP2,0,false)!=CURL_HTTP_VERSION_2TLS ||
+       select_http_version(CURL_VERSION_HTTP2,0x075800,true)!=CURL_HTTP_VERSION_NONE) return 9;
+#if LIBCURL_VERSION_NUM >= 0x074200
+    const int h2h3=CURL_VERSION_HTTP2|CURL_VERSION_HTTP3;
+    if(select_http_version(h2h3,0x075800,false)!=CURL_HTTP_VERSION_2TLS ||
+       select_http_version(h2h3,0x075800,true)!=CURL_HTTP_VERSION_3 ||
+       select_http_version(h2h3,0x075700,true)!=CURL_HTTP_VERSION_NONE) return 9;
+#endif
 
     static Client client={.fd=1};
     const unsigned char request[]={

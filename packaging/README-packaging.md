@@ -43,6 +43,10 @@ the system CA bundle as a dependency for TLS verification. If the host will
 resolve its own DoH upstream through DNSProxy, configure `--bootstrap-address`
 with an address for that provider before switching the system resolver.
 
+On a system with QUIC-capable libcurl, such as Debian 13, you can append
+`--upstream-http=prefer-h3` to an `ExecStart` override. Check negotiated versions
+in the loopback metrics. [Upstream HTTP/3 configuration](../README.md#optional-upstream-http3)
+
 ```sh
 dig @127.0.0.1 -p 5300 example.com A
 dig +tcp @127.0.0.1 -p 5300 example.com A

@@ -150,6 +150,18 @@ A separate `.github/workflows/dnsp-modern-benchmark.yml` runs a short
 loopback smoke on pull requests touching the benchmark and on manual dispatch.
 The existing `dnsp-modern.yml` release/DEB workflow is untouched.
 
+The same workflow runs HTTP/3 integration tests on Debian 13. With a
+QUIC-capable libcurl and the benchmark environment installed, run them locally.
+
+```bash
+.bench-venv/bin/python -m pip install 'aioquic==1.3.0'
+.bench-venv/bin/python tests/test_http3.py
+```
+
+The test upstream uses real QUIC and records concurrent HTTP/3 streams. The
+tests also exercise TCP fallback with UDP blackholed, certificate validation,
+and respect for a configured HTTPS proxy.
+
 ## Security and design notes
 
 The benchmark uses a short-lived self-signed localhost certificate generated

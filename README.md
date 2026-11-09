@@ -127,6 +127,7 @@ Run `./dnsp-modern --help` for the options available in your build.
 | `--bootstrap-address IP` | Numeric IPv4 or unbracketed IPv6 address for an HTTPS upstream hostname | Resolve the hostname normally |
 | `--edns-padding` | Pad eligible upstream HTTPS DNS queries to a multiple of 128 bytes | Disabled |
 | `--ca-file PEM` | CA certificate bundle for upstream TLS verification | libcurl's default CA bundle |
+| `--upstream-http MODE` | `auto` for HTTP/2 with HTTP/1.1 fallback, or `prefer-h3` for HTTP/3 with TCP fallback | `auto` |
 | `--max-host-connections N` | Maximum upstream connections per host, 1–16 | `8` |
 | `--tcp-idle-ms MS` | How long a TCP session can wait idle for its next query, 100–600000 ms | `15000` |
 | `--tcp-io-ms MS` | Separate deadlines to read a TCP request frame and write a response frame, 100–600000 ms | `15000` |
@@ -153,6 +154,27 @@ for an HTTPS upstream hostname. It connects directly to that address, bypassing
 proxy environment settings, while keeping the URL hostname for TLS and HTTP.
 Choose an address served by your DoH provider and update it if the provider
 changes addresses.
+
+#### Optional upstream HTTP/3
+
+```sh
+./dnsp-modern --upstream-http=prefer-h3 -s https://cloudflare-dns.com/dns-query -m 9153
+dig @127.0.0.1 -p 5300 example.com A
+curl -fsS http://127.0.0.1:9153/metrics | grep dnsp_upstream_http_responses_total
+```
+
+`prefer-h3` requires an HTTPS upstream and a linked libcurl 7.88.0 or newer
+with HTTP/3 support.
+Debian 13 supplies a compatible libcurl. An unsupported explicit preference
+exits at startup with status 2. When QUIC connection setup fails or is slow,
+libcurl can negotiate HTTP/2 or HTTP/1.1 over TCP within the same upstream
+deadlines. A fallback connection can be reused for subsequent queries.
+libcurl uses TCP when a forward proxy is in use. Direct QUIC requires UDP
+reachability to the upstream HTTPS port, usually 443.
+
+Startup and `SIGUSR1` reports show the requested `http_preference`.
+`dnsp_upstream_http_responses_total{version="3"}` counts negotiated HTTP/3
+responses. [libcurl HTTP version selection](https://curl.se/libcurl/c/CURLOPT_HTTP_VERSION.html)
 
 The upstream connection deadline covers name resolution and handshakes for a
 new connection. The total deadline includes time queued by libcurl. Set
@@ -190,9 +212,9 @@ flowchart LR
 - Binary DNS wire packets arrive over UDP or framed DNS-over-TCP.
 - DoH requests use a persistent libcurl multi manager; libcurl socket and timer
   callbacks are integrated into the main `poll()` event loop.
-- HTTP/2 is requested over TLS if negotiated; HTTP/1.1 can be used as fallback.
-  **RFC 8484 does not require HTTP/2.** Connection reuse counters do not prove
-  HTTP/2 multiplexing; benchmark actual simultaneous streams.
+- The default HTTPS preference is HTTP/2 with HTTP/1.1 fallback. Operators can
+  opt in to HTTP/3 where the linked libcurl and upstream support it. The HTTP
+  version counters report the protocol used for each response.
 - Outstanding upstream requests, TCP client slots, and response sizes are
   bounded; upstream requests have connection and overall timeouts.
 - Incoming DNS packets and upstream HTTP status, `Content-Type`, transaction ID,
@@ -314,7 +336,7 @@ Useful Prometheus-compatible series:
 | `dnsp_upstream_success_total`, `dnsp_upstream_failures_total`, `dnsp_upstream_timeouts_total` | Completion and errors |
 | `dnsp_invalid_queries_total`, `dnsp_invalid_responses_total`, `dnsp_overload_total` | Validation/capacity events |
 | `dnsp_truncated_responses_total` | Truncated UDP answers |
-| `dnsp_upstream_http_responses_total{version="2"}` | Responses negotiated over HTTP/2 |
+| `dnsp_upstream_http_responses_total{version="1"}`, `{version="2"}`, `{version="3"}` | Responses by negotiated upstream HTTP version |
 | `dnsp_upstream_new_connections_total`, `dnsp_upstream_reused_requests_total` | libcurl connection activity |
 | `dnsp_upstream_easy_handles_reused_total` | Transfers that took a reset easy handle from the idle pool |
 | `dnsp_upstream_duration_seconds_sum`, `dnsp_upstream_duration_seconds_count` | Aggregate upstream time |
