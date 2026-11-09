@@ -29,6 +29,7 @@ enum { DNS_HEADER=12, UDP_RX_MAX=65507, UDP_REPLY_MAX=4096, TCP_MAX=65535,
        MIN_TIMEOUT_MS=100, MAX_DOH_TIMEOUT_MS=60000, MAX_TCP_TIMEOUT_MS=600000,
        DNS_OPT_SIZE=11, CACHE_MAX_ENTRIES=1024, CACHE_MAX_QUERY=DNS_HEADER+255+4+DNS_OPT_SIZE,
        CACHE_MAX_REPLY=4096, CACHE_MAX_ANSWERS=128, CACHE_MAX_TTL=3600 };
+enum { MAX_IDLE_EASIES=16 };
 static volatile sig_atomic_t stopping;
 /* A process signal can be delivered to a libcurl resolver thread. */
 _Static_assert(ATOMIC_BOOL_LOCK_FREE==2,"SIGUSR1 requires a lock-free atomic flag");
@@ -198,7 +199,7 @@ struct Client {
     uint64_t idle_since_ms,frame_deadline,write_deadline;
 };
 struct Query {
-    CURL *easy;struct curl_slist *headers;
+    CURL *easy;
     unsigned char *request,*response;
     size_t req_len,resp_len,resp_cap;
     DnsInfo info;
@@ -212,7 +213,7 @@ typedef struct { curl_socket_t fd;int action;uint64_t generation; } CurlSocket;
 typedef struct {
     uint64_t udp_queries,tcp_queries,queries_satisfied,invalid_queries,overload,upstream_requests,
       upstream_ok,upstream_failed,upstream_timeouts,invalid_responses,
-      truncated,requests_new_connections,requests_reused_connections,
+      truncated,requests_new_connections,requests_reused_connections,easy_handles_reused,
       http1,http2,http3,socket_callbacks,timer_callbacks,timer_fires,
       tcp_accepted,tcp_closed,tcp_keepalive_queries,tcp_pipeline_buffered,
       tcp_half_closes,tcp_idle_timeouts,tcp_io_timeouts,tcp_cancelled_upstream,cache_hits,cache_misses;
@@ -222,10 +223,13 @@ static Metrics metrics;
 static Query *active;
 static size_t active_count;
 static CURLM *multi;
+static CURL *idle_easies[MAX_IDLE_EASIES];
+static size_t idle_easy_count;
 static const char *upstream;
 static bool loopback_http;
 static long upstream_http_version=CURL_HTTP_VERSION_1_1;
 static struct curl_slist *bootstrap_hosts;
+static struct curl_slist *doh_headers;
 static const char *ca_file; /* custom CA bundle for upstream TLS verification */
 static Client clients[MAX_CLIENTS];
 static CurlSocket curl_sockets[MAX_CURL_SOCKETS];
@@ -307,12 +311,28 @@ static size_t collect(char *p,size_t sz,size_t nm,void *arg) {
     memcpy(q->response+q->resp_len,p,n);q->resp_len+=n;
     return n;
 }
+static CURL *acquire_easy(void) {
+    if(!idle_easy_count) return curl_easy_init();
+    metrics.easy_handles_reused++;
+    return idle_easies[--idle_easy_count];
+}
+static void recycle_easy(CURL *easy) {
+    if(idle_easy_count==MAX_IDLE_EASIES) {
+        curl_easy_cleanup(easy);
+        return;
+    }
+    /* Clear request pointers and callbacks before their Query is freed. */
+    curl_easy_reset(easy);
+    idle_easies[idle_easy_count++]=easy;
+}
 static void remove_query(Query *q) {
     Query **it=&active;
     while(*it && *it!=q) it=&(*it)->next;
     if(*it) {*it=q->next;active_count--;}
-    if(q->easy) {curl_multi_remove_handle(multi,q->easy);curl_easy_cleanup(q->easy);}
-    curl_slist_free_all(q->headers);
+    if(q->easy) {
+        if(curl_multi_remove_handle(multi,q->easy)==CURLM_OK) recycle_easy(q->easy);
+        else curl_easy_cleanup(q->easy);
+    }
     free(q->request);free(q->response);free(q);
 }
 static void close_client(Client *c) {
@@ -633,22 +653,19 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
     q->request=malloc(len);
     if(!q->request) goto fail;
     memcpy(q->request,data,len);
-    q->easy=curl_easy_init();
+    q->easy=acquire_easy();
     if(!q->easy) goto fail;
-    struct curl_slist *h=curl_slist_append(q->headers,"Content-Type: application/dns-message");
-    if(!h) goto fail;
-    q->headers=h;
-    h=curl_slist_append(q->headers,"Accept: application/dns-message");
-    if(!h) goto fail;
-    q->headers=h;
 #define OPT(key,val) do {setup_code=curl_easy_setopt(q->easy,key,val);if(setup_code!=CURLE_OK) goto fail;}while(0)
     OPT(CURLOPT_URL,upstream);
     if(loopback_http || bootstrap_hosts) OPT(CURLOPT_PROXY,"");
     if(bootstrap_hosts) OPT(CURLOPT_RESOLVE,bootstrap_hosts);
-    OPT(CURLOPT_HTTPHEADER,q->headers);
+    OPT(CURLOPT_HTTPHEADER,doh_headers);
     OPT(CURLOPT_POSTFIELDS,q->request);
     OPT(CURLOPT_POSTFIELDSIZE_LARGE,(curl_off_t)len);
     OPT(CURLOPT_HTTP_VERSION,upstream_http_version);
+    if(upstream_http_version==CURL_HTTP_VERSION_2TLS && !loopback_http)
+        OPT(CURLOPT_PIPEWAIT,1L);
+    OPT(CURLOPT_TCP_KEEPALIVE,1L);
     OPT(CURLOPT_WRITEFUNCTION,collect);
     OPT(CURLOPT_WRITEDATA,q);
     if(q->cache_slot) {
@@ -675,7 +692,7 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
     return true;
 fail:
     if(q->easy) curl_easy_cleanup(q->easy);
-    curl_slist_free_all(q->headers);free(q->request);free(q);
+    free(q->request);free(q);
 setup_failure:
     log_failure(LOG_SETUP,client!=NULL,setup_code,0);
 reject:
@@ -816,7 +833,7 @@ static void report_status(uint64_t uptime_ms,const char *bindip,int port,int met
             " invalid_queries=%" PRIu64 " invalid_responses=%" PRIu64 " overload=%" PRIu64
             " udp_truncated=%" PRIu64 " tcp_cancelled_upstream=%" PRIu64
             " http1_responses=%" PRIu64 " http2_responses=%" PRIu64
-            " new_connections=%" PRIu64 " reused_requests=%" PRIu64
+            " new_connections=%" PRIu64 " reused_requests=%" PRIu64 " easy_handles_reused=%" PRIu64
             " cache_entries=%zu cache_hits=%" PRIu64 " cache_misses=%" PRIu64
             " inflight=%zu max_inflight=%d tcp_clients=%zu max_tcp_clients=%d\n",
             uptime_ms,bindip,port,metrics_port,loopback_http?"http":"https",http_preference,
@@ -825,7 +842,8 @@ static void report_status(uint64_t uptime_ms,const char *bindip,int port,int met
             metrics.upstream_ok,metrics.upstream_failed,metrics.upstream_timeouts,
             metrics.invalid_queries,metrics.invalid_responses,metrics.overload,metrics.truncated,
             metrics.tcp_cancelled_upstream,metrics.http1,metrics.http2,metrics.requests_new_connections,
-            metrics.requests_reused_connections,cache_entries,metrics.cache_hits,metrics.cache_misses,
+            metrics.requests_reused_connections,metrics.easy_handles_reused,
+            cache_entries,metrics.cache_hits,metrics.cache_misses,
             active_count,MAX_ACTIVE,tcp_open_count(),MAX_CLIENTS);
 }
 static void metric_response(MetricClient *c) {
@@ -869,6 +887,8 @@ static void metric_response(MetricClient *c) {
         "dnsp_truncated_responses_total %llu\n"
         "dnsp_upstream_new_connections_total %llu\n"
         "dnsp_upstream_reused_requests_total %llu\n"
+        "# TYPE dnsp_upstream_easy_handles_reused_total counter\n"
+        "dnsp_upstream_easy_handles_reused_total %" PRIu64 "\n"
         "dnsp_upstream_http_responses_total{version=\"1\"} %llu\n"
         "dnsp_upstream_http_responses_total{version=\"2\"} %llu\n"
         "dnsp_upstream_http_responses_total{version=\"3\"} %llu\n"
@@ -897,6 +917,7 @@ static void metric_response(MetricClient *c) {
         (unsigned long long)metrics.overload,(unsigned long long)metrics.truncated,
         (unsigned long long)metrics.requests_new_connections,
         (unsigned long long)metrics.requests_reused_connections,
+        metrics.easy_handles_reused,
         (unsigned long long)metrics.http1,(unsigned long long)metrics.http2,
         (unsigned long long)metrics.http3,(unsigned long long)metrics.socket_callbacks,
         (unsigned long long)metrics.timer_callbacks,(unsigned long long)metrics.timer_fires,
@@ -1105,6 +1126,13 @@ int main(int argc,char **argv) {
     int udp=-1,tcp=-1,mfd=-1,exitcode=1;
     PollItem *items=NULL;
     struct pollfd *pfds=NULL;
+    doh_headers=curl_slist_append(NULL,"Content-Type: application/dns-message");
+    struct curl_slist *headers=doh_headers?curl_slist_append(doh_headers,"Accept: application/dns-message"):NULL;
+    if(!headers) {
+        fprintf(stderr,"level=error event=doh_headers_allocation\n");
+        goto cleanup;
+    }
+    doh_headers=headers; /* Shared read-only until every easy handle is gone. */
     if(cache_entries && !(answer_cache=calloc(cache_entries,sizeof(*answer_cache)))) {
         fprintf(stderr,"level=error event=cache_allocation\n");
         goto cleanup;
@@ -1226,11 +1254,13 @@ cleanup:
     for(size_t i=0;i<MAX_CLIENTS;i++) close_client(&clients[i]);
     for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) close_metric(&metric_clients[i]);
     while(active) remove_query(active);
+    while(idle_easy_count) curl_easy_cleanup(idle_easies[--idle_easy_count]);
     free(answer_cache);
     if(udp>=0) close(udp);
     if(tcp>=0) close(tcp);
     if(mfd>=0) close(mfd);
     curl_multi_cleanup(multi);
+    curl_slist_free_all(doh_headers);
     curl_slist_free_all(bootstrap_hosts);
     curl_global_cleanup();
     return exitcode;
