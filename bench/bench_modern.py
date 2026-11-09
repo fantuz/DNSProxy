@@ -285,7 +285,12 @@ def run_suite(args, protocol, tmpdir):
             await_quiescent(metrics_port, upstream_server)
             if upstream_server:
                 upstream_server.app.reset()
-            one_load(proxy_port, min(concurrency, 8), args.warmup)
+            # Let curl learn the advertised stream limit before ramping up a
+            # constrained fixture. This keeps SETTINGS discovery out of the run.
+            warm_clients = min(concurrency, 8)
+            if protocol == 'h2' and args.h2_max_streams < concurrency:
+                warm_clients = 1
+            one_load(proxy_port, warm_clients, args.warmup)
             await_quiescent(metrics_port, upstream_server)
             idle_probe = None
             if protocol == 'h2' and args.h2_idle_timeout:
