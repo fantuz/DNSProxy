@@ -12,6 +12,9 @@ This is independent of the persistent upstream libcurl/DoH connection pool.
   order**. The current implementation allows **one upstream request in flight per
   TCP client** and buffers **one additional complete DNS frame**. Remaining
   pipelined bytes stay in the kernel receive buffer, providing backpressure.
+- The proxy allocates space for a request body after reading its length and for
+  a reply when it is ready to write. It releases each buffer as soon as its frame
+  is submitted or sent, or when the session closes.
 - This is **not parallel, out-of-order processing of pipelined TCP queries**.
   It improves client-side TCP reuse, not the maximum throughput of one TCP
   session with high upstream latency. Multiple TCP clients and UDP queries still
