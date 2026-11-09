@@ -2,6 +2,8 @@
 """Tests for benchmark report logic and actual loopback TLS/HTTP2 multiplexing."""
 import json
 from pathlib import Path
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -9,8 +11,9 @@ import unittest
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE/'bench'))
-from bench_modern import percentile, proxy_cpu_rss  # noqa: E402
-from mock_doh import make_response  # noqa: E402
+from bench_modern import (DNS_QUESTION, EDNS_OPT, await_quiescent, await_ready,  # noqa: E402
+                          free_port, make_certificate, metric_snapshot, percentile, proxy_cpu_rss)
+from mock_doh import MockServer, make_response  # noqa: E402
 
 
 class BenchmarkUnitTests(unittest.TestCase):
@@ -35,6 +38,45 @@ class BenchmarkUnitTests(unittest.TestCase):
 
 
 class BenchmarkIntegrationTests(unittest.TestCase):
+    def test_cold_h2_burst_uses_one_connection_at_default_cap(self):
+        with tempfile.TemporaryDirectory(prefix='dnsp-cold-h2-') as td:
+            cert, key = make_certificate(Path(td))
+            upstream_port, proxy_port, metrics_port = (free_port() for _ in range(3))
+            upstream = MockServer(upstream_port, cert, key, protocol='h2', delay_ms=100)
+            upstream.start()
+            try:
+                await_ready(upstream_port, None, 'DoH mock')
+                with tempfile.TemporaryFile() as log, subprocess.Popen([
+                    str(BASE/'dnsp-modern'), '-p', str(proxy_port), '-m', str(metrics_port),
+                    '-s', f'https://localhost:{upstream_port}/dns-query', '--ca-file', str(cert),
+                    '--bootstrap-address', '127.0.0.1',
+                ], stderr=log) as proxy:
+                    try:
+                        await_ready(metrics_port, proxy, 'DNSProxy metrics')
+                        self.assertEqual(metric_snapshot(metrics_port)['dnsp_upstream_requests_total'], 0)
+                        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+                            client.settimeout(4)
+                            for ident in range(12):
+                                packet = struct.pack('!6H', ident, 0x0100, 1, 0, 0, 1) + DNS_QUESTION + EDNS_OPT
+                                client.sendto(packet, ('127.0.0.1', proxy_port))
+                            replies = [client.recv(4096) for _ in range(12)]
+                        self.assertCountEqual([struct.unpack_from('!H', r)[0] for r in replies], range(12))
+                        self.assertTrue(all((r[2]&0x80) and (r[3]&15)==0 for r in replies))
+                        await_quiescent(metrics_port, upstream)
+                        observed = upstream.app.snapshot()
+                        self.assertEqual(observed['upstream_http_versions'].get('2'), 12)
+                        self.assertEqual(observed['upstream_connections_used'], 1, observed)
+                        self.assertGreaterEqual(observed['upstream_max_simultaneous_per_connection'], 2)
+                    finally:
+                        proxy.terminate()
+                        try:
+                            proxy.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            proxy.kill()
+                            proxy.wait(timeout=3)
+            finally:
+                upstream.close()
+
     def test_h2_multiplex_and_h1_control(self):
         # Requires hypercorn/h2/openssl; intentionally separate from modern-check.
         with tempfile.TemporaryDirectory(prefix='dnsp-bench-ci-') as td:
