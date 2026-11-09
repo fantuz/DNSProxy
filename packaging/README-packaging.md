@@ -112,7 +112,8 @@ The proxy forwards standard DNS QUERY messages and carries arbitrary DNS
 record types and EDNS options to the upstream resolver. IPv4 UDP requests
 can be up to 65,507 bytes and DNS/TCP and DoH bodies up to 65,535 bytes.
 UDP reply limits are 512 bytes without EDNS and the client's advertised EDNS
-buffer size (clamped to 512–4096) otherwise. Oversized UDP replies are returned
+buffer size (clamped to 512–1232 by default) otherwise. Set `--udp-reply-max`
+to override the upper bound, up to 4096 bytes. Oversized UDP replies are returned
 with `TC=1` and can be retried over TCP. The upstream DoH response must pass
 HTTP status, Content-Type, DNS header/ID/question, and record-boundary checks.
 Use the default loopback bind for local forwarding. The project also includes

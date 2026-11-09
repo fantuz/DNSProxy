@@ -128,6 +128,7 @@ Run `./dnsp-modern --help` for the options available in your build.
 | `--doh-connect-ms MS` | Deadline for the upstream connection phase, 100–60000 ms | `1500` |
 | `--doh-timeout-ms MS` | Total deadline for an upstream request, 100–60000 ms | `3000` |
 | `--cache-entries N` | In-memory DNS answer cache slots, 0–1024 | `0` (disabled) |
+| `--udp-reply-max BYTES` | Maximum UDP reply size with EDNS, 512–4096 | `1232` |
 | `-h`, `--help` | Print options and exit | |
 
 Unknown options or invalid numeric options exit with status 2. Remote upstreams
@@ -188,7 +189,8 @@ flowchart LR
   DoH wire body accept DNS messages up to 65,535 bytes. DNS/TCP carries a
   two-byte length prefix outside that limit.
 - UDP replies are limited to 512 bytes without EDNS. With EDNS, the client's
-  advertised size is clamped to 512–4096. Larger replies use `TC=1` for TCP
+  advertised size is clamped between 512 and `--udp-reply-max` (default 1232).
+  Larger replies use `TC=1` for TCP
   retry. The input and reply limits are independent.
 - DoH transports arbitrary QTYPEs and QCLASSes in standard DNS QUERY messages.
   Unknown record types and well-framed EDNS options are relayed as opaque

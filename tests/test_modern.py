@@ -608,8 +608,8 @@ class Tests(unittest.TestCase):
         self.assertEqual(out[12:], QUERY[12:])
 
     def test_udp_input_bounds_and_valid_prefix(self):
-        self.assertEqual(len(self.udp(sized_query(4096))), 4096)
-        for size in (4097, 65507):
+        self.assertEqual(len(self.udp(sized_query(1232))), 1232)
+        for size in (1233, 4096, 4097, 65507):
             with self.subTest(size=size):
                 before = self.metrics()
                 packet = sized_query(size)
@@ -676,14 +676,19 @@ class Tests(unittest.TestCase):
                 self.assertEqual(out[len(QUERY):], bytes.fromhex('0000291000000000000000'))
 
     def test_udp_edns_large_advertisement_capped(self):
-        out = self.udp(query(65006, edns=65535))
-        self.assertEqual(len(out), len(QUERY) + 140*len(ANSWER) + 11)
-        self.assertLessEqual(len(out), 4096)
+        packet = query(65006, edns=65535)
+        out = self.udp(packet)
+        self.assertTrue(out[2] & 0x02)
+        self.assertLessEqual(len(out), 1232)
+        upstream = f'http://127.0.0.1:{self.server.server_port}/dns-query'
+        full = self.isolated_udp(upstream, '--udp-reply-max', '4096', env=os.environ, packet=packet)
+        self.assertEqual(full, make_response(packet))
+        self.assertEqual(self.tcp(packet), full)
 
     def test_udp_edns_over_max_truncates(self):
         out = self.udp(query(65007, edns=65535))
         self.assertTrue(out[2] & 0x02)
-        self.assertLessEqual(len(out), 4096)
+        self.assertLessEqual(len(out), 1232)
 
     def test_reject_bad_content_type_or_http_status(self):
         for typ in (65008, 65009):
