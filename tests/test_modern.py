@@ -1050,6 +1050,8 @@ class Tests(unittest.TestCase):
         after = self.metrics()
         self.assertGreater(self.metric(after, 'dnsp_upstream_reused_requests_total'),
                            self.metric(before, 'dnsp_upstream_reused_requests_total'))
+        self.assertEqual(self.metric(after, 'dnsp_upstream_easy_handles_reused_total')
+                         - self.metric(before, 'dnsp_upstream_easy_handles_reused_total'), 5)
 
 
 if __name__ == '__main__':

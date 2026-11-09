@@ -287,6 +287,7 @@ Useful Prometheus-compatible series:
 | `dnsp_truncated_responses_total` | Truncated UDP answers |
 | `dnsp_upstream_http_responses_total{version="2"}` | Responses negotiated over HTTP/2 |
 | `dnsp_upstream_new_connections_total`, `dnsp_upstream_reused_requests_total` | libcurl connection activity |
+| `dnsp_upstream_easy_handles_reused_total` | Transfers that took a reset easy handle from the idle pool |
 | `dnsp_upstream_duration_seconds_sum`, `dnsp_upstream_duration_seconds_count` | Aggregate upstream time |
 | `dnsp_curl_socket_callbacks_total`, `dnsp_curl_timer_callbacks_total` | Event-loop activity |
 
