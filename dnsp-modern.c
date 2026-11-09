@@ -1027,7 +1027,7 @@ static void accept_tcp(int server,bool is_metrics) {
     }
 }
 typedef enum {P_UDP,P_TCP_LISTEN,P_METRIC_LISTEN,P_TCP_CLIENT,P_METRIC_CLIENT,P_CURL} PollType;
-typedef struct {struct pollfd p;PollType kind;size_t idx;uint64_t generation;} PollItem;
+typedef struct {PollType kind;size_t idx;uint64_t generation;} PollItem;
 static uint64_t tcp_deadline(const Client *c) {
     if(c->frame_deadline && (!c->write_deadline || c->frame_deadline<c->write_deadline))
         return c->frame_deadline;
@@ -1237,7 +1237,10 @@ int main(int argc,char **argv) {
             if(!drive_curl(CURL_SOCKET_TIMEOUT,0)) {exitcode=1;break;}
         }
         size_t n=0;
-#define ADD(kind_,fd_,events_,idx_,gen_) do {items[n++]=(PollItem){.p={.fd=(fd_),.events=(events_)},.kind=(kind_),.idx=(idx_),.generation=(gen_)};}while(0)
+#define ADD(kind_,fd_,events_,idx_,gen_) do { \
+    pfds[n]=(struct pollfd){.fd=(fd_),.events=(events_)}; \
+    items[n++]=(PollItem){.kind=(kind_),.idx=(idx_),.generation=(gen_)}; \
+} while(0)
         ADD(P_UDP,udp,POLLIN,0,0);
         ADD(P_TCP_LISTEN,tcp,POLLIN,0,0);
         if(mfd>=0) ADD(P_METRIC_LISTEN,mfd,POLLIN,0,0);
@@ -1266,39 +1269,39 @@ int main(int argc,char **argv) {
             uint64_t left=now>=deadline?0:deadline-now;
             if(left<(uint64_t)timeout) timeout=(int)left;
         }
-        for(size_t i=0;i<n;i++) pfds[i]=items[i].p;
         int result=poll(pfds,n,timeout);
-        for(size_t i=0;i<n;i++) items[i].p.revents=pfds[i].revents;
         if(result<0 && errno!=EINTR) {perror("poll");exitcode=1;break;}
         expire_clients(clock_ms());
-        if(result>0) for(size_t i=0;i<n;i++) {
-            short re=items[i].p.revents;
+        for(size_t i=0;i<n && result>0;i++) {
+            short re=pfds[i].revents;
             if(!re) continue;
+            result--;
+            int fd=pfds[i].fd;
             switch(items[i].kind) {
                 case P_UDP:if(re&POLLIN) udp_io(udp);break;
                 case P_TCP_LISTEN:if(re&POLLIN) accept_tcp(tcp,false);break;
                 case P_METRIC_LISTEN:if(re&POLLIN) accept_tcp(mfd,true);break;
                 case P_TCP_CLIENT: {
                     Client *c=&clients[items[i].idx];
-                    if(c->fd!=items[i].p.fd || c->generation!=items[i].generation) break;
+                    if(c->fd!=fd || c->generation!=items[i].generation) break;
                     if(re&(POLLERR|POLLNVAL|POLLHUP)) close_client(c);
                     else tcp_io(c,re); /* Peer SHUT_WR arrives as readable EOF. */
                     break;
                 }
                 case P_METRIC_CLIENT: {
                     MetricClient *c=&metric_clients[items[i].idx];
-                    if(c->fd!=items[i].p.fd || c->generation!=items[i].generation) break;
+                    if(c->fd!=fd || c->generation!=items[i].generation) break;
                     if(re&(POLLERR|POLLHUP|POLLNVAL)) close_metric(c);
                     else metric_io(c,re);
                     break;
                 }
                 case P_CURL:
-                    if(curl_socket_still_watched(items[i].p.fd,items[i].generation)) {
+                    if(curl_socket_still_watched(fd,items[i].generation)) {
                         int ev=0;
                         if(re&POLLIN) ev|=CURL_CSELECT_IN;
                         if(re&POLLOUT) ev|=CURL_CSELECT_OUT;
                         if(re&(POLLERR|POLLHUP|POLLNVAL)) ev|=CURL_CSELECT_ERR;
-                        if(!drive_curl(items[i].p.fd,ev)) {exitcode=1;stopping=1;}
+                        if(!drive_curl(fd,ev)) {exitcode=1;stopping=1;}
                     }
                     break;
             }
