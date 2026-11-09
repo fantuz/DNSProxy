@@ -121,6 +121,7 @@ Run `./dnsp-modern --help` for the options available in your build.
 | `-s URL` | Upstream DoH endpoint | `https://cloudflare-dns.com/dns-query` |
 | `-m PORT` | Loopback-only metrics port, 1–65535 and different from `-p` | Disabled for manual runs. The packaged service uses `9153`. |
 | `--bootstrap-address IP` | Numeric IPv4 or unbracketed IPv6 address for an HTTPS upstream hostname | Resolve the hostname normally |
+| `--edns-padding` | Pad eligible upstream HTTPS DNS queries to a multiple of 128 bytes | Disabled |
 | `--ca-file PEM` | CA certificate bundle for upstream TLS verification | libcurl's default CA bundle |
 | `--max-host-connections N` | Maximum upstream connections per host, 1–16 | `8` |
 | `--tcp-idle-ms MS` | How long a TCP session can wait idle for its next query, 100–600000 ms | `15000` |
@@ -164,6 +165,13 @@ The bundled [HTTP/2 benchmark](bench/README.md) measures concurrent streams,
 QPS, latency percentiles, CPU and RSS on local test servers.
 
 ## Architecture and protocol scope
+
+With `--edns-padding`, the proxy appends zero-filled EDNS Padding to unsigned
+queries with a final EDNS(0) OPT record. Queries that already carry Padding,
+use message signatures, lack a suitable OPT record, or would exceed the DNS
+message limit pass through as sent. The proxy removes response padding from an
+unsigned final EDNS(0) OPT when it added the request padding itself.
+[RFC 8467](https://www.rfc-editor.org/rfc/rfc8467.html#section-4.1)
 
 ```mermaid
 flowchart LR
