@@ -155,7 +155,11 @@ class DoH(http.server.BaseHTTPRequestHandler):
         typ = struct.unpack('!H', data[end-4:end-2])[0] if end > 12 else 0
         if typ == 65010:  # test intentional upstream delay and cancellation
             time.sleep(0.7)
-        self.send_response({65009: 502, 65017: 201}.get(typ, 200))
+        label = data[13:13+data[12]] if end>12 else b''
+        if label in (b'coalesce', b'coalesce-fail'):
+            self.server.coalesce_gate.wait(5)
+        status = 502 if label == b'coalesce-fail' else {65009: 502, 65017: 201}.get(typ, 200)
+        self.send_response(status)
         media = {65008: 'text/plain', 65021: 'Application/DNS-Message ; fixture=ok'}
         self.send_header('Content-Type', media.get(typ, 'application/dns-message'))
         self.send_header('Content-Length', str(len(r)))
@@ -540,6 +544,58 @@ class Tests(unittest.TestCase):
         for t in threads:
             t.join()
         self.assertFalse(errors, errors)
+
+    def test_coalesces_udp_queries_with_bounded_waiters(self):
+        for label, expected_rcode in ((b'coalesce', 0), (b'coalesce-fail', 2)):
+            with self.subTest(label=label):
+                gate = threading.Event()
+                self.server.coalesce_gate = gate
+                before = self.metrics()
+                upstream = 'dnsp_upstream_requests_total'
+                joined = 'dnsp_udp_queries_coalesced_total'
+
+                def packet(qtype, ident):
+                    data = query(qtype, ident=ident)
+                    return data[:12] + bytes([len(label)]) + label + data[16:]
+
+                def send(sock, qtype, ident):
+                    sock.sendto(packet(qtype, ident), ('127.0.0.1', self.port))
+
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as first, \
+                        socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as second:
+                    first.settimeout(4)
+                    second.settimeout(4)
+                    send(first, 1, 100)
+                    ids = range(101, 111) if expected_rcode == 0 else (101,)
+                    for ident in ids:
+                        send(second, 1, ident)
+                    if expected_rcode == 0:
+                        send(second, 1, 101)  # Same peer and ID is a retransmit.
+                        send(first, 28, 200)  # A distinct QTYPE needs its own transfer.
+                    want_upstream, want_joined = (3, 10) if expected_rcode == 0 else (1, 1)
+                    try:
+                        deadline = time.monotonic()+2
+                        while time.monotonic()<deadline:
+                            after = self.metrics()
+                            if (self.metric(after, joined)-self.metric(before, joined) == want_joined and
+                                self.metric(after, upstream)-self.metric(before, upstream) == want_upstream):
+                                break
+                            time.sleep(.01)
+                        else:
+                            self.fail('expected UDP queries to join before the upstream replied')
+                    finally:
+                        gate.set()
+                    for sock, expected_ids in ((first, (100, 200) if expected_rcode == 0 else (100,)),
+                                               (second, ids)):
+                        actual_ids = []
+                        for _ in expected_ids:
+                            reply = sock.recv(4096)
+                            actual_ids.append(struct.unpack_from('!H', reply)[0])
+                            self.assertEqual(reply[3]&15, expected_rcode)
+                        self.assertCountEqual(actual_ids, expected_ids)
+                        sock.settimeout(.1)
+                        with self.assertRaises(socket.timeout):
+                            sock.recv(4096)
 
     def test_invalid_udp_does_not_kill(self):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:

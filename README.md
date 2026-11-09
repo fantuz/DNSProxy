@@ -269,7 +269,13 @@ available. Each warning category emits at most once per ten seconds. The next
 warning in that category reports how many messages it suppressed. The log
 omits the upstream URL, DNS questions, payloads, and client addresses.
 
-When all upstream slots are in use, a valid query receives `SERVFAIL`.
+Matching in-flight UDP A and AAAA queries without EDNS can share one upstream
+transfer. Each reply uses the caller's transaction ID, and repeated datagrams
+from the same endpoint and ID use one reply slot. Each transfer can serve the
+original request plus eight waiters. They share the original upstream deadline.
+
+When all upstream slots are in use, queries that need a new transfer receive
+`SERVFAIL`.
 `dnsp_overload_total` includes these replies and local request setup failures.
 
 The packaged systemd unit enables HTTP metrics at
@@ -281,6 +287,7 @@ Useful Prometheus-compatible series:
 | `dnsp_queries_total{transport="udp"}` / `{transport="tcp"}` | Submitted queries by protocol |
 | `dnsp_queries_satisfied_total` | Complete `NOERROR` and `NXDOMAIN` replies written to client sockets |
 | `dnsp_queries_inflight` | Active upstream requests |
+| `dnsp_udp_queries_coalesced_total` | UDP datagrams that joined an active transfer, including retransmits |
 | `dnsp_upstream_requests_total` | Submitted upstream DoH requests |
 | `dnsp_upstream_success_total`, `dnsp_upstream_failures_total`, `dnsp_upstream_timeouts_total` | Completion and errors |
 | `dnsp_invalid_queries_total`, `dnsp_invalid_responses_total`, `dnsp_overload_total` | Validation/capacity events |
