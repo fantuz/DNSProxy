@@ -23,7 +23,7 @@
 /* DNS/DoH forwarder. All descriptors and CURL handles are
  * owned by one event loop. Do not call libcurl from another thread. */
 enum { DNS_HEADER=12, UDP_RX_MAX=65507, UDP_REPLY_MAX=4096, TCP_MAX=65535,
-       MAX_ACTIVE=128, MAX_CLIENTS=128,
+       MAX_ACTIVE=128, MAX_CLIENTS=128, MAX_UDP_WAITERS=8,
        MAX_METRICS_CLIENTS=16, MAX_CURL_SOCKETS=1024, TCP_IDLE_MS=15000,
        TCP_IO_MS=15000, METRICS_IDLE_MS=3000, DOH_CONNECT_MS=1500, DOH_TIMEOUT_MS=3000,
        MIN_TIMEOUT_MS=100, MAX_DOH_TIMEOUT_MS=60000, MAX_TCP_TIMEOUT_MS=600000,
@@ -112,7 +112,7 @@ typedef struct {
     uint16_t qtype,qclass;
     unsigned char qname[256]; size_t qname_len;
     unsigned char opcode,opt_ext_rcode;
-    bool has_opt,opt_do;
+    bool has_opt,opt_do,message_signature;
 } DnsInfo;
 typedef enum { DNS_OK, DNS_DROP, DNS_FORMERR, DNS_NOTIMP } DnsResult;
 
@@ -147,6 +147,7 @@ static DnsResult dns_parse(const unsigned char *p,size_t n,const DnsInfo *reques
             size_t owner=pos;
             if(!dns_name(p,n,&pos,name,&name_len,true) || pos+10>n) return DNS_FORMERR;
             uint16_t type=be16(p+pos),klass=be16(p+pos+2),rdlen=be16(p+pos+8);
+            if(section==2 && (type==24 || type==250)) info->message_signature=true;
             unsigned char ext_rcode=p[pos+4];
             bool opt_do=(p[pos+6]&0x80)!=0;
             pos+=10;
@@ -175,6 +176,7 @@ static DnsResult dns_parse(const unsigned char *p,size_t n,const DnsInfo *reques
 
 typedef struct Client Client;
 typedef struct Query Query;
+typedef struct {struct sockaddr_in peer;uint16_t id;} UdpWaiter;
 typedef struct {
     size_t count;
     uint16_t offset[CACHE_MAX_ANSWERS];
@@ -204,6 +206,9 @@ struct Query {
     DnsInfo info;
     struct sockaddr_storage peer;socklen_t peer_len;
     Client *client;uint64_t generation;int udp_fd;
+    bool shareable_udp;
+    size_t udp_waiter_count;
+    UdpWaiter udp_waiters[MAX_UDP_WAITERS];
     CacheEntry *cache_slot;
     CacheHeaders cache_headers;
     Query *next;
@@ -216,6 +221,7 @@ typedef struct {
       http1,http2,http3,socket_callbacks,timer_callbacks,timer_fires,
       tcp_accepted,tcp_closed,tcp_keepalive_queries,tcp_pipeline_buffered,
       tcp_half_closes,tcp_idle_timeouts,tcp_io_timeouts,tcp_cancelled_upstream,cache_hits,cache_misses;
+    uint64_t udp_queries_coalesced;
     double upstream_seconds;
 } Metrics;
 static Metrics metrics;
@@ -343,6 +349,16 @@ static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_qu
     } else {
         ssize_t written=sendto(q->udp_fd,p,n,0,(struct sockaddr*)&q->peer,q->peer_len);
         if(satisfies_query && written==(ssize_t)n) metrics.queries_satisfied++;
+        for(size_t i=0;i<q->udp_waiter_count;i++) {
+            UdpWaiter *waiter=&q->udp_waiters[i];
+            unsigned char id[]={ (unsigned char)(waiter->id>>8),(unsigned char)waiter->id };
+            struct iovec parts[]={ {.iov_base=id,.iov_len=sizeof(id)},
+                                   {.iov_base=(void*)(p+2),.iov_len=n-2} };
+            struct msghdr message={.msg_name=&waiter->peer,.msg_namelen=sizeof(waiter->peer),
+                                   .msg_iov=parts,.msg_iovlen=2};
+            written=sendmsg(q->udp_fd,&message,0);
+            if(satisfies_query && written==(ssize_t)n) metrics.queries_satisfied++;
+        }
     }
 }
 static size_t append_local_opt(const Query *q,unsigned char *p,size_t n,unsigned char ext_rcode) {
@@ -392,9 +408,12 @@ static bool dns_content_type(const char *type) {
 static bool cache_empty_opt(const unsigned char *p,size_t n) {
     return n==DNS_OPT_SIZE && p[0]==0 && be16(p+1)==41 && be32(p+5)==0 && be16(p+9)==0;
 }
+static bool plain_address_query(const unsigned char *p,const DnsInfo *info) {
+    return be16(p+4)==1 && info->qclass==1 && (info->qtype==1 || info->qtype==28) &&
+           p[2]==1 && !(p[3]&~0x20);
+}
 static CacheEntry *cache_slot_for(const unsigned char *p,size_t n,const DnsInfo *info) {
-    if(!cache_entries || n>CACHE_MAX_QUERY || be16(p+4)!=1 || info->qclass!=1 ||
-       (info->qtype!=1 && info->qtype!=28) || p[2]!=1 || (p[3]&~0x20)) return NULL;
+    if(!cache_entries || n>CACHE_MAX_QUERY || !plain_address_query(p,info)) return NULL;
     uint16_t additional=be16(p+10);
     if(additional && (additional!=1 || !cache_empty_opt(p+info->question_end,n-info->question_end))) return NULL;
     uint32_t hash=2166136261u;
@@ -551,6 +570,29 @@ static void record_client_query(Client *client) {
         metrics.tcp_queries++;
     } else metrics.udp_queries++;
 }
+static bool same_udp_peer(const struct sockaddr_in *a,const struct sockaddr_in *b) {
+    return a->sin_port==b->sin_port && a->sin_addr.s_addr==b->sin_addr.s_addr;
+}
+static bool join_udp_query(const Query *pending,const unsigned char *data) {
+    UdpWaiter incoming={.id=be16(data)};
+    memcpy(&incoming.peer,&pending->peer,sizeof(incoming.peer));
+    Query *available=NULL;
+    for(Query *q=active;q;q=q->next) {
+        if(!q->shareable_udp || q->udp_fd!=pending->udp_fd || q->req_len!=pending->req_len ||
+           memcmp(q->request+2,data+2,q->req_len-2)!=0) continue;
+        struct sockaddr_in leader;
+        memcpy(&leader,&q->peer,sizeof(leader));
+        if(incoming.id==be16(q->request) && same_udp_peer(&incoming.peer,&leader)) return true;
+        for(size_t i=0;i<q->udp_waiter_count;i++) {
+            UdpWaiter *waiter=&q->udp_waiters[i];
+            if(incoming.id==waiter->id && same_udp_peer(&incoming.peer,&waiter->peer)) return true;
+        }
+        if(!available && q->udp_waiter_count<MAX_UDP_WAITERS) available=q;
+    }
+    if(!available) return false;
+    available->udp_waiters[available->udp_waiter_count++]=incoming;
+    return true;
+}
 static void complete(Query *q,CURLcode code) {
     long status=0,version=0,connects=0;
     char *content_type=NULL;
@@ -577,6 +619,8 @@ static void complete(Query *q,CURLcode code) {
     else if(!dns_content_type(content_type)) failure=LOG_CONTENT;
     else if(q->resp_len<DNS_HEADER || be16(q->response)!=be16(q->request) ||
             dns_parse(q->response,q->resp_len,&q->info,&response)!=DNS_OK) failure=LOG_DNS;
+    /* A message signature would no longer match a rewritten transaction ID. */
+    else if(q->udp_waiter_count && response.message_signature) failure=LOG_DNS;
     if(failure==LOG_COUNT) {
         metrics.upstream_ok++;
         if(status==200) cache_store(q,&response,seconds);
@@ -620,6 +664,14 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
         }
         metrics.cache_misses++;
         pending.cache_headers.max_age=UINT32_MAX;
+    }
+    /* Share only unsigned UDP address queries without additional records. */
+    pending.shareable_udp=!client && peer_len==sizeof(struct sockaddr_in) &&
+                          pending.peer.ss_family==AF_INET && !be16(data+10) && plain_address_query(data,&info);
+    if(pending.shareable_udp && join_udp_query(&pending,data)) {
+        metrics.udp_queries_coalesced++;
+        record_client_query(NULL);
+        return true;
     }
     if(active_count>=MAX_ACTIVE) {
         log_failure(LOG_CAPACITY,client!=NULL,CURLE_OK,0);
@@ -812,6 +864,7 @@ static void report_status(uint64_t uptime_ms,const char *bindip,int port,int met
             " max_host_connections=%d doh_connect_ms=%ld doh_timeout_ms=%ld"
             " tcp_idle_ms=%" PRIu64 " tcp_io_ms=%" PRIu64
             " queries_satisfied=%" PRIu64 " udp_queries=%" PRIu64 " tcp_queries=%" PRIu64
+            " udp_queries_coalesced=%" PRIu64
             " upstream_ok=%" PRIu64 " upstream_failed=%" PRIu64 " upstream_timeouts=%" PRIu64
             " invalid_queries=%" PRIu64 " invalid_responses=%" PRIu64 " overload=%" PRIu64
             " udp_truncated=%" PRIu64 " tcp_cancelled_upstream=%" PRIu64
@@ -822,6 +875,7 @@ static void report_status(uint64_t uptime_ms,const char *bindip,int port,int met
             uptime_ms,bindip,port,metrics_port,loopback_http?"http":"https",http_preference,
             bootstrap_hosts?"enabled":"disabled",max_host_connections,doh_connect_ms,doh_timeout_ms,
             tcp_idle_ms,tcp_io_ms,metrics.queries_satisfied,metrics.udp_queries,metrics.tcp_queries,
+            metrics.udp_queries_coalesced,
             metrics.upstream_ok,metrics.upstream_failed,metrics.upstream_timeouts,
             metrics.invalid_queries,metrics.invalid_responses,metrics.overload,metrics.truncated,
             metrics.tcp_cancelled_upstream,metrics.http1,metrics.http2,metrics.requests_new_connections,
@@ -842,6 +896,8 @@ static void metric_response(MetricClient *c) {
         "dnsp_cache_hits_total %" PRIu64 "\n"
         "# TYPE dnsp_cache_misses_total counter\n"
         "dnsp_cache_misses_total %" PRIu64 "\n"
+        "# TYPE dnsp_udp_queries_coalesced_total counter\n"
+        "dnsp_udp_queries_coalesced_total %" PRIu64 "\n"
         "# TYPE dnsp_tcp_connections_accepted_total counter\n"
         "dnsp_tcp_connections_accepted_total %llu\n"
         "# TYPE dnsp_tcp_connections_closed_total counter\n"
@@ -883,7 +939,7 @@ static void metric_response(MetricClient *c) {
         "dnsp_tcp_clients %zu\n"
         "dnsp_curl_socket_watches %zu\n",
         (unsigned long long)metrics.udp_queries,(unsigned long long)metrics.tcp_queries,
-        metrics.queries_satisfied,metrics.cache_hits,metrics.cache_misses,
+        metrics.queries_satisfied,metrics.cache_hits,metrics.cache_misses,metrics.udp_queries_coalesced,
         (unsigned long long)metrics.tcp_accepted,(unsigned long long)metrics.tcp_closed,
         (unsigned long long)metrics.tcp_keepalive_queries,
         (unsigned long long)metrics.tcp_pipeline_buffered,
