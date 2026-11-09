@@ -63,6 +63,10 @@ class BenchmarkIntegrationTests(unittest.TestCase):
                         self.assertCountEqual([struct.unpack_from('!H', r)[0] for r in replies], range(12))
                         self.assertTrue(all((r[2]&0x80) and (r[3]&15)==0 for r in replies))
                         await_quiescent(metrics_port, upstream)
+                        timing = metric_snapshot(metrics_port)
+                        self.assertEqual(timing['dnsp_upstream_phase_duration_seconds_count{phase="tls"}'], 1)
+                        self.assertGreater(timing['dnsp_upstream_phase_duration_seconds_sum{phase="tls"}'], 0)
+                        self.assertEqual(timing['dnsp_upstream_phase_duration_seconds_count{phase="first_byte"}'], 12)
                         observed = upstream.app.snapshot()
                         self.assertEqual(observed['upstream_http_versions'].get('2'), 12)
                         self.assertEqual(observed['upstream_connections_used'], 1, observed)
@@ -86,6 +90,7 @@ class BenchmarkIntegrationTests(unittest.TestCase):
                    '--protocol', 'both', '--concurrency', '1,8',
                    '--duration', '0.7', '--warmup', '0.2',
                    '--max-host-connections', '1', '--assert-h2-multiplex',
+                   '--h2-max-streams', '4', '--h2-idle-timeout', '0.25',
                    '--output', str(dest)]
             out = subprocess.run(cmd, text=True, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, timeout=60)
@@ -95,13 +100,39 @@ class BenchmarkIntegrationTests(unittest.TestCase):
             h2 = next(r for r in results if r['protocol_requested']=='h2' and r['concurrency']==8)
             h1 = next(r for r in results if r['protocol_requested']=='h1' and r['concurrency']==8)
             self.assertGreaterEqual(h2['upstream_observed']['upstream_max_simultaneous_per_connection'], 2)
+            self.assertLessEqual(h2['upstream_observed']['upstream_max_simultaneous_per_connection'], 4)
             self.assertEqual(h1['upstream_observed']['upstream_max_simultaneous_per_connection'], 1)
             self.assertGreater(h2['curl_metric_delta']['dnsp_upstream_http_responses_total{version="2"}'], 0)
             self.assertEqual(h1['curl_metric_delta']['dnsp_upstream_http_responses_total{version="2"}'], 0)
             self.assertGreater(h2['successful_queries'], 0)
             self.assertGreater(h1['successful_queries'], 0)
             self.assertGreater(h2['proxy_rss_peak_bytes'], 0)
+            phases = h2['upstream_phases']
+            self.assertEqual(phases['first_byte']['samples'], h2['successful_queries'])
+            self.assertGreater(phases['first_byte']['mean_ms'], 0)
+            self.assertEqual(phases['tls'], {'samples': 0, 'mean_ms': None})
+            idle = h2['h2_idle_probe']
+            self.assertEqual(idle['successful_queries'], 1)
+            self.assertEqual(idle['curl_metric_delta']['dnsp_upstream_new_connections_total'], 1)
+            self.assertEqual(idle['upstream_phases']['tls']['samples'], 1)
+            self.assertIsNone(h1['h2_idle_probe'])
             self.assertTrue(dest.with_suffix('.csv').is_file())
+
+    def test_h2_recovers_after_goaway(self):
+        with tempfile.TemporaryDirectory(prefix='dnsp-goaway-') as td:
+            dest = Path(td)/'results.json'
+            out = subprocess.run([
+                sys.executable, str(BASE/'bench/bench_modern.py'),
+                '--protocol', 'h2', '--concurrency', '1', '--h2-max-requests', '2',
+                '--warmup', '0.001', '--duration', '4.5', '--output', str(dest),
+            ], text=True, capture_output=True, timeout=30)
+            self.assertEqual(out.returncode, 0, f'{out.stdout}\n{out.stderr}')
+            result, = json.loads(dest.read_text())['results']
+            # One request used the original connection during warmup. Successful
+            # replies on two peer sockets prove recovery beyond the GOAWAY boundary.
+            self.assertGreaterEqual(result['successful_queries'], 2, result)
+            self.assertGreaterEqual(result['upstream_observed']['upstream_connections_used'], 2, result)
+            self.assertGreaterEqual(result['curl_metric_delta']['dnsp_upstream_new_connections_total'], 1)
 
 
 if __name__ == '__main__':

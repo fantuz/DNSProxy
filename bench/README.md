@@ -55,6 +55,13 @@ wire-level network throughput. The mock does no recursion or caching.
 * `curl_metric_delta` = before/after differences from `127.0.0.1:<port>/metrics`,
   including new/reused upstream connections, response versions, successes,
   failures, timeouts and upstream cumulative request time.
+* `upstream_phases` reports a sample count and mean in milliseconds for libcurl
+  queue wait, TCP-to-TLS handshake time on new connections, and the time from
+  transfer-ready to first byte. First-byte time includes sending the query,
+  network transit and the upstream's response preparation. Queue timing
+  requires libcurl 8.6 or newer. A phase with zero samples has a `null` mean.
+  These observations have different sample sets. Use `p99_ms` for end-to-end
+  tail latency.
 * `upstream_observed.upstream_connections_used` = distinct TCP peer address/port
   tuples observed by the synthetic ASGI upstream **within this scenario**.
   For HTTP/2, one tuple can carry many simultaneous streams.
@@ -74,6 +81,40 @@ CI. Compare *differences under matched conditions*, repeat runs, and benchmark
 on the real deployment hardware before inferring production capacity. The
 HTTP/2 server's keepalive request ceiling is raised from Hypercorn's default
 of 1000 to avoid spurious HTTP/2 GOAWAY/framing errors during prolonged tests.
+
+### Constrained streams and idle reconnects
+
+```bash
+.bench-venv/bin/python bench/bench_modern.py \
+  --protocol h2 --concurrency 16,64 --h2-max-streams 8 \
+  --h2-idle-timeout 0.5 --max-host-connections 2 --duration 5 \
+  --output dist/bench-h2-limits.json
+```
+
+Repeat with caps `1`, `2`, and `8` to see how queueing and p99 change when the
+peer advertises a smaller stream limit. With `--h2-idle-timeout`, the harness
+waits for the mock's idle timeout after warmup and records a separate one-query
+`h2_idle_probe` with its latency, connection count and timing phases.
+Use `--h2-max-requests N` in a separate run to force connection retirement
+with GOAWAY. Check successes and failures as well as new connections because
+the mock can interrupt a query at the retirement boundary.
+
+### Upstream packet loss and delay on Linux
+
+Install `iproute2` and use a host with the kernel `netem` queue discipline.
+The wrapper creates a temporary network namespace and shapes only IPv4 TCP
+traffic to or from the mock DoH port. The DNS and metrics links stay on
+unshaped loopback. The first two arguments are one-way delay and packet loss.
+
+```bash
+sudo sh bench/netem.sh 10ms 0.5% .bench-venv/bin/python \
+  --protocol h2 --concurrency 16,64 --h2-max-streams 8 \
+  --max-host-connections 8 --duration 5 --output dist/bench-h2-loss.json
+```
+
+Compare against the same command with `0ms 0%`. The wrapper prints queue
+statistics so the run records whether packets were dropped. The namespace and
+its traffic rules disappear when the benchmark exits.
 
 ### Longer stability check
 

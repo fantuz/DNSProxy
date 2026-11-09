@@ -10,6 +10,7 @@ from array import array
 import csv
 import http.client
 import json
+import math
 import os
 from pathlib import Path
 import socket
@@ -33,6 +34,7 @@ COUNTERS = [
     'dnsp_upstream_duration_seconds_sum', 'dnsp_upstream_duration_seconds_count',
     'dnsp_overload_total', 'dnsp_truncated_responses_total',
 ]
+PHASES = ('queue', 'tls', 'first_byte')
 
 
 def free_port():
@@ -75,6 +77,17 @@ def metric_snapshot(port):
 
 def metrics_delta(before, after):
     return {k: after[k]-before[k] for k in COUNTERS}
+
+
+def phase_timings(before, after):
+    phases = {}
+    for phase in PHASES:
+        count_key = f'dnsp_upstream_phase_duration_seconds_count{{phase="{phase}"}}'
+        sum_key = f'dnsp_upstream_phase_duration_seconds_sum{{phase="{phase}"}}'
+        count = int(after.get(count_key, 0) - before.get(count_key, 0))
+        total = after.get(sum_key, 0) - before.get(sum_key, 0)
+        phases[phase] = {'samples': count, 'mean_ms': round(total * 1000 / count, 3) if count else None}
+    return phases
 
 
 def proxy_cpu_rss(pid):
@@ -241,7 +254,7 @@ def run_suite(args, protocol, tmpdir):
     proxy_log = tmpdir / f'proxy-{protocol}.log'
     f = None
     try:
-        upstream_port = free_port()
+        upstream_port = args.mock_upstream_port or free_port()
         proxy_port = free_port()
         metrics_port = free_port()
         if args.upstream_url:
@@ -250,7 +263,10 @@ def run_suite(args, protocol, tmpdir):
         else:
             cert, key = make_certificate(tmpdir)
             upstream_server = MockServer(upstream_port, cert, key, protocol=protocol,
-                                         delay_ms=args.upstream_delay_ms, answers=args.answers)
+                                         delay_ms=args.upstream_delay_ms, answers=args.answers,
+                                         h2_max_streams=args.h2_max_streams,
+                                         h2_idle_timeout=args.h2_idle_timeout or 30,
+                                         h2_max_requests=args.h2_max_requests)
             upstream_server.start()
             await_ready(upstream_port, None, 'DoH mock')
             if upstream_server.failure:
@@ -259,7 +275,7 @@ def run_suite(args, protocol, tmpdir):
         cmd = [str(args.binary), '-p', str(proxy_port), '-m', str(metrics_port),
                '-s', url, '--max-host-connections', str(args.max_host_connections)]
         if cert:
-            cmd += ['--ca-file', str(cert)]
+            cmd += ['--ca-file', str(cert), '--bootstrap-address', '127.0.0.1']
         f = proxy_log.open('wb')
         proxy = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=f)
         await_ready(metrics_port, proxy, 'DNSProxy metrics')
@@ -271,6 +287,16 @@ def run_suite(args, protocol, tmpdir):
                 upstream_server.app.reset()
             one_load(proxy_port, min(concurrency, 8), args.warmup)
             await_quiescent(metrics_port, upstream_server)
+            idle_probe = None
+            if protocol == 'h2' and args.h2_idle_timeout:
+                before_idle = metric_snapshot(metrics_port)
+                time.sleep(args.h2_idle_timeout + 0.2)
+                # Zero seconds still issues the initial single query.
+                idle_probe = one_load(proxy_port, 1, 0)
+                await_quiescent(metrics_port, upstream_server)
+                after_idle = metric_snapshot(metrics_port)
+                idle_probe['curl_metric_delta'] = metrics_delta(before_idle, after_idle)
+                idle_probe['upstream_phases'] = phase_timings(before_idle, after_idle)
             if upstream_server:
                 upstream_server.app.reset()
             before = metric_snapshot(metrics_port)
@@ -290,6 +316,8 @@ def run_suite(args, protocol, tmpdir):
                 'proxy_rss_peak_bytes': rss_peak,
                 'proxy_rss_delta_bytes': rss_after-rss_before if rss_before is not None and rss_after is not None else None,
                 'curl_metric_delta': metrics_delta(before, after),
+                'upstream_phases': phase_timings(before, after),
+                'h2_idle_probe': idle_probe,
                 'upstream_observed': upstream_server.app.snapshot() if upstream_server else None,
             })
             if args.assert_h2_multiplex and upstream_server and protocol=='h2' and concurrency>=8:
@@ -338,6 +366,13 @@ def parse_args():
     parser.add_argument('--upstream-delay-ms', type=float, default=5.0)
     parser.add_argument('--answers', type=int, default=1, help='A records per reply (1..240); tests response payload size')
     parser.add_argument('--max-host-connections', type=int, default=1)
+    parser.add_argument('--h2-max-streams', type=int, default=100,
+                        help='Advertised HTTP/2 stream limit on the synthetic upstream')
+    parser.add_argument('--h2-idle-timeout', type=float,
+                        help='Set the mock HTTP/2 idle timeout and measure the first query after it expires')
+    parser.add_argument('--h2-max-requests', type=int, default=10_000_000,
+                        help='Synthetic HTTP/2 connection request ceiling for exercising GOAWAY')
+    parser.add_argument('--mock-upstream-port', type=int, help='Fixed loopback port for traffic shaping')
     parser.add_argument('--upstream-url', help='Optional real HTTPS DoH endpoint; requires public trusted CA; no synthetic upstream statistics')
     parser.add_argument('--assert-h2-multiplex', action='store_true', help='Fail if synthetic HTTP/2 concurrent streams are not observed at c>=8')
     parser.add_argument('--output', type=Path, default=Path('dist/bench-modern.json'))
@@ -354,6 +389,18 @@ def parse_args():
         parser.error('invalid benchmark argument (concurrency 1..128, connections 1..16)')
     if args.upstream_url and (not args.upstream_url.startswith('https://') or args.protocol=='both'):
         parser.error('external upstream requires HTTPS and --protocol h1 or h2 (negotiation is server-controlled)')
+    if not 1 <= args.h2_max_streams <= 2**31 - 1 or args.h2_max_requests < 1:
+        parser.error('HTTP/2 stream and request limits must be positive (streams <= 2147483647)')
+    if args.h2_idle_timeout is not None and not (math.isfinite(args.h2_idle_timeout) and args.h2_idle_timeout > 0):
+        parser.error('--h2-idle-timeout must be a positive finite number')
+    if args.mock_upstream_port is not None and not 1 <= args.mock_upstream_port <= 65535:
+        parser.error('--mock-upstream-port must be in 1..65535')
+    h2_controls = (args.h2_idle_timeout is not None or
+                   args.h2_max_streams != 100 or args.h2_max_requests != 10_000_000)
+    if args.upstream_url and (h2_controls or args.mock_upstream_port is not None):
+        parser.error('HTTP/2 fixture controls and --mock-upstream-port require the synthetic upstream')
+    if args.protocol == 'h1' and h2_controls:
+        parser.error('HTTP/2 fixture controls require --protocol h2 or both')
     return args
 
 

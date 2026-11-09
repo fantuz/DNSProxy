@@ -318,6 +318,7 @@ Useful Prometheus-compatible series:
 | `dnsp_upstream_new_connections_total`, `dnsp_upstream_reused_requests_total` | libcurl connection activity |
 | `dnsp_upstream_easy_handles_reused_total` | Transfers that took a reset easy handle from the idle pool |
 | `dnsp_upstream_duration_seconds_sum`, `dnsp_upstream_duration_seconds_count` | Aggregate upstream time |
+| `dnsp_upstream_phase_duration_seconds_sum`, `dnsp_upstream_phase_duration_seconds_count` | Queue wait (libcurl 8.6+), new TLS handshake, and time from transfer-ready to first byte, selected by `phase` |
 | `dnsp_curl_socket_callbacks_total`, `dnsp_curl_timer_callbacks_total` | Event-loop activity |
 
 Metrics reset when the process restarts. They do not expose query names or
