@@ -1082,7 +1082,18 @@ class Tests(unittest.TestCase):
                     except (BrokenPipeError, ConnectionResetError):
                         pass  # A rejected certificate can close before HTTP starts.
 
+                def do_POST(self):
+                    data = self.rfile.read(int(self.headers['Content-Length']))
+                    self.server.received.append(data)
+                    reply = make_response(data)
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/dns-message')
+                    self.send_header('Content-Length', str(len(reply)))
+                    self.end_headers()
+                    self.wfile.write(reply)
+
             with HTTP(('127.0.0.1', 0), TLSDoH) as server:
+                server.received = []
                 server.socket = context.wrap_socket(server.socket, server_side=True)
                 thread = threading.Thread(target=server.serve_forever, daemon=True)
                 thread.start()
@@ -1094,6 +1105,23 @@ class Tests(unittest.TestCase):
                             answer = self.isolated_udp(url, '--ca-file', cert,
                                                        '--bootstrap-address', '127.0.0.1', env=env)
                             self.assertEqual(answer[3] & 15, rcode)
+                    url = f'https://dnsp-bootstrap.invalid:{server.server_port}/dns-query'
+                    option = struct.pack('!HH', 65000, 2) + b'ok'
+                    unpadded = edns_options(query(edns=1232), option)
+                    padded = edns_options(unpadded[:-len(option)], option + padding_option(9))
+                    expected = edns_options(unpadded[:-len(option)],
+                                            option + padding_option(128 - len(unpadded)))
+                    for packet, enabled, upstream in ((unpadded, False, unpadded),
+                                                       (unpadded, True, expected),
+                                                       (padded, True, padded),
+                                                       (QUERY, True, QUERY)):
+                        with self.subTest(enabled=enabled, size=len(packet)):
+                            args = ['--edns-padding'] if enabled else []
+                            answer = self.isolated_udp(url, '--ca-file', cert,
+                                                       '--bootstrap-address', '127.0.0.1',
+                                                       *args, env=env, packet=packet)
+                            self.assertEqual(server.received[-1], upstream)
+                            self.assertEqual(answer, make_response(packet))
                 finally:
                     server.shutdown()
                     thread.join(timeout=3)

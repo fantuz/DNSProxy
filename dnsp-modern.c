@@ -109,6 +109,7 @@ static bool dns_opt_options(const unsigned char *p,size_t pos,size_t end) {
 }
 typedef struct {
     size_t question_end;
+    size_t final_opt_rdlen;
     uint16_t udp_limit;
     uint16_t qtype,qclass;
     unsigned char qname[256]; size_t qname_len;
@@ -160,6 +161,8 @@ static DnsResult dns_parse(const unsigned char *p,size_t n,const DnsInfo *reques
                     unsigned sz=klass<512?512:klass;
                     info->udp_limit=(uint16_t)(sz>UDP_REPLY_MAX?UDP_REPLY_MAX:sz);
                 }
+                if(i+1==counts[2] && !p[pos-5] && (response || !ext_rcode))
+                    info->final_opt_rdlen=pos-2;
                 if(p[owner]!=0 || rdlen>n-pos || !dns_opt_options(p,pos,pos+rdlen)) return DNS_FORMERR;
             } else if(rdlen>n-pos || !dns_rr_names(p,pos,pos+rdlen,type)) return DNS_FORMERR;
             pos+=rdlen;
@@ -207,7 +210,7 @@ struct Query {
     DnsInfo info;
     struct sockaddr_storage peer;socklen_t peer_len;
     Client *client;uint64_t generation;int udp_fd;
-    bool shareable_udp;
+    bool shareable_udp,added_padding;
     size_t udp_waiter_count;
     UdpWaiter udp_waiters[MAX_UDP_WAITERS];
     CacheEntry *cache_slot;
@@ -233,6 +236,7 @@ static CURL *idle_easies[MAX_IDLE_EASIES];
 static size_t idle_easy_count;
 static const char *upstream;
 static bool loopback_http;
+static bool edns_padding;
 static long upstream_http_version=CURL_HTTP_VERSION_1_1;
 static struct curl_slist *bootstrap_hosts;
 static struct curl_slist *doh_headers;
@@ -596,6 +600,44 @@ static void record_client_query(Client *client) {
 static bool same_udp_peer(const struct sockaddr_in *a,const struct sockaddr_in *b) {
     return a->sin_port==b->sin_port && a->sin_addr.s_addr==b->sin_addr.s_addr;
 }
+enum { EDNS_PADDING_BLOCK=128, EDNS_PADDING_CODE=12 };
+static size_t edns_padding_size(const unsigned char *p,size_t n,const DnsInfo *info) {
+    if(!info->final_opt_rdlen || info->message_signature) return 0;
+    for(size_t pos=info->final_opt_rdlen+2;pos<n;pos+=4+be16(p+pos+2)) {
+        if(be16(p+pos)==EDNS_PADDING_CODE) return 0;
+    }
+    /* Include the option header in the padded DNS wire length. */
+    size_t extra=4+(EDNS_PADDING_BLOCK-(n+4)%EDNS_PADDING_BLOCK)%EDNS_PADDING_BLOCK;
+    return extra<=TCP_MAX-n?extra:0;
+}
+static void write_padded_query(unsigned char *out,const unsigned char *p,size_t n,
+                               const DnsInfo *info,size_t extra) {
+    memcpy(out,p,n);
+    memset(out+n,0,extra);
+    size_t rdlen=be16(p+info->final_opt_rdlen)+extra;
+    out[info->final_opt_rdlen]=(unsigned char)(rdlen>>8);
+    out[info->final_opt_rdlen+1]=(unsigned char)rdlen;
+    out[n+1]=EDNS_PADDING_CODE;
+    out[n+3]=(unsigned char)(extra-4);
+}
+/* A proxy-added request option is local to the upstream HTTPS exchange. */
+static void strip_doh_padding(Query *q,const DnsInfo *info) {
+    if(!q->added_padding || !info->final_opt_rdlen || info->message_signature) return;
+    unsigned char *p=q->response;
+    size_t start=info->final_opt_rdlen+2,write_pos=start;
+    for(size_t pos=start;pos<q->resp_len;) {
+        size_t len=4+be16(p+pos+2);
+        if(be16(p+pos)!=EDNS_PADDING_CODE) {
+            if(write_pos!=pos) memmove(p+write_pos,p+pos,len);
+            write_pos+=len;
+        }
+        pos+=len;
+    }
+    size_t rdlen=write_pos-start;
+    p[start-2]=(unsigned char)(rdlen>>8);
+    p[start-1]=(unsigned char)rdlen;
+    q->resp_len=write_pos;
+}
 static bool join_udp_query(const Query *pending,const unsigned char *data) {
     UdpWaiter incoming={.id=be16(data)};
     memcpy(&incoming.peer,&pending->peer,sizeof(incoming.peer));
@@ -645,6 +687,7 @@ static void complete(Query *q,CURLcode code) {
     /* A message signature would no longer match a rewritten transaction ID. */
     else if(q->udp_waiter_count && response.message_signature) failure=LOG_DNS;
     if(failure==LOG_COUNT) {
+        strip_doh_padding(q,&response);
         metrics.upstream_ok++;
         if(status==200) cache_store(q,&response,seconds);
         if(!q->client && q->resp_len>q->info.udp_limit) send_truncated(q,&response);
@@ -705,9 +748,17 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
     Query *q=malloc(sizeof(*q));
     if(!q) goto setup_failure;
     *q=pending;
-    q->request=malloc(len);
+    size_t extra=edns_padding && !loopback_http?edns_padding_size(data,len,&info):0;
+    q->request=malloc(len+(extra?len+extra:0));
     if(!q->request) goto fail;
     memcpy(q->request,data,len);
+    const unsigned char *post=q->request;
+    if(extra) {
+        /* Keep the original wire key and question for cache and reply handling. */
+        write_padded_query(q->request+len,data,len,&info,extra);
+        q->added_padding=true;
+        post=q->request+len;
+    }
     q->easy=acquire_easy();
     if(!q->easy) goto fail;
 #define OPT(key,val) do {setup_code=curl_easy_setopt(q->easy,key,val);if(setup_code!=CURLE_OK) goto fail;}while(0)
@@ -715,8 +766,8 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
     if(loopback_http || bootstrap_hosts) OPT(CURLOPT_PROXY,"");
     if(bootstrap_hosts) OPT(CURLOPT_RESOLVE,bootstrap_hosts);
     OPT(CURLOPT_HTTPHEADER,doh_headers);
-    OPT(CURLOPT_POSTFIELDS,q->request);
-    OPT(CURLOPT_POSTFIELDSIZE_LARGE,(curl_off_t)len);
+    OPT(CURLOPT_POSTFIELDS,post);
+    OPT(CURLOPT_POSTFIELDSIZE_LARGE,(curl_off_t)(len+extra));
     OPT(CURLOPT_HTTP_VERSION,upstream_http_version);
     if(upstream_http_version==CURL_HTTP_VERSION_2TLS && !loopback_http)
         OPT(CURLOPT_PIPEWAIT,1L);
@@ -1095,6 +1146,7 @@ static void usage(FILE *stream,const char *program) {
             "  -s URL                      Upstream DoH URL (default https://cloudflare-dns.com/dns-query)\n"
             "  -m PORT                     Loopback metrics port, 1..65535 (default disabled)\n"
             "  --bootstrap-address IP      Numeric IPv4 or IPv6 address for the HTTPS upstream\n"
+            "  --edns-padding               Pad eligible upstream HTTPS DNS queries to 128-byte blocks\n"
             "  --ca-file PEM                CA bundle for upstream TLS verification\n"
             "  --max-host-connections N     Upstream connections, 1..16 (default 8)\n"
             "  --tcp-idle-ms MS             Idle TCP session, %d..%d (default %d)\n"
@@ -1124,6 +1176,7 @@ int main(int argc,char **argv) {
         }
         else if(!strcmp(argv[i],"-m") && i+1<argc) metrics_port=(int)parse_range(argv[++i],1,65535);
         else if(!strcmp(argv[i],"--ca-file") && i+1<argc) ca_file=argv[++i];
+        else if(!strcmp(argv[i],"--edns-padding")) edns_padding=true;
         else if(i+1<argc && (!strcmp(argv[i],"--tcp-idle-ms") || !strcmp(argv[i],"--tcp-io-ms") ||
                             !strcmp(argv[i],"--doh-connect-ms") || !strcmp(argv[i],"--doh-timeout-ms"))) {
             const char *option=argv[i];
