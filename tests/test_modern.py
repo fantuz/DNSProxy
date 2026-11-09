@@ -194,7 +194,10 @@ class CacheDoH(DoH):
             flags |= 0x0200
         response = (data[:2] + struct.pack('!H', flags) + data[4:6] + struct.pack('!H', count)
                     + data[8:end] + answer + data[end:])
-        self.send_response(200)
+        # Keep short lifetimes independent of whole-second Date rounding.
+        self.send_response_only(200)
+        if label == b'old-date':
+            self.send_header('Date', self.date_time_string(time.time()-60))
         self.send_header('Content-Type', 'application/dns-message')
         if label in (b'aged', b'short-http', b'already-stale'):
             self.send_header('Age', '31' if label == b'already-stale' else '7')
@@ -969,7 +972,7 @@ class Tests(unittest.TestCase):
                 do[-4] |= 0x80
                 cd = bytearray(packet(b'checking'))
                 cd[3] |= 0x10
-                bypass = (b'zero', b'negative', b'nodata', b'tc', b'already-stale',
+                bypass = (b'zero', b'negative', b'nodata', b'tc', b'already-stale', b'old-date',
                           b'nostore', b'nocache', b'private', b'vary')
                 for data in (*map(packet, bypass), option, do, cd):
                     before = counter('upstream_requests')
