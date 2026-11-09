@@ -22,7 +22,7 @@
 
 /* DNS/DoH forwarder. All descriptors and CURL handles are
  * owned by one event loop. Do not call libcurl from another thread. */
-enum { DNS_HEADER=12, UDP_RX_MAX=65507, UDP_REPLY_MAX=4096, TCP_MAX=65535,
+enum { DNS_HEADER=12, UDP_RX_MAX=65507, UDP_REPLY_MAX=4096, UDP_REPLY_DEFAULT=1232, TCP_MAX=65535,
        MAX_ACTIVE=128, MAX_CLIENTS=128, MAX_UDP_WAITERS=8,
        MAX_METRICS_CLIENTS=16, MAX_CURL_SOCKETS=1024, TCP_IDLE_MS=15000,
        TCP_IO_MS=15000, METRICS_IDLE_MS=3000, DOH_CONNECT_MS=1500, DOH_TIMEOUT_MS=3000,
@@ -30,6 +30,7 @@ enum { DNS_HEADER=12, UDP_RX_MAX=65507, UDP_REPLY_MAX=4096, TCP_MAX=65535,
        DNS_OPT_SIZE=11, CACHE_MAX_ENTRIES=1024, CACHE_MAX_QUERY=DNS_HEADER+255+4+DNS_OPT_SIZE,
        CACHE_MAX_REPLY=4096, CACHE_MAX_ANSWERS=128, CACHE_MAX_TTL=3600 };
 enum { MAX_IDLE_EASIES=16 };
+static unsigned udp_reply_max=UDP_REPLY_DEFAULT;
 static volatile sig_atomic_t stopping;
 /* A process signal can be delivered to a libcurl resolver thread. */
 _Static_assert(ATOMIC_BOOL_LOCK_FREE==2,"SIGUSR1 requires a lock-free atomic flag");
@@ -159,7 +160,7 @@ static DnsResult dns_parse(const unsigned char *p,size_t n,const DnsInfo *reques
                 info->opt_ext_rcode=ext_rcode;info->opt_do=opt_do;
                 if(!response) {
                     unsigned sz=klass<512?512:klass;
-                    info->udp_limit=(uint16_t)(sz>UDP_REPLY_MAX?UDP_REPLY_MAX:sz);
+                    info->udp_limit=(uint16_t)(sz>udp_reply_max?udp_reply_max:sz);
                 }
                 if(i+1==counts[2] && !p[pos-5] && (response || !ext_rcode))
                     info->final_opt_rdlen=pos-2;
@@ -1201,11 +1202,12 @@ static void usage(FILE *stream,const char *program) {
             "  --doh-connect-ms MS          Upstream connection deadline, %d..%d (default %d)\n"
             "  --doh-timeout-ms MS          Total upstream deadline, %d..%d (default %d)\n"
             "  --cache-entries N            In-memory DNS cache slots, 0..%d (default disabled)\n"
+            "  --udp-reply-max BYTES        UDP reply cap, 512..%d (default %d)\n"
             "  -h, --help                   Show this help\n",
             program,MIN_TIMEOUT_MS,MAX_TCP_TIMEOUT_MS,TCP_IDLE_MS,
             MIN_TIMEOUT_MS,MAX_TCP_TIMEOUT_MS,TCP_IO_MS,
             MIN_TIMEOUT_MS,MAX_DOH_TIMEOUT_MS,DOH_CONNECT_MS,
-            MIN_TIMEOUT_MS,MAX_DOH_TIMEOUT_MS,DOH_TIMEOUT_MS,CACHE_MAX_ENTRIES);
+            MIN_TIMEOUT_MS,MAX_DOH_TIMEOUT_MS,DOH_TIMEOUT_MS,CACHE_MAX_ENTRIES,UDP_REPLY_MAX,UDP_REPLY_DEFAULT);
 }
 int main(int argc,char **argv) {
     const char *bindip="127.0.0.1",*bootstrap_address=NULL;
@@ -1239,6 +1241,11 @@ int main(int argc,char **argv) {
         }
         else if(!strcmp(argv[i],"--max-host-connections") && i+1<argc)
             max_host_connections=(int)parse_range(argv[++i],1,16);
+        else if(!strcmp(argv[i],"--udp-reply-max") && i+1<argc) {
+            long value=parse_range(argv[++i],512,UDP_REPLY_MAX);
+            if(value<0) {fprintf(stderr,"invalid --udp-reply-max (512..%d)\n",UDP_REPLY_MAX);return 2;}
+            udp_reply_max=(unsigned)value;
+        }
         else if(!strcmp(argv[i],"--cache-entries") && i+1<argc) {
             long value=parse_range(argv[++i],0,CACHE_MAX_ENTRIES);
             if(value<0) {fprintf(stderr,"invalid --cache-entries (0..%d)\n",CACHE_MAX_ENTRIES);return 2;}
