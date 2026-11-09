@@ -193,11 +193,15 @@ def start_http1(host, port, cert, key, app):
 
 
 class MockServer:
-    def __init__(self, port, cert, key, protocol='h2', delay_ms=5, answers=1):
+    def __init__(self, port, cert, key, protocol='h2', delay_ms=5, answers=1,
+                 h2_max_streams=100, h2_idle_timeout=30.0, h2_max_requests=10_000_000):
         self.port = port
         self.cert = cert
         self.key = key
         self.protocol = protocol
+        self.h2_max_streams = h2_max_streams
+        self.h2_idle_timeout = h2_idle_timeout
+        self.h2_max_requests = h2_max_requests
         self.app = DohApp(delay_ms=delay_ms, answers=answers)
         self.loop = None
         self.stop = None
@@ -219,11 +223,11 @@ class MockServer:
         config.accesslog = None
         config.errorlog = None
         config.loglevel = 'ERROR'
-        config.h2_max_concurrent_streams = 100
+        config.h2_max_concurrent_streams = self.h2_max_streams
         # Keep synthetic tests focused on multiplexing, not a framework's
         # default 1000-requests-per-connection GOAWAY policy.
-        config.keep_alive_max_requests = 10000000
-        config.keep_alive_timeout = 30.0
+        config.keep_alive_max_requests = self.h2_max_requests
+        config.keep_alive_timeout = self.h2_idle_timeout
 
         def entry():
             async def run():

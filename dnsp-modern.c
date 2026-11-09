@@ -220,6 +220,8 @@ struct Query {
     Query *next;
 };
 typedef struct { curl_socket_t fd;int action;uint64_t generation; } CurlSocket;
+typedef enum { PHASE_QUEUE, PHASE_TLS, PHASE_FIRST_BYTE, PHASE_COUNT } TimingPhase;
+typedef struct {uint64_t usec,count;} PhaseTiming;
 typedef struct {
     uint64_t udp_queries,tcp_queries,queries_satisfied,invalid_queries,overload,upstream_requests,
       upstream_ok,upstream_failed,upstream_timeouts,invalid_responses,
@@ -229,6 +231,7 @@ typedef struct {
       tcp_half_closes,tcp_idle_timeouts,tcp_io_timeouts,tcp_cancelled_upstream,cache_hits,cache_misses;
     uint64_t udp_queries_coalesced;
     double upstream_seconds;
+    PhaseTiming upstream_phase[PHASE_COUNT];
 } Metrics;
 static Metrics metrics;
 static Query *active;
@@ -256,7 +259,7 @@ static size_t cache_entries;
 typedef struct {
     int fd;uint64_t generation,last_ms;
     char request[512];size_t have;
-    char reply[4096];size_t reply_len,sent;
+    char reply[4608];size_t reply_len,sent;
 } MetricClient;
 static MetricClient metric_clients[MAX_METRICS_CLIENTS];
 
@@ -701,6 +704,29 @@ static void retry_udp_waiters(const Query *q,size_t count) {
         (void)submit_until(request,q->req_len,NULL,q->udp_fd,&peer,sizeof(waiter->peer),waiter->deadline_ms);
     }
 }
+static void record_phase(TimingPhase phase,curl_off_t usec) {
+    metrics.upstream_phase[phase].usec+=(uint64_t)usec;
+    metrics.upstream_phase[phase].count++;
+}
+static void record_upstream_phases(CURL *easy,long connects) {
+    curl_off_t ready=0,first_byte=0;
+#if LIBCURL_VERSION_NUM >= 0x080600
+    curl_off_t queue=0;
+    if(curl_easy_getinfo(easy,CURLINFO_QUEUE_TIME_T,&queue)==CURLE_OK && queue>=0)
+        record_phase(PHASE_QUEUE,queue);
+#endif
+    if(connects>0) {
+        curl_off_t connected=0,handshake=0;
+        if(curl_easy_getinfo(easy,CURLINFO_CONNECT_TIME_T,&connected)==CURLE_OK &&
+           curl_easy_getinfo(easy,CURLINFO_APPCONNECT_TIME_T,&handshake)==CURLE_OK &&
+           connected>0 && handshake>=connected)
+            record_phase(PHASE_TLS,handshake-connected);
+    }
+    if(curl_easy_getinfo(easy,CURLINFO_PRETRANSFER_TIME_T,&ready)==CURLE_OK &&
+       curl_easy_getinfo(easy,CURLINFO_STARTTRANSFER_TIME_T,&first_byte)==CURLE_OK &&
+       ready>0 && first_byte>=ready)
+        record_phase(PHASE_FIRST_BYTE,first_byte-ready);
+}
 static void complete(Query *q,CURLcode code) {
     long status=0,version=0,connects=0;
     char *content_type=NULL;
@@ -710,6 +736,7 @@ static void complete(Query *q,CURLcode code) {
     curl_easy_getinfo(q->easy,CURLINFO_NUM_CONNECTS,&connects);
     curl_easy_getinfo(q->easy,CURLINFO_TOTAL_TIME,&seconds);
     curl_easy_getinfo(q->easy,CURLINFO_CONTENT_TYPE,&content_type);
+    record_upstream_phases(q->easy,connects);
     if(seconds>0) metrics.upstream_seconds+=seconds;
     if(connects>0) metrics.requests_new_connections+=(uint64_t)connects;
     else if(code==CURLE_OK) metrics.requests_reused_connections++;
@@ -1025,7 +1052,7 @@ static void metric_response(MetricClient *c) {
 #define METRIC(...) do {int z=snprintf(c->reply+c->reply_len,sizeof(c->reply)-c->reply_len,__VA_ARGS__); \
     if(z<0 || (size_t)z>=sizeof(c->reply)-c->reply_len) {close_metric(c);return;} \
     c->reply_len+=(size_t)z;} while(0)
-    char body[3072];int n=snprintf(body,sizeof(body),
+    char body[4096];int n=snprintf(body,sizeof(body),
         "# TYPE dnsp_queries_total counter\n"
         "dnsp_queries_total{transport=\"udp\"} %llu\n"
         "dnsp_queries_total{transport=\"tcp\"} %llu\n"
@@ -1075,6 +1102,14 @@ static void metric_response(MetricClient *c) {
         "# TYPE dnsp_upstream_duration_seconds_sum counter\n"
         "dnsp_upstream_duration_seconds_sum %.6f\n"
         "dnsp_upstream_duration_seconds_count %llu\n"
+        "# HELP dnsp_upstream_phase_duration_seconds Time spent in observed upstream transfer phases.\n"
+        "# TYPE dnsp_upstream_phase_duration_seconds summary\n"
+        "dnsp_upstream_phase_duration_seconds_sum{phase=\"queue\"} %.6f\n"
+        "dnsp_upstream_phase_duration_seconds_count{phase=\"queue\"} %" PRIu64 "\n"
+        "dnsp_upstream_phase_duration_seconds_sum{phase=\"tls\"} %.6f\n"
+        "dnsp_upstream_phase_duration_seconds_count{phase=\"tls\"} %" PRIu64 "\n"
+        "dnsp_upstream_phase_duration_seconds_sum{phase=\"first_byte\"} %.6f\n"
+        "dnsp_upstream_phase_duration_seconds_count{phase=\"first_byte\"} %" PRIu64 "\n"
         "# TYPE dnsp_queries_inflight gauge\n"
         "dnsp_queries_inflight %zu\n"
         "dnsp_tcp_clients %zu\n"
@@ -1100,6 +1135,9 @@ static void metric_response(MetricClient *c) {
         (unsigned long long)metrics.timer_callbacks,(unsigned long long)metrics.timer_fires,
         metrics.upstream_seconds,
         (unsigned long long)(metrics.upstream_ok+metrics.upstream_failed),
+        (double)metrics.upstream_phase[PHASE_QUEUE].usec/1e6,metrics.upstream_phase[PHASE_QUEUE].count,
+        (double)metrics.upstream_phase[PHASE_TLS].usec/1e6,metrics.upstream_phase[PHASE_TLS].count,
+        (double)metrics.upstream_phase[PHASE_FIRST_BYTE].usec/1e6,metrics.upstream_phase[PHASE_FIRST_BYTE].count,
         active_count,tcp_open_count(),curl_socket_count);
     if(n<0 || (size_t)n>=sizeof(body)) {close_metric(c);return;}
     METRIC("HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\n"

@@ -22,7 +22,7 @@ jobs:
       - name: Install compiler, curl and Python venv
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev python3-venv openssl
+          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev python3-venv openssl iproute2
       - name: Install benchmark server dependencies in isolated venv
         run: |
           python3 -m venv .bench-venv
@@ -38,10 +38,16 @@ jobs:
             --protocol both --concurrency 1,8,32 --warmup 0.3 --duration 1 \
             --max-host-connections 1 --assert-h2-multiplex \
             --output dist/bench-ci.json
+      - name: Measure constrained streams over a lossy upstream link
+        run: |
+          sudo sh bench/netem.sh 5ms 1% .bench-venv/bin/python \
+            --protocol h2 --concurrency 16 --warmup 0.5 --duration 2 \
+            --h2-max-streams 8 --max-host-connections 2 --assert-h2-multiplex \
+            --output dist/bench-ci-netem.json
       - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: dnsp-modern-benchmark-smoke
-          path: dist/bench-ci.*
+          path: dist/bench-ci*.*
           if-no-files-found: warn
           retention-days: 7
