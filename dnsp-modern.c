@@ -177,7 +177,7 @@ static DnsResult dns_parse(const unsigned char *p,size_t n,const DnsInfo *reques
 
 typedef struct Client Client;
 typedef struct Query Query;
-typedef struct {struct sockaddr_in peer;uint16_t id;} UdpWaiter;
+typedef struct {struct sockaddr_in peer;uint16_t id;uint64_t deadline_ms;} UdpWaiter;
 typedef struct {
     size_t count;
     uint16_t offset[CACHE_MAX_ANSWERS];
@@ -331,7 +331,7 @@ static void recycle_easy(CURL *easy) {
     curl_easy_reset(easy);
     idle_easies[idle_easy_count++]=easy;
 }
-static void remove_query(Query *q) {
+static void detach_query(Query *q) {
     Query **it=&active;
     while(*it && *it!=q) it=&(*it)->next;
     if(*it) {*it=q->next;active_count--;}
@@ -339,7 +339,13 @@ static void remove_query(Query *q) {
         if(curl_multi_remove_handle(multi,q->easy)==CURLM_OK) recycle_easy(q->easy);
         else curl_easy_cleanup(q->easy);
     }
+}
+static void free_query(Query *q) {
     free(q->request);free(q->response);free(q);
+}
+static void remove_query(Query *q) {
+    detach_query(q);
+    free_query(q);
 }
 static void close_client(Client *c) {
     uint64_t gen=c->generation;
@@ -475,7 +481,7 @@ static void cache_control(CacheHeaders *headers,const char *p,const char *end) {
         p=comma?comma+1:end;
     }
 }
-static size_t collect_cache_header(char *p,size_t size,size_t count,void *arg) {
+static size_t collect_doh_header(char *p,size_t size,size_t count,void *arg) {
     Query *q=arg;
     CacheHeaders *headers=&q->cache_headers;
     size_t n=size*count; /* libcurl supplies size=1 for header callbacks. */
@@ -536,30 +542,44 @@ static bool cache_ttls(const Query *q,const DnsInfo *info,CacheTtls *ttls) {
     }
     return has_address && (pos==n || (be16(p+10)==1 && cache_empty_opt(p+pos,n-pos)));
 }
-static void age_answer_ttls(unsigned char *p,const CacheTtls *ttls,uint64_t age) {
-    for(size_t i=0;i<ttls->count;i++) {
-        unsigned char *field=p+ttls->offset[i];
-        uint32_t ttl=be32(field);
-        ttl=ttl<=INT32_MAX && ttl>age?ttl-(uint32_t)age:0;
-        field[0]=(unsigned char)(ttl>>24);field[1]=(unsigned char)(ttl>>16);
-        field[2]=(unsigned char)(ttl>>8);field[3]=(unsigned char)ttl;
+static void age_ttl(unsigned char *field,uint64_t age) {
+    uint32_t ttl=be32(field);
+    ttl=ttl<=INT32_MAX && ttl>age?ttl-(uint32_t)age:0;
+    field[0]=(unsigned char)(ttl>>24);field[1]=(unsigned char)(ttl>>16);
+    field[2]=(unsigned char)(ttl>>8);field[3]=(unsigned char)ttl;
+}
+static void age_forwarded_ttls(Query *q,const DnsInfo *info,uint32_t age) {
+    if(!age || info->message_signature) return;
+    unsigned char *p=q->response;
+    size_t pos=info->question_end;
+    size_t records=(size_t)be16(p+6)+be16(p+8)+be16(p+10);
+    for(size_t i=0;i<records;i++) {
+        /* Validation already checked each owner. Skip its wire form without
+         * following pointers through TTL fields that may have been changed. */
+        while(p[pos] && !(p[pos]&0xc0)) pos+=(size_t)p[pos]+1;
+        pos+=(p[pos]&0xc0)?2:1;
+        if(be16(p+pos)!=41) age_ttl(p+pos+4,age); /* OPT has flags here. */
+        pos+=10+be16(p+pos+8);
     }
 }
-static void cache_store(Query *q,const DnsInfo *info,double transfer_seconds) {
-    CacheTtls ttls;
-    if(!q->cache_slot || !cache_ttls(q,info,&ttls)) return;
-    CacheHeaders *headers=&q->cache_headers;
+static uint64_t doh_response_age_ms(const CacheHeaders *headers,double transfer_seconds) {
     uint64_t age_ms=(uint64_t)headers->age*1000u+(uint64_t)(transfer_seconds*1000.0);
     if(headers->date_seen && headers->date!=(time_t)-1) {
         double apparent=difftime(time(NULL),headers->date);
         if(apparent>UINT32_MAX) apparent=UINT32_MAX;
         if(apparent>(double)age_ms/1000.0) age_ms=(uint64_t)apparent*1000u;
     }
+    return age_ms;
+}
+static void cache_store(Query *q,const DnsInfo *info,uint64_t age_ms) {
+    CacheTtls ttls;
+    if(!q->cache_slot || !cache_ttls(q,info,&ttls)) return;
+    const CacheHeaders *headers=&q->cache_headers;
     uint32_t limit=ttls.min_ttl<CACHE_MAX_TTL?ttls.min_ttl:CACHE_MAX_TTL;
     if(headers->max_age<limit) limit=headers->max_age;
     uint64_t lifetime=(uint64_t)limit*1000u;
     uint64_t now=read_clock_ms(CLOCK_BOOTTIME);
-    if(!headers->blocked && now && age_ms<lifetime) {
+    if(now && age_ms<lifetime) {
         CacheEntry *entry=q->cache_slot;
         entry->key_len=q->req_len-2;
         entry->reply_len=q->resp_len;
@@ -570,7 +590,6 @@ static void cache_store(Query *q,const DnsInfo *info,double transfer_seconds) {
         memcpy(entry->key,q->request+2,entry->key_len);
         memcpy(entry->reply,q->response,q->resp_len);
     }
-    if(headers->age) age_answer_ttls(q->response,&ttls,headers->age);
 }
 static bool cache_reply(Query *q,const unsigned char *request) {
     const CacheEntry *entry=q->cache_slot;
@@ -583,7 +602,7 @@ static bool cache_reply(Query *q,const unsigned char *request) {
     memcpy(reply,entry->reply,entry->reply_len);
     memcpy(reply,request,2);
     uint64_t age_ms=entry->age_ms+(now-entry->received_ms);
-    age_answer_ttls(reply,&entry->ttls,(age_ms+999u)/1000u);
+    for(size_t i=0;i<entry->ttls.count;i++) age_ttl(reply+entry->ttls.offset[i],(age_ms+999u)/1000u);
     reply_dns(q,reply,entry->reply_len,true);
     return true;
 }
@@ -597,7 +616,7 @@ static bool same_udp_peer(const struct sockaddr_in *a,const struct sockaddr_in *
     return a->sin_port==b->sin_port && a->sin_addr.s_addr==b->sin_addr.s_addr;
 }
 static bool join_udp_query(const Query *pending,const unsigned char *data) {
-    UdpWaiter incoming={.id=be16(data)};
+    UdpWaiter incoming={.id=be16(data),.deadline_ms=clock_ms()+(uint64_t)doh_timeout_ms};
     memcpy(&incoming.peer,&pending->peer,sizeof(incoming.peer));
     Query *available=NULL;
     for(Query *q=active;q;q=q->next) {
@@ -615,6 +634,21 @@ static bool join_udp_query(const Query *pending,const unsigned char *data) {
     if(!available) return false;
     available->udp_waiters[available->udp_waiter_count++]=incoming;
     return true;
+}
+static bool submit_until(const unsigned char *data,size_t len,Client *client,int udp_fd,
+                         const struct sockaddr_storage *peer,socklen_t peer_len,uint64_t deadline_ms);
+static void retry_udp_waiters(const Query *q,size_t count) {
+    /* Coalescing accepts only plain, single-question address queries. */
+    unsigned char request[CACHE_MAX_QUERY];
+    memcpy(request,q->request,q->req_len);
+    for(size_t i=0;i<count;i++) {
+        const UdpWaiter *waiter=&q->udp_waiters[i];
+        struct sockaddr_storage peer={0};
+        memcpy(&peer,&waiter->peer,sizeof(waiter->peer));
+        request[0]=(unsigned char)(waiter->id>>8);
+        request[1]=(unsigned char)waiter->id;
+        (void)submit_until(request,q->req_len,NULL,q->udp_fd,&peer,sizeof(waiter->peer),waiter->deadline_ms);
+    }
 }
 static void complete(Query *q,CURLcode code) {
     long status=0,version=0,connects=0;
@@ -642,11 +676,15 @@ static void complete(Query *q,CURLcode code) {
     else if(!dns_content_type(content_type)) failure=LOG_CONTENT;
     else if(q->resp_len<DNS_HEADER || be16(q->response)!=be16(q->request) ||
             dns_parse(q->response,q->resp_len,&q->info,&response)!=DNS_OK) failure=LOG_DNS;
-    /* A message signature would no longer match a rewritten transaction ID. */
-    else if(q->udp_waiter_count && response.message_signature) failure=LOG_DNS;
+    size_t retries=0;
     if(failure==LOG_COUNT) {
         metrics.upstream_ok++;
-        if(status==200) cache_store(q,&response,seconds);
+        uint64_t age_ms=doh_response_age_ms(&q->cache_headers,seconds);
+        bool reusable=status==200 && !q->cache_headers.blocked && !response.message_signature &&
+                      age_ms<(uint64_t)q->cache_headers.max_age*1000u;
+        if(reusable) cache_store(q,&response,age_ms);
+        else {retries=q->udp_waiter_count;q->udp_waiter_count=0;}
+        age_forwarded_ttls(q,&response,q->cache_headers.age);
         if(!q->client && q->resp_len>q->info.udp_limit) send_truncated(q,&response);
         else {
             unsigned rcode=q->response[3]&0x0f;
@@ -663,10 +701,12 @@ static void complete(Query *q,CURLcode code) {
     }
     if(q->client && q->client->fd>=0 && q->client->generation==q->generation)
         q->client->busy=false;
-    remove_query(q);
+    detach_query(q);
+    if(retries) retry_udp_waiters(q,retries);
+    free_query(q);
 }
-static bool submit(const unsigned char *data,size_t len,Client *client,int udp_fd,
-                   const struct sockaddr_storage *peer,socklen_t peer_len) {
+static bool submit_until(const unsigned char *data,size_t len,Client *client,int udp_fd,
+                         const struct sockaddr_storage *peer,socklen_t peer_len,uint64_t deadline_ms) {
     DnsInfo info;
     DnsResult result=dns_parse(data,len,NULL,&info);
     if(result==DNS_DROP) {metrics.invalid_queries++;return false;}
@@ -678,7 +718,12 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
         send_error(&pending,data,result==DNS_NOTIMP?4:1);
         return true;
     }
-    pending.cache_slot=cache_slot_for(data,len,&info);
+    long timeout_ms=doh_timeout_ms;
+    if(deadline_ms) {
+        uint64_t now=clock_ms();
+        if(now>=deadline_ms) {send_error(&pending,data,2);return true;}
+        if(deadline_ms-now<(uint64_t)timeout_ms) timeout_ms=(long)(deadline_ms-now);
+    } else pending.cache_slot=cache_slot_for(data,len,&info);
     if(pending.cache_slot) {
         if(cache_reply(&pending,data)) {
             metrics.cache_hits++;
@@ -686,10 +731,9 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
             return true;
         }
         metrics.cache_misses++;
-        pending.cache_headers.max_age=UINT32_MAX;
     }
     /* Share only unsigned UDP address queries without additional records. */
-    pending.shareable_udp=!client && peer_len==sizeof(struct sockaddr_in) &&
+    pending.shareable_udp=!deadline_ms && !client && peer_len==sizeof(struct sockaddr_in) &&
                           pending.peer.ss_family==AF_INET && !be16(data+10) && plain_address_query(data,&info);
     if(pending.shareable_udp && join_udp_query(&pending,data)) {
         metrics.udp_queries_coalesced++;
@@ -723,12 +767,11 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
     OPT(CURLOPT_TCP_KEEPALIVE,1L);
     OPT(CURLOPT_WRITEFUNCTION,collect);
     OPT(CURLOPT_WRITEDATA,q);
-    if(q->cache_slot) {
-        OPT(CURLOPT_HEADERFUNCTION,collect_cache_header);
-        OPT(CURLOPT_HEADERDATA,q);
-    }
+    q->cache_headers.max_age=UINT32_MAX;
+    OPT(CURLOPT_HEADERFUNCTION,collect_doh_header);
+    OPT(CURLOPT_HEADERDATA,q);
     OPT(CURLOPT_PRIVATE,q);
-    OPT(CURLOPT_TIMEOUT_MS,doh_timeout_ms);
+    OPT(CURLOPT_TIMEOUT_MS,timeout_ms);
     OPT(CURLOPT_CONNECTTIMEOUT_MS,doh_connect_ms);
     OPT(CURLOPT_SSL_VERIFYPEER,1L);
     OPT(CURLOPT_SSL_VERIFYHOST,2L);
@@ -743,7 +786,7 @@ static bool submit(const unsigned char *data,size_t len,Client *client,int udp_f
     q->next=active;active=q;active_count++;
     metrics.upstream_requests++;
     if(client) client->busy=true;
-    record_client_query(client);
+    if(!deadline_ms) record_client_query(client);
     return true;
 fail:
     if(q->easy) curl_easy_cleanup(q->easy);
@@ -754,6 +797,10 @@ reject:
     metrics.overload++;
     send_error(&pending,data,2);
     return true; /* A local reply is queued for a valid TCP query. */
+}
+static bool submit(const unsigned char *data,size_t len,Client *client,int udp_fd,
+                   const struct sockaddr_storage *peer,socklen_t peer_len) {
+    return submit_until(data,len,client,udp_fd,peer,peer_len,0);
 }
 static int listener(const char *role,int type,const char *bindip,int port) {
     struct sockaddr_in a={.sin_family=AF_INET,.sin_port=htons((uint16_t)port)};

@@ -205,6 +205,10 @@ flowchart LR
 The client-to-proxy DNS leg is not encrypted merely because the upstream DoH
 connection is encrypted. Do not bind the proxy to an untrusted interface.
 
+Forwarded unsigned DNS replies have their record TTLs reduced by the DoH
+`Age` header, including when the answer cache is disabled. OPT fields and
+message signatures are preserved.
+
 ## Optional in-memory answer cache
 
 ```sh
@@ -275,6 +279,8 @@ Matching in-flight UDP A and AAAA queries without EDNS can share one upstream
 transfer. Each reply uses the caller's transaction ID, and repeated datagrams
 from the same endpoint and ID use one reply slot. Each transfer can serve the
 original request plus eight waiters. They share the original upstream deadline.
+When the returned HTTP response forbids reuse, joined clients get separate
+upstream attempts within their original time budgets.
 
 When all upstream slots are in use, queries that need a new transfer receive
 `SERVFAIL`.

@@ -156,10 +156,12 @@ class DoH(http.server.BaseHTTPRequestHandler):
         if typ == 65010:  # test intentional upstream delay and cancellation
             time.sleep(0.7)
         label = data[13:13+data[12]] if end>12 else b''
-        if label in (b'coalesce', b'coalesce-fail'):
+        if label in (b'coalesce', b'coalesce-fail', b'coalesce-nostore'):
             self.server.coalesce_gate.wait(5)
         status = 502 if label == b'coalesce-fail' else {65009: 502, 65017: 201}.get(typ, 200)
         self.send_response(status)
+        if label == b'coalesce-nostore':
+            self.send_header('Cache-Control', 'no-store')
         media = {65008: 'text/plain', 65021: 'Application/DNS-Message ; fixture=ok'}
         self.send_header('Content-Type', media.get(typ, 'application/dns-message'))
         self.send_header('Content-Length', str(len(r)))
@@ -599,6 +601,37 @@ class Tests(unittest.TestCase):
                         with self.assertRaises(socket.timeout):
                             sock.recv(4096)
 
+    def test_coalesced_no_store_response_retries_waiter(self):
+        gate = threading.Event()
+        self.server.coalesce_gate = gate
+        before = self.metrics()
+        label = b'coalesce-nostore'
+        upstream = 'dnsp_upstream_requests_total'
+        joined = 'dnsp_udp_queries_coalesced_total'
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as first, \
+                socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as second:
+            try:
+                for sock, ident in ((first, 1), (second, 2)):
+                    sock.settimeout(4)
+                    q = query(ident=ident)
+                    sock.sendto(q[:12]+bytes([len(label)])+label+q[16:], ('127.0.0.1', self.port))
+                deadline = time.monotonic()+2
+                while time.monotonic()<deadline:
+                    after = self.metrics()
+                    if self.metric(after, joined)-self.metric(before, joined) == 1:
+                        break
+                    time.sleep(.01)
+                else:
+                    self.fail('second query did not join')
+                self.assertEqual(self.metric(after, upstream)-self.metric(before, upstream), 1)
+            finally:
+                gate.set()
+            for sock, ident in ((first, 1), (second, 2)):
+                reply = sock.recv(4096)
+                self.assertEqual(struct.unpack_from('!H', reply)[0], ident)
+                self.assertEqual(reply[3]&15, 0)
+        self.assertEqual(self.metric(self.metrics(), upstream)-self.metric(before, upstream), 2)
+
     def test_invalid_udp_does_not_kill(self):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.sendto(b'\0\1', ('127.0.0.1', self.port))
@@ -951,6 +984,21 @@ class Tests(unittest.TestCase):
                 result = subprocess.run([str(BINARY), *args], capture_output=True, timeout=3)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn(args[0].encode(), result.stderr)
+
+    def test_forwarded_age_without_cache_hit(self):
+        upstream = HTTP(('127.0.0.1', 0), CacheDoH)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        self.addCleanup(upstream.server_close)
+        self.addCleanup(upstream.shutdown)
+        url = f'http://127.0.0.1:{upstream.server_port}/dns-query'
+        q = query(28, edns=1232)
+        packet = q[:12] + b'\x04aged' + q[16:]
+        with_option = edns_options(packet, padding_option(4))
+        for args, data in (((), packet), (('--cache-entries', '1'), with_option)):
+            with self.subTest(args=args):
+                reply = self.isolated_udp(url, *args, env=os.environ, packet=data)
+                self.assertEqual(struct.unpack_from('!I', reply, question_end(reply)+6)[0], 23)
+                self.assertTrue(reply.endswith(data[question_end(data):]))
 
     def test_answer_cache(self):
         upstream = HTTP(('127.0.0.1', 0), CacheDoH)
