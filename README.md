@@ -163,7 +163,8 @@ dig @127.0.0.1 -p 5300 example.com A
 curl -fsS http://127.0.0.1:9153/metrics | grep dnsp_upstream_http_responses_total
 ```
 
-`prefer-h3` requires an HTTPS upstream and a linked libcurl with HTTP/3 support.
+`prefer-h3` requires an HTTPS upstream and a linked libcurl 7.88.0 or newer
+with HTTP/3 support.
 Debian 13 supplies a compatible libcurl. An unsupported explicit preference
 exits at startup with status 2. When QUIC connection setup fails or is slow,
 libcurl can negotiate HTTP/2 or HTTP/1.1 over TCP within the same upstream

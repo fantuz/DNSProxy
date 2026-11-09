@@ -280,8 +280,10 @@ static void log_failure(Failure event,bool tcp,CURLcode code,long status) {
     rate[event].next=now+10000;
     rate[event].suppressed=0;
 }
-static long select_http_version(int features,bool prefer_h3) {
+static long select_http_version(int features,unsigned version_num,bool prefer_h3) {
     if(prefer_h3) {
+        /* HTTP/3 raced with a TCP fallback starting in libcurl 7.88.0. */
+        if(version_num<0x075800) return CURL_HTTP_VERSION_NONE;
 #if LIBCURL_VERSION_NUM >= 0x074200 /* 7.66.0 */
         if(features&CURL_VERSION_HTTP3) return CURL_HTTP_VERSION_3;
 #endif
@@ -1347,9 +1349,10 @@ int main(int argc,char **argv) {
         return 1;
     }
     const curl_version_info_data *curl_info=curl_version_info(CURLVERSION_NOW);
-    upstream_http_version=select_http_version(curl_info?curl_info->features:0,prefer_h3);
+    upstream_http_version=select_http_version(curl_info?curl_info->features:0,
+                                              curl_info?curl_info->version_num:0,prefer_h3);
     if(upstream_http_version==CURL_HTTP_VERSION_NONE) {
-        fprintf(stderr,"--upstream-http=prefer-h3 requires libcurl with HTTP/3 support\n");
+        fprintf(stderr,"--upstream-http=prefer-h3 requires libcurl with HTTP/3 support and TCP fallback (7.88.0 or newer)\n");
         curl_global_cleanup();return 2;
     }
     if(!configure_upstream(upstream,bootstrap_address)) {
