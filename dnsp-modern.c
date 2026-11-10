@@ -198,6 +198,13 @@ typedef struct {
     time_t date;
     bool age_seen,date_seen,blocked;
 } CacheHeaders;
+typedef struct {
+    const char *url;
+    char *host,*port;
+    struct curl_slist *bootstrap;
+    bool loopback_http;
+    uint64_t requests,replies,failures;
+} Upstream;
 struct Client {
     int fd;size_t have,need,sent,out_len;
     unsigned char length[2];
@@ -208,7 +215,9 @@ struct Client {
 struct Query {
     CURL *easy;
     unsigned char *request,*response;
-    size_t req_len,resp_len,resp_cap;
+    size_t req_len,resp_len,resp_cap,padded_len;
+    Upstream *upstream;
+    uint64_t failover_deadline_ms;
     DnsInfo info;
     struct sockaddr_storage peer;socklen_t peer_len;
     Client *client;uint64_t generation;int udp_fd;
@@ -239,11 +248,9 @@ static size_t active_count;
 static CURLM *multi;
 static CURL *idle_easies[MAX_IDLE_EASIES];
 static size_t idle_easy_count;
-static const char *upstream;
-static bool loopback_http;
+static Upstream primary,backup;
 static bool edns_padding;
 static long upstream_http_version=CURL_HTTP_VERSION_1_1;
-static struct curl_slist *bootstrap_hosts;
 static struct curl_slist *doh_headers;
 static const char *ca_file; /* custom CA bundle for upstream TLS verification */
 static Client clients[MAX_CLIENTS];
@@ -356,6 +363,7 @@ static void detach_query(Query *q) {
     if(q->easy) {
         if(curl_multi_remove_handle(multi,q->easy)==CURLM_OK) recycle_easy(q->easy);
         else curl_easy_cleanup(q->easy);
+        q->easy=NULL;
     }
 }
 static void free_query(Query *q) {
@@ -698,7 +706,8 @@ static bool join_udp_query(const Query *pending,const unsigned char *data) {
     return true;
 }
 static bool submit_until(const unsigned char *data,size_t len,Client *client,int udp_fd,
-                         const struct sockaddr_storage *peer,socklen_t peer_len,uint64_t deadline_ms);
+                         const struct sockaddr_storage *peer,socklen_t peer_len,uint64_t deadline_ms,
+                         Upstream *endpoint);
 static void retry_udp_waiters(const Query *q,size_t count) {
     /* Coalescing accepts only plain, single-question address queries. */
     unsigned char request[CACHE_MAX_QUERY];
@@ -709,8 +718,89 @@ static void retry_udp_waiters(const Query *q,size_t count) {
         memcpy(&peer,&waiter->peer,sizeof(waiter->peer));
         request[0]=(unsigned char)(waiter->id>>8);
         request[1]=(unsigned char)waiter->id;
-        (void)submit_until(request,q->req_len,NULL,q->udp_fd,&peer,sizeof(waiter->peer),waiter->deadline_ms);
+        (void)submit_until(request,q->req_len,NULL,q->udp_fd,&peer,sizeof(waiter->peer),
+                           waiter->deadline_ms,q->upstream);
     }
+}
+static bool start_upstream(Query *q,long timeout_ms) {
+    Upstream *endpoint=q->upstream;
+    long version=endpoint->loopback_http?CURL_HTTP_VERSION_1_1:upstream_http_version;
+    q->added_padding=q->padded_len && !endpoint->loopback_http;
+    const unsigned char *post=q->added_padding?q->request+q->req_len:q->request;
+    size_t post_len=q->added_padding?q->padded_len:q->req_len;
+    q->cache_headers=(CacheHeaders){.max_age=UINT32_MAX};
+    CURLcode setup_code=CURLE_OUT_OF_MEMORY;
+    q->easy=acquire_easy();
+    if(!q->easy) goto fail;
+#define OPT(key,val) do {setup_code=curl_easy_setopt(q->easy,key,val);if(setup_code!=CURLE_OK) goto fail;}while(0)
+    OPT(CURLOPT_URL,endpoint->url);
+    if(endpoint->loopback_http || endpoint->bootstrap) OPT(CURLOPT_PROXY,"");
+    if(endpoint->bootstrap) OPT(CURLOPT_RESOLVE,endpoint->bootstrap);
+    OPT(CURLOPT_HTTPHEADER,doh_headers);
+    OPT(CURLOPT_POSTFIELDS,post);
+    OPT(CURLOPT_POSTFIELDSIZE_LARGE,(curl_off_t)post_len);
+    OPT(CURLOPT_HTTP_VERSION,version);
+    if(version!=CURL_HTTP_VERSION_1_1) OPT(CURLOPT_PIPEWAIT,1L);
+    OPT(CURLOPT_TCP_KEEPALIVE,1L);
+    OPT(CURLOPT_WRITEFUNCTION,collect);
+    OPT(CURLOPT_WRITEDATA,q);
+    OPT(CURLOPT_HEADERFUNCTION,collect_doh_header);
+    OPT(CURLOPT_HEADERDATA,q);
+    OPT(CURLOPT_PRIVATE,q);
+    OPT(CURLOPT_TIMEOUT_MS,timeout_ms);
+    OPT(CURLOPT_CONNECTTIMEOUT_MS,doh_connect_ms);
+    OPT(CURLOPT_SSL_VERIFYPEER,1L);
+    OPT(CURLOPT_SSL_VERIFYHOST,2L);
+    if(ca_file) OPT(CURLOPT_CAINFO,ca_file);
+    OPT(CURLOPT_FOLLOWLOCATION,0L);
+    OPT(CURLOPT_NOSIGNAL,1L);
+#undef OPT
+    if(curl_multi_add_handle(multi,q->easy)!=CURLM_OK) {
+        setup_code=CURLE_FAILED_INIT;
+        goto fail;
+    }
+    q->next=active;active=q;active_count++;
+    metrics.upstream_requests++;endpoint->requests++;
+    if(q->client) q->client->busy=true;
+    return true;
+fail:
+    if(q->easy) curl_easy_cleanup(q->easy);
+    q->easy=NULL;
+    log_failure(LOG_SETUP,q->client!=NULL,setup_code,0);
+    return false;
+}
+static bool retryable_transport(CURLcode code) {
+    switch(code) {
+        case CURLE_COULDNT_RESOLVE_HOST:
+        case CURLE_COULDNT_CONNECT:
+        case CURLE_OPERATION_TIMEDOUT:
+        case CURLE_GOT_NOTHING:
+        case CURLE_SEND_ERROR:
+        case CURLE_RECV_ERROR:
+        case CURLE_PARTIAL_FILE:
+        case CURLE_HTTP2_STREAM:
+#if LIBCURL_VERSION_NUM >= 0x074400 /* 7.68.0 */
+        case CURLE_HTTP3:
+#endif
+            return true;
+        default:
+            return false;
+    }
+}
+static bool retry_on_backup(Query *q,CURLcode code) {
+    if(q->upstream!=&primary || !q->failover_deadline_ms || !retryable_transport(code)) return false;
+    uint64_t now=clock_ms();
+    if(now>=q->failover_deadline_ms) return false;
+
+    detach_query(q);
+    free(q->response);
+    q->response=NULL;q->resp_len=q->resp_cap=0;
+    q->upstream=&backup;
+    q->cache_slot=NULL;
+    q->shareable_udp=false; /* Keep the existing waiters on this query. */
+    now=clock_ms();
+    if(now>=q->failover_deadline_ms) return false;
+    return start_upstream(q,(long)(q->failover_deadline_ms-now));
 }
 static void record_phase(TimingPhase phase,curl_off_t usec) {
     metrics.upstream_phase[phase].usec+=(uint64_t)usec;
@@ -765,7 +855,7 @@ static void complete(Query *q,CURLcode code) {
     size_t retries=0;
     if(failure==LOG_COUNT) {
         strip_doh_padding(q,&response);
-        metrics.upstream_ok++;
+        metrics.upstream_ok++;q->upstream->replies++;
         uint64_t age_ms=doh_response_age_ms(&q->cache_headers,seconds);
         bool reusable=status==200 && !q->cache_headers.blocked && !response.message_signature &&
                       age_ms<(uint64_t)q->cache_headers.max_age*1000u;
@@ -780,10 +870,11 @@ static void complete(Query *q,CURLcode code) {
             reply_dns(q,q->response,q->resp_len,satisfies_query);
         }
     } else {
-        metrics.upstream_failed++;
+        metrics.upstream_failed++;q->upstream->failures++;
         if(failure==LOG_TIMEOUT) metrics.upstream_timeouts++;
         if(failure==LOG_CONTENT || failure==LOG_DNS) metrics.invalid_responses++;
         log_failure(failure,q->client!=NULL,code,status);
+        if(retry_on_backup(q,code)) return;
         send_error(q,q->request,2);
     }
     Client *client=q->client;
@@ -794,13 +885,20 @@ static void complete(Query *q,CURLcode code) {
     if(retries) retry_udp_waiters(q,retries);
     free_query(q);
 }
+/* Replay only a standard IN question with no server-specific options or keys. */
+static bool failover_eligible(const unsigned char *data,const DnsInfo *info) {
+    if(be16(data+4)!=1 || info->qclass!=1 || info->qtype==249 || info->qtype==250) return false;
+    unsigned additional=be16(data+10);
+    return !additional || (additional==1 && info->final_opt_rdlen && !be16(data+info->final_opt_rdlen));
+}
 static bool submit_until(const unsigned char *data,size_t len,Client *client,int udp_fd,
-                         const struct sockaddr_storage *peer,socklen_t peer_len,uint64_t deadline_ms) {
+                         const struct sockaddr_storage *peer,socklen_t peer_len,uint64_t deadline_ms,
+                         Upstream *endpoint) {
     DnsInfo info;
     DnsResult result=dns_parse(data,len,NULL,&info);
     if(result==DNS_DROP) {metrics.invalid_queries++;return false;}
     Query pending={.req_len=len,.info=info,.client=client,.generation=client?client->generation:0,
-                   .udp_fd=udp_fd,.peer_len=peer_len};
+                   .udp_fd=udp_fd,.peer_len=peer_len,.upstream=endpoint};
     if(peer) pending.peer=*peer;
     if(result!=DNS_OK) {
         if(result==DNS_FORMERR) metrics.invalid_queries++;
@@ -812,7 +910,7 @@ static bool submit_until(const unsigned char *data,size_t len,Client *client,int
         uint64_t now=clock_ms();
         if(now>=deadline_ms) {send_error(&pending,data,2);return true;}
         if(deadline_ms-now<(uint64_t)timeout_ms) timeout_ms=(long)(deadline_ms-now);
-    } else pending.cache_slot=cache_slot_for(data,len,&info);
+    } else if(endpoint==&primary) pending.cache_slot=cache_slot_for(data,len,&info);
     if(pending.cache_slot) {
         if(cache_reply(&pending,data)) {
             metrics.cache_hits++;
@@ -834,62 +932,28 @@ static bool submit_until(const unsigned char *data,size_t len,Client *client,int
         goto reject;
     }
 
-    CURLcode setup_code=CURLE_OUT_OF_MEMORY;
+    if(endpoint==&primary && backup.url && failover_eligible(data,&info) && timeout_ms>1) {
+        pending.failover_deadline_ms=deadline_ms?deadline_ms:clock_ms()+(uint64_t)timeout_ms;
+        timeout_ms/=2;
+    }
     Query *q=malloc(sizeof(*q));
     if(!q) goto setup_failure;
     *q=pending;
-    size_t extra=edns_padding && !loopback_http?edns_padding_size(data,len,&info):0;
+    bool https=!endpoint->loopback_http || (q->failover_deadline_ms && !backup.loopback_http);
+    size_t extra=edns_padding && https?edns_padding_size(data,len,&info):0;
     q->request=malloc(len+(extra?len+extra:0));
-    if(!q->request) goto fail;
+    if(!q->request) {free(q);goto setup_failure;}
     memcpy(q->request,data,len);
-    const unsigned char *post=q->request;
     if(extra) {
         /* Keep the original wire key and question for cache and reply handling. */
         write_padded_query(q->request+len,data,len,&info,extra);
-        q->added_padding=true;
-        post=q->request+len;
+        q->padded_len=len+extra;
     }
-    q->easy=acquire_easy();
-    if(!q->easy) goto fail;
-#define OPT(key,val) do {setup_code=curl_easy_setopt(q->easy,key,val);if(setup_code!=CURLE_OK) goto fail;}while(0)
-    OPT(CURLOPT_URL,upstream);
-    if(loopback_http || bootstrap_hosts) OPT(CURLOPT_PROXY,"");
-    if(bootstrap_hosts) OPT(CURLOPT_RESOLVE,bootstrap_hosts);
-    OPT(CURLOPT_HTTPHEADER,doh_headers);
-    OPT(CURLOPT_POSTFIELDS,post);
-    OPT(CURLOPT_POSTFIELDSIZE_LARGE,(curl_off_t)(len+extra));
-    OPT(CURLOPT_HTTP_VERSION,upstream_http_version);
-    if(upstream_http_version!=CURL_HTTP_VERSION_1_1)
-        OPT(CURLOPT_PIPEWAIT,1L);
-    OPT(CURLOPT_TCP_KEEPALIVE,1L);
-    OPT(CURLOPT_WRITEFUNCTION,collect);
-    OPT(CURLOPT_WRITEDATA,q);
-    q->cache_headers.max_age=UINT32_MAX;
-    OPT(CURLOPT_HEADERFUNCTION,collect_doh_header);
-    OPT(CURLOPT_HEADERDATA,q);
-    OPT(CURLOPT_PRIVATE,q);
-    OPT(CURLOPT_TIMEOUT_MS,timeout_ms);
-    OPT(CURLOPT_CONNECTTIMEOUT_MS,doh_connect_ms);
-    OPT(CURLOPT_SSL_VERIFYPEER,1L);
-    OPT(CURLOPT_SSL_VERIFYHOST,2L);
-    if(ca_file) OPT(CURLOPT_CAINFO,ca_file);
-    OPT(CURLOPT_FOLLOWLOCATION,0L);
-    OPT(CURLOPT_NOSIGNAL,1L);
-#undef OPT
-    if(curl_multi_add_handle(multi,q->easy)!=CURLM_OK) {
-        setup_code=CURLE_FAILED_INIT;
-        goto fail;
-    }
-    q->next=active;active=q;active_count++;
-    metrics.upstream_requests++;
-    if(client) client->busy=true;
+    if(!start_upstream(q,timeout_ms)) {free_query(q);goto reject;}
     if(!deadline_ms) record_client_query(client);
     return true;
-fail:
-    if(q->easy) curl_easy_cleanup(q->easy);
-    free(q->request);free(q);
 setup_failure:
-    log_failure(LOG_SETUP,client!=NULL,setup_code,0);
+    log_failure(LOG_SETUP,client!=NULL,CURLE_OUT_OF_MEMORY,0);
 reject:
     metrics.overload++;
     send_error(&pending,data,2);
@@ -897,7 +961,7 @@ reject:
 }
 static bool submit(const unsigned char *data,size_t len,Client *client,int udp_fd,
                    const struct sockaddr_storage *peer,socklen_t peer_len) {
-    return submit_until(data,len,client,udp_fd,peer,peer_len,0);
+    return submit_until(data,len,client,udp_fd,peer,peer_len,0,&primary);
 }
 static int listener(const char *role,int type,const char *bindip,int port) {
     struct sockaddr_in a={.sin_family=AF_INET,.sin_port=htons((uint16_t)port)};
@@ -1033,7 +1097,7 @@ static size_t tcp_open_count(void) {
 static void report_status(uint64_t uptime_ms,const char *bindip,int port,int metrics_port,
                           const char *http_preference,int max_host_connections) {
     fprintf(stderr,"level=info event=stats uptime_ms=%" PRIu64
-            " address=%s port=%d metrics_port=%d upstream_scheme=%s http_preference=%s bootstrap=%s"
+            " address=%s port=%d metrics_port=%d upstream_scheme=%s http_preference=%s bootstrap=%s backup=%s"
             " max_host_connections=%d doh_connect_ms=%ld doh_timeout_ms=%ld"
             " tcp_idle_ms=%" PRIu64 " tcp_io_ms=%" PRIu64
             " queries_satisfied=%" PRIu64 " udp_queries=%" PRIu64 " tcp_queries=%" PRIu64
@@ -1045,8 +1109,9 @@ static void report_status(uint64_t uptime_ms,const char *bindip,int port,int met
             " new_connections=%" PRIu64 " reused_requests=%" PRIu64 " easy_handles_reused=%" PRIu64
             " cache_entries=%zu cache_hits=%" PRIu64 " cache_misses=%" PRIu64
             " inflight=%zu max_inflight=%d tcp_clients=%zu max_tcp_clients=%d\n",
-            uptime_ms,bindip,port,metrics_port,loopback_http?"http":"https",http_preference,
-            bootstrap_hosts?"enabled":"disabled",max_host_connections,doh_connect_ms,doh_timeout_ms,
+            uptime_ms,bindip,port,metrics_port,primary.loopback_http?"http":"https",http_preference,
+            primary.bootstrap?"enabled":"disabled",backup.url?"enabled":"disabled",
+            max_host_connections,doh_connect_ms,doh_timeout_ms,
             tcp_idle_ms,tcp_io_ms,metrics.queries_satisfied,metrics.udp_queries,metrics.tcp_queries,
             metrics.udp_queries_coalesced,
             metrics.upstream_ok,metrics.upstream_failed,metrics.upstream_timeouts,
@@ -1093,6 +1158,12 @@ static void metric_response(MetricClient *c) {
         "dnsp_upstream_success_total %llu\n"
         "dnsp_upstream_failures_total %llu\n"
         "dnsp_upstream_timeouts_total %llu\n"
+        "dnsp_upstream_endpoint_requests_total{role=\"primary\"} %" PRIu64 "\n"
+        "dnsp_upstream_endpoint_requests_total{role=\"backup\"} %" PRIu64 "\n"
+        "dnsp_upstream_endpoint_replies_total{role=\"primary\"} %" PRIu64 "\n"
+        "dnsp_upstream_endpoint_replies_total{role=\"backup\"} %" PRIu64 "\n"
+        "dnsp_upstream_endpoint_failures_total{role=\"primary\"} %" PRIu64 "\n"
+        "dnsp_upstream_endpoint_failures_total{role=\"backup\"} %" PRIu64 "\n"
         "dnsp_invalid_queries_total %llu\n"
         "dnsp_invalid_responses_total %llu\n"
         "dnsp_overload_total %llu\n"
@@ -1133,6 +1204,7 @@ static void metric_response(MetricClient *c) {
         (unsigned long long)metrics.tcp_cancelled_upstream,
         (unsigned long long)metrics.upstream_requests,(unsigned long long)metrics.upstream_ok,
         (unsigned long long)metrics.upstream_failed,(unsigned long long)metrics.upstream_timeouts,
+        primary.requests,backup.requests,primary.replies,backup.replies,primary.failures,backup.failures,
         (unsigned long long)metrics.invalid_queries,(unsigned long long)metrics.invalid_responses,
         (unsigned long long)metrics.overload,(unsigned long long)metrics.truncated,
         (unsigned long long)metrics.requests_new_connections,
@@ -1214,39 +1286,69 @@ static void expire_clients(uint64_t now) {
     for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) if(metric_clients[i].fd>=0 &&
        now-metric_clients[i].last_ms>METRICS_IDLE_MS) close_metric(&metric_clients[i]);
 }
-static bool configure_bootstrap(CURLU *url,const char *host,const char *address) {
+static bool configure_bootstrap(Upstream *endpoint,const char *address) {
     struct in_addr addr4;
     struct in6_addr addr6;
     bool ipv6=inet_pton(AF_INET6,address,&addr6)==1;
     if(!ipv6 && inet_pton(AF_INET,address,&addr4)!=1) return false;
-    if(host[0]=='[' || inet_pton(AF_INET,host,&addr4)==1) return false;
+    if(endpoint->host[0]=='[' || inet_pton(AF_INET,endpoint->host,&addr4)==1) return false;
 
-    char *port=NULL;
-    if(curl_url_get(url,CURLUPART_PORT,&port,CURLU_DEFAULT_PORT)!=CURLUE_OK) return false;
     char entry[512];
-    int n=snprintf(entry,sizeof(entry),"%s:%s:%s%s%s",host,port,
+    int n=snprintf(entry,sizeof(entry),"%s:%s:%s%s%s",endpoint->host,endpoint->port,
                    ipv6?"[":"",address,ipv6?"]":"");
-    curl_free(port);
     if(n<0 || (size_t)n>=sizeof(entry)) return false;
 
-    bootstrap_hosts=curl_slist_append(NULL,entry);
-    return bootstrap_hosts!=NULL;
+    endpoint->bootstrap=curl_slist_append(NULL,entry);
+    return endpoint->bootstrap!=NULL;
 }
-static bool configure_upstream(const char *s,const char *bootstrap_address) {
+static bool configure_upstream(Upstream *endpoint,const char *bootstrap_address) {
     CURLU *url=curl_url();
-    char *scheme=NULL,*host=NULL;
+    char *scheme=NULL;
     if(!url) return false;
-    bool ok=curl_url_set(url,CURLUPART_URL,s,0)==CURLUE_OK &&
+    bool ok=curl_url_set(url,CURLUPART_URL,endpoint->url,0)==CURLUE_OK &&
             curl_url_get(url,CURLUPART_SCHEME,&scheme,0)==CURLUE_OK &&
-            curl_url_get(url,CURLUPART_HOST,&host,0)==CURLUE_OK;
+            curl_url_get(url,CURLUPART_HOST,&endpoint->host,0)==CURLUE_OK &&
+            curl_url_get(url,CURLUPART_PORT,&endpoint->port,CURLU_DEFAULT_PORT)==CURLUE_OK;
     if(ok && !strcasecmp(scheme,"https")) {
-        if(bootstrap_address) ok=configure_bootstrap(url,host,bootstrap_address);
+        if(bootstrap_address) ok=configure_bootstrap(endpoint,bootstrap_address);
     } else {
-        loopback_http=ok && !strcasecmp(scheme,"http") && !strcmp(host,"127.0.0.1");
-        ok=loopback_http && !bootstrap_address;
+        endpoint->loopback_http=ok && !strcasecmp(scheme,"http") && !strcmp(endpoint->host,"127.0.0.1");
+        ok=endpoint->loopback_http && !bootstrap_address;
     }
-    curl_free(scheme);curl_free(host);curl_url_cleanup(url);
+    curl_free(scheme);curl_url_cleanup(url);
     return ok;
+}
+static bool configure_upstreams(const char *primary_address,const char *backup_address,bool prefer_h3) {
+    if(!configure_upstream(&primary,primary_address)) {
+        if(primary_address) fprintf(stderr,"--bootstrap-address requires a numeric IP and an HTTPS upstream hostname\n");
+        else fprintf(stderr,"invalid upstream (only HTTPS or loopback HTTP test endpoint)\n");
+        return false;
+    }
+    if(backup.url) {
+        if(!configure_upstream(&backup,backup_address)) {
+            fprintf(stderr,"invalid --backup-upstream or --backup-bootstrap-address\n");
+            return false;
+        }
+        /* The shared libcurl DNS and connection caches use host and port. */
+        size_t a=strlen(primary.host),b=strlen(backup.host);
+        if(a && primary.host[a-1]=='.') a--;
+        if(b && backup.host[b-1]=='.') b--;
+        if(a==b && !strncasecmp(primary.host,backup.host,a) &&
+           strtoul(primary.port,NULL,10)==strtoul(backup.port,NULL,10)) {
+            fprintf(stderr,"--backup-upstream requires a different host or port from the primary\n");
+            return false;
+        }
+    }
+    if(prefer_h3 && (primary.loopback_http || (backup.url && backup.loopback_http))) {
+        fprintf(stderr,"--upstream-http=prefer-h3 requires an HTTPS upstream for each configured endpoint\n");
+        return false;
+    }
+    return true;
+}
+static void free_upstreams(void) {
+    curl_slist_free_all(primary.bootstrap);curl_slist_free_all(backup.bootstrap);
+    curl_free(primary.host);curl_free(primary.port);
+    curl_free(backup.host);curl_free(backup.port);
 }
 static long parse_range(const char *s,long min,long max) {
     char *end=NULL;errno=0;long v=strtol(s,&end,10);
@@ -1257,6 +1359,8 @@ static void usage(FILE *stream,const char *program) {
             "  -l IPv4                     DNS bind address (default 127.0.0.1)\n"
             "  -p PORT                     UDP/TCP DNS port, 1..65535 (default 5300)\n"
             "  -s URL                      Upstream DoH URL (default https://cloudflare-dns.com/dns-query)\n"
+            "  --backup-upstream URL        Optional DoH endpoint for transport failover\n"
+            "  --backup-bootstrap-address IP  Numeric address for the backup HTTPS upstream\n"
             "  -m PORT                     Loopback metrics port, 1..65535 (default disabled)\n"
             "  --bootstrap-address IP      Numeric IPv4 or IPv6 address for the HTTPS upstream\n"
             "  --edns-padding               Pad eligible upstream HTTPS DNS queries to 128-byte blocks\n"
@@ -1277,15 +1381,18 @@ static void usage(FILE *stream,const char *program) {
 }
 int main(int argc,char **argv) {
     const char *bindip="127.0.0.1",*bootstrap_address=NULL;
+    const char *backup_address=NULL;
     bool prefer_h3=false;
     int port=5300,metrics_port=0;
     int max_host_connections=8;
-    upstream="https://cloudflare-dns.com/dns-query";
+    primary.url="https://cloudflare-dns.com/dns-query";
     for(int i=1;i<argc;i++) {
         if(!strcmp(argv[i],"--help") || !strcmp(argv[i],"-h")) {usage(stdout,argv[0]);return 0;}
         else if(!strcmp(argv[i],"-l") && i+1<argc) bindip=argv[++i];
         else if(!strcmp(argv[i],"-p") && i+1<argc) port=(int)parse_range(argv[++i],1,65535);
-        else if(!strcmp(argv[i],"-s") && i+1<argc) upstream=argv[++i];
+        else if(!strcmp(argv[i],"-s") && i+1<argc) primary.url=argv[++i];
+        else if(!strcmp(argv[i],"--backup-upstream") && i+1<argc) backup.url=argv[++i];
+        else if(!strcmp(argv[i],"--backup-bootstrap-address") && i+1<argc) backup_address=argv[++i];
         else if(!strcmp(argv[i],"--bootstrap-address")) {
             if(i+1==argc) {fprintf(stderr,"--bootstrap-address requires an IPv4 or IPv6 address\n");return 2;}
             bootstrap_address=argv[++i];
@@ -1338,6 +1445,9 @@ int main(int argc,char **argv) {
     if(doh_connect_ms>doh_timeout_ms) {
         fprintf(stderr,"--doh-connect-ms must be no greater than --doh-timeout-ms\n");return 2;
     }
+    if(backup_address && !backup.url) {
+        fprintf(stderr,"--backup-bootstrap-address requires --backup-upstream\n");return 2;
+    }
     struct sigaction report_action={.sa_handler=request_report,.sa_flags=SA_RESTART};
     sigemptyset(&report_action.sa_mask);
     if(sigaction(SIGUSR1,&report_action,NULL)<0) {
@@ -1355,17 +1465,9 @@ int main(int argc,char **argv) {
         fprintf(stderr,"--upstream-http=prefer-h3 requires libcurl with HTTP/3 support and TCP fallback (7.88.0 or newer)\n");
         curl_global_cleanup();return 2;
     }
-    if(!configure_upstream(upstream,bootstrap_address)) {
-        if(bootstrap_address) fprintf(stderr,"--bootstrap-address requires a numeric IP and an HTTPS upstream hostname\n");
-        else fprintf(stderr,"invalid upstream (only HTTPS or loopback HTTP test endpoint)\n");
+    if(!configure_upstreams(bootstrap_address,backup_address,prefer_h3)) {
+        free_upstreams();
         curl_global_cleanup();return 2;
-    }
-    if(loopback_http) {
-        if(prefer_h3) {
-            fprintf(stderr,"--upstream-http=prefer-h3 requires an HTTPS upstream\n");
-            curl_global_cleanup();return 2;
-        }
-        upstream_http_version=CURL_HTTP_VERSION_1_1;
     }
     signal(SIGINT,stop_now);signal(SIGTERM,stop_now);signal(SIGPIPE,SIG_IGN);
     for(size_t i=0;i<MAX_CLIENTS;i++) clients[i].fd=-1;
@@ -1373,7 +1475,7 @@ int main(int argc,char **argv) {
     multi=curl_multi_init();
     if(!multi) {
         fprintf(stderr,"level=error event=curl_multi_init\n");
-        curl_slist_free_all(bootstrap_hosts);
+        free_upstreams();
         curl_global_cleanup();
         return 1;
     }
@@ -1400,7 +1502,8 @@ int main(int argc,char **argv) {
 } while(0)
     MULTI_OPT(CURLMOPT_MAX_TOTAL_CONNECTIONS,16L);
     MULTI_OPT(CURLMOPT_MAX_HOST_CONNECTIONS,(long)max_host_connections);
-    MULTI_OPT(CURLMOPT_PIPELINING,upstream_http_version!=CURL_HTTP_VERSION_1_1?CURLPIPE_MULTIPLEX:CURLPIPE_NOTHING);
+    bool https=!primary.loopback_http || (backup.url && !backup.loopback_http);
+    MULTI_OPT(CURLMOPT_PIPELINING,https && upstream_http_version!=CURL_HTTP_VERSION_1_1?CURLPIPE_MULTIPLEX:CURLPIPE_NOTHING);
     MULTI_OPT(CURLMOPT_SOCKETFUNCTION,on_curl_socket);
     MULTI_OPT(CURLMOPT_TIMERFUNCTION,curl_timer_callback);
 #undef MULTI_OPT
@@ -1420,10 +1523,10 @@ int main(int argc,char **argv) {
         goto cleanup;
     }
     const char *http_preference=prefer_h3?"h3":"http/1.1";
-    if(upstream_http_version==CURL_HTTP_VERSION_2TLS) http_preference="h2";
+    if(!primary.loopback_http && upstream_http_version==CURL_HTTP_VERSION_2TLS) http_preference="h2";
     uint64_t started_ms=clock_ms();
-    fprintf(stderr,"level=info event=listening address=%s port=%d metrics_port=%d upstream_scheme=%s http_preference=%s\n",
-            bindip,port,metrics_port,loopback_http?"http":"https",http_preference);
+    fprintf(stderr,"level=info event=listening address=%s port=%d metrics_port=%d upstream_scheme=%s http_preference=%s backup=%s\n",
+            bindip,port,metrics_port,primary.loopback_http?"http":"https",http_preference,backup.url?"enabled":"disabled");
     exitcode=0;
     while(!stopping) {
         uint64_t now=clock_ms();
@@ -1519,7 +1622,7 @@ cleanup:
     if(mfd>=0) close(mfd);
     curl_multi_cleanup(multi);
     curl_slist_free_all(doh_headers);
-    curl_slist_free_all(bootstrap_hosts);
+    free_upstreams();
     curl_global_cleanup();
     return exitcode;
 }

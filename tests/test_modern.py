@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Loopback integration: RFC 8484 framing, EDNS, DNS validation, libcurl loop."""
+from contextlib import contextmanager
 import http.client
 import http.server
 import os
@@ -1211,6 +1212,223 @@ class Tests(unittest.TestCase):
                            self.metric(before, 'dnsp_upstream_reused_requests_total'))
         self.assertEqual(self.metric(after, 'dnsp_upstream_easy_handles_reused_total')
                          - self.metric(before, 'dnsp_upstream_easy_handles_reused_total'), 5)
+
+
+class FailoverDoH(DoH):
+    def do_POST(self):
+        data = self.rfile.read(int(self.headers['Content-Length']))
+        mode = self.server.mode
+        self.server.received.append(data)
+        self.server.started.set()
+        if mode == 'stall':
+            self.server.release.wait(5)
+            return
+        if mode == 'http503':
+            self.send_error(503)
+            return
+        end = question_end(data)
+        rcode = {'nxdomain': 3, 'refused': 5, 'servfail': 2}.get(mode, 0)
+        record = rr(1, self.server.address) if not rcode else b''
+        response = (data[:2] + struct.pack('!HHH', 0x8180 | rcode, 1, int(bool(record))) +
+                    data[8:end] + record + data[end:])
+        if mode == 'invalid':
+            response = b'invalid'
+        self.send_response_only(200)
+        self.send_header('Content-Type', 'application/dns-message')
+        if mode == 'nostore':
+            self.send_header('Cache-Control', 'no-store')
+        self.send_header('Content-Length', str(len(response)))
+        self.end_headers()
+        if mode == 'partial':
+            self.wfile.write(response[:7])
+            self.close_connection = True
+        else:
+            self.wfile.write(response)
+
+
+class FailoverTests(unittest.TestCase):
+    @contextmanager
+    def endpoint(self, mode='answer', address=b'\xc0\x00\x02\x01', tls=None):
+        with HTTP(('127.0.0.1', 0), FailoverDoH) as server:
+            server.mode = mode
+            server.address = address
+            server.received = []
+            server.started = threading.Event()
+            server.release = threading.Event()
+            if tls:
+                server.socket = tls.wrap_socket(server.socket, server_side=True)
+            thread = threading.Thread(target=server.serve_forever,
+                                      kwargs={'poll_interval': .02}, daemon=True)
+            thread.start()
+            try:
+                yield server
+            finally:
+                server.release.set()
+                server.shutdown()
+                thread.join(timeout=3)
+
+    @staticmethod
+    def url(server):
+        return f'http://127.0.0.1:{server.server_port}/dns-query'
+
+    @contextmanager
+    def proxy(self, primary, backup, *args):
+        port, metrics = unused_ports()
+        command = [str(BINARY), '-p', str(port), '-m', str(metrics), '-s', primary,
+                   '--backup-upstream', backup, '--doh-connect-ms', '200',
+                   '--doh-timeout-ms', '1600', *args]
+        with tempfile.TemporaryFile() as log, subprocess.Popen(command, stderr=log) as proc:
+            try:
+                deadline = time.monotonic() + float(os.environ.get('DNSP_TEST_STARTUP_TIMEOUT', '12'))
+                while time.monotonic() < deadline and proc.poll() is None:
+                    try:
+                        with socket.create_connection(('127.0.0.1', metrics), timeout=.1):
+                            break
+                    except OSError:
+                        time.sleep(.02)
+                else:
+                    log.seek(0)
+                    self.fail(f'proxy did not start: {log.read()!r}')
+                yield port, metrics
+            finally:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=3)
+                log.seek(0)
+                self.assertEqual(proc.returncode, 0, log.read())
+
+    @staticmethod
+    def udp(port, packet=QUERY):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(4)
+            sock.sendto(packet, ('127.0.0.1', port))
+            return sock.recv(4096)
+
+    def test_partial_transfer_retries_and_keeps_backup_out_of_cache(self):
+        with self.endpoint('partial') as primary, self.endpoint(address=b'\xc0\x00\x02\x02') as backup:
+            with self.proxy(self.url(primary), self.url(backup), '--cache-entries', '16') as (port, metrics):
+                self.assertTrue(self.udp(port).endswith(backup.address))
+                primary.mode = 'answer'
+                self.assertTrue(self.udp(port, query(ident=42)).endswith(primary.address))
+                stats = Tests.metrics(self, metrics)
+                for metric, expected in (
+                    ('dnsp_upstream_endpoint_requests_total{role="primary"}', 2),
+                    ('dnsp_upstream_endpoint_failures_total{role="primary"}', 1),
+                    ('dnsp_upstream_endpoint_replies_total{role="backup"}', 1),
+                    ('dnsp_queries_satisfied_total', 2),
+                    ('dnsp_cache_hits_total', 0),
+                ):
+                    self.assertEqual(Tests.metric(stats, metric), expected)
+                self.assertEqual(backup.received, [QUERY])
+
+    def test_timeout_leaves_one_budget_for_both_attempts(self):
+        for mode in ('answer', 'stall'):
+            with self.subTest(backup=mode), self.endpoint('stall') as primary, self.endpoint(mode) as backup:
+                with self.proxy(self.url(primary), self.url(backup)) as (port, _):
+                    packet = query(edns=1232)
+                    start = time.monotonic()
+                    response = self.udp(port, packet)
+                    elapsed = time.monotonic() - start
+                    self.assertEqual(response[:2], packet[:2])
+                    self.assertEqual(response[3] & 15, 2 if mode == 'stall' else 0)
+                    self.assertEqual(primary.received, [packet])
+                    self.assertEqual(backup.received, [packet])
+                    self.assertLess(elapsed, 2.1)  # Two independent timeouts would take 2.4 s.
+
+    def test_dns_results_and_http_errors_do_not_fail_over(self):
+        with self.endpoint() as primary, self.endpoint() as backup:
+            with self.proxy(self.url(primary), self.url(backup)) as (port, _):
+                for mode, rcode in (('nxdomain', 3), ('refused', 5), ('servfail', 2),
+                                    ('http503', 2), ('invalid', 2)):
+                    with self.subTest(mode=mode):
+                        primary.mode = mode
+                        self.assertEqual(self.udp(port)[3] & 15, rcode)
+                        self.assertEqual(backup.received, [])
+
+    def test_cookie_query_stays_on_primary(self):
+        packet = edns_options(query(edns=1232), struct.pack('!HH', 10, 8) + bytes(8))
+        with self.endpoint('partial') as primary, self.endpoint() as backup:
+            with self.proxy(self.url(primary), self.url(backup)) as (port, _):
+                self.assertEqual(self.udp(port, packet)[3] & 15, 2)
+                self.assertEqual(backup.received, [])
+
+    def test_coalesced_udp_waiters_keep_ids_on_backup(self):
+        for mode, requests in (('answer', 1), ('nostore', 2)):
+            with self.subTest(backup=mode), self.endpoint('stall') as primary, self.endpoint(mode) as backup:
+                with self.proxy(self.url(primary), self.url(backup)) as (port, metrics), \
+                     socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as leader, \
+                     socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as waiter:
+                    leader.settimeout(4)
+                    waiter.settimeout(4)
+                    leader.sendto(query(ident=41), ('127.0.0.1', port))
+                    self.assertTrue(primary.started.wait(3))
+                    waiter.sendto(query(ident=42), ('127.0.0.1', port))
+                    for sock, ident in ((leader, 41), (waiter, 42)):
+                        reply = sock.recv(4096)
+                        self.assertEqual(reply[:2], struct.pack('!H', ident))
+                        self.assertTrue(reply.endswith(backup.address))
+                    self.assertEqual(len(backup.received), requests)
+                    self.assertEqual(len(primary.received), 1)
+                    self.assertEqual(Tests.metric(Tests.metrics(self, metrics), 'dnsp_udp_queries_coalesced_total'), 1)
+
+    def test_tcp_disconnect_cancels_backup_transfer(self):
+        with self.endpoint('partial') as primary, self.endpoint('stall') as backup:
+            with self.proxy(self.url(primary), self.url(backup)) as (port, metrics):
+                with socket.create_connection(('127.0.0.1', port), timeout=4) as sock:
+                    sock.sendall(Tests.frame(QUERY))
+                    self.assertTrue(backup.started.wait(3))
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    stats = Tests.metrics(self, metrics)
+                    if Tests.metric(stats, 'dnsp_tcp_cancelled_upstream_total') == 1:
+                        self.assertEqual(Tests.metric(stats, 'dnsp_queries_inflight'), 0)
+                        break
+                    time.sleep(.02)
+                else:
+                    self.fail('the TCP disconnect did not cancel the backup transfer')
+                primary.mode = 'answer'
+                with socket.create_connection(('127.0.0.1', port), timeout=4) as sock:
+                    sock.sendall(Tests.frame(QUERY))
+                    self.assertTrue(Tests.tcp_frame(sock).endswith(primary.address))
+
+    @unittest.skipUnless(shutil.which('openssl'), 'openssl required to generate a local TLS certificate')
+    def test_bootstrapped_backup_uses_hostname_and_primary_cert_failure_stops(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cert, key = str(Path(tmp)/'cert.pem'), str(Path(tmp)/'key.pem')
+            subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+                            '-days', '1', '-subj', '/CN=resolver.invalid',
+                            '-addext', 'subjectAltName=DNS:resolver.invalid',
+                            '-out', cert, '-keyout', key], check=True, timeout=10,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            tls.load_cert_chain(cert, key)
+            with self.endpoint('partial') as plain, self.endpoint(tls=tls) as secure:
+                secure_url = f'https://resolver.invalid:{secure.server_port}/dns-query'
+                with self.proxy(self.url(plain), secure_url, '--ca-file', cert,
+                                '--backup-bootstrap-address', '127.0.0.1') as (port, _):
+                    self.assertTrue(self.udp(port).endswith(secure.address))
+                plain.received.clear()
+                plain.mode = 'answer'
+                wrong_url = f'https://wrong.invalid:{secure.server_port}/dns-query'
+                with self.proxy(wrong_url, self.url(plain), '--ca-file', cert,
+                                '--bootstrap-address', '127.0.0.1') as (port, _):
+                    self.assertEqual(self.udp(port)[3] & 15, 2)
+                    self.assertEqual(plain.received, [])
+
+    def test_invalid_backup_options(self):
+        for args in (('--backup-bootstrap-address', '127.0.0.1'),
+                     ('--backup-upstream', 'http://resolver.invalid/dns-query'),
+                     ('--backup-upstream', 'https://CLOUDFLARE-DNS.COM.:443/another-path'),
+                     ('--backup-upstream', 'https://backup.invalid/dns-query',
+                      '--backup-bootstrap-address', 'invalid')):
+            with self.subTest(args=args):
+                proc = subprocess.run([str(BINARY), *args], capture_output=True, timeout=3)
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                self.assertIn(b'--backup-', proc.stderr)
 
 
 if __name__ == '__main__':
