@@ -134,6 +134,7 @@ Run `./dnsp-modern --help` for the options available in your build.
 | `--ca-file PEM` | CA certificate bundle for upstream TLS verification | libcurl's default CA bundle |
 | `--upstream-http MODE` | `auto` for HTTP/2 with HTTP/1.1 fallback, or `prefer-h3` for HTTP/3 with TCP fallback | `auto` |
 | `--max-host-connections N` | Maximum upstream connections per host, 1–16 | `8` |
+| `--tcp-max-per-source N` | Maximum concurrent DNS/TCP connections per IPv4 source, 1–128 | `32` |
 | `--tcp-idle-ms MS` | How long a TCP session can wait idle for its next query, 100–600000 ms | `15000` |
 | `--tcp-io-ms MS` | Separate deadlines to read a TCP request frame and write a response frame, 100–600000 ms | `15000` |
 | `--doh-connect-ms MS` | Deadline for the upstream connection phase, 100–60000 ms | `1500` |
@@ -230,7 +231,9 @@ flowchart LR
   question and DNS record boundaries are validated before replies are sent.
 - The IPv4 UDP listener accepts up to 65,507 bytes per datagram. TCP and the
   DoH wire body accept DNS messages up to 65,535 bytes. DNS/TCP carries a
-  two-byte length prefix outside that limit.
+  two-byte length prefix outside that limit. Name compression pointer walks
+  are bounded across each message. The UDP receive loop yields after 32
+  datagrams or after reaching 64 KiB of wire data, whichever comes first.
 - UDP replies are limited to 512 bytes without EDNS. With EDNS, the client's
   advertised size is clamped between 512 and `--udp-reply-max` (default 1232).
   Larger replies use `TC=1` for TCP
@@ -245,7 +248,10 @@ flowchart LR
   AXFR, IXFR and unsupported opcodes receive `NOTIMP`. This service forwards
   single DNS exchanges. The upstream handles DNSSEC validation.
 - A persistent TCP session accepts pipelined queries and sends replies in
-  order, with one upstream request in flight per session.
+  order, with one upstream request in flight per session. DNS/TCP has 128
+  connection slots. Set `--tcp-max-per-source` for clients sharing an address.
+  With 96 or more open connections, the idle timeout is capped at 3 seconds.
+  Partial frame reads and response writes keep their separate I/O deadlines.
 
 The client-to-proxy DNS leg is not encrypted merely because the upstream DoH
 connection is encrypted. Do not bind the proxy to an untrusted interface.
@@ -340,6 +346,7 @@ Useful Prometheus-compatible series:
 | `dnsp_queries_total{transport="udp"}` / `{transport="tcp"}` | Submitted queries by protocol |
 | `dnsp_queries_satisfied_total` | Complete `NOERROR` and `NXDOMAIN` replies written to client sockets |
 | `dnsp_queries_inflight` | Active upstream requests |
+| `dnsp_tcp_connections_rejected_total{reason="source_limit"}` / `{reason="capacity"}` | DNS/TCP connections closed at admission due to the per-source limit or a full table |
 | `dnsp_udp_queries_coalesced_total` | UDP datagrams that joined an active transfer, including retransmits |
 | `dnsp_upstream_requests_total` | Submitted upstream DoH requests |
 | `dnsp_upstream_success_total`, `dnsp_upstream_failures_total`, `dnsp_upstream_timeouts_total` | Completion and errors |

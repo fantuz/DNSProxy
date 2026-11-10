@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Loopback integration: RFC 8484 framing, EDNS, DNS validation, libcurl loop."""
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import http.client
 import http.server
 import os
@@ -347,6 +347,30 @@ class Tests(unittest.TestCase):
         self.assertGreaterEqual(self.metric(after, 'dnsp_tcp_keepalive_queries_total') -
                                 self.metric(before, 'dnsp_tcp_keepalive_queries_total'), 3)
 
+    def test_tcp_source_limit_and_idle_pressure(self):
+        rejected = 'dnsp_tcp_connections_rejected_total{reason="source_limit"}'
+        idle_timeouts = 'dnsp_tcp_idle_timeouts_total'
+        before = self.metrics()
+        with ExitStack() as sockets:
+            def connect(source):
+                return sockets.enter_context(socket.create_connection(
+                    ('127.0.0.1', self.port), timeout=3, source_address=(source, 0)))
+
+            first = connect('127.0.0.2')
+            for _ in range(31):
+                connect('127.0.0.2')
+            self.assertEqual(connect('127.0.0.2').recv(1), b'')
+            self.assertEqual(self.metric(self.metrics(), rejected), self.metric(before, rejected) + 1)
+            self.assertEqual(self.tcp(query()), make_response(query()))
+
+            for source in ('127.0.0.3', '127.0.0.4'):
+                for _ in range(32):
+                    connect(source)
+            # At 96 clients the first idle socket expires well before the 15s default.
+            first.settimeout(6)
+            self.assertEqual(first.recv(1), b'')
+            self.assertGreater(self.metric(self.metrics(), idle_timeouts), self.metric(before, idle_timeouts))
+
     def test_tcp_pipelined_frames_ordered(self):
         count = 8
         packets = [query(ident=3000+i) for i in range(count)]
@@ -685,6 +709,37 @@ class Tests(unittest.TestCase):
         out = self.udp(too_long)
         self.assertEqual(out[3] & 15, 1)
         self.assertEqual(len(out), 12)
+
+    def test_max_length_name_with_compressed_answer(self):
+        base = query(28)
+        name = b'\x01a'*127 + b'\0'
+        packet = base[:12] + name + base[-4:]
+        expected = make_response(packet)
+        owner = question_end(packet)
+        self.assertEqual(expected[owner:owner+2], b'\xc0\x0c')
+        self.assertEqual(self.udp(packet), expected)
+        self.assertEqual(self.tcp(packet), expected)
+
+    def test_message_wide_compression_budget(self):
+        upstream = 'dnsp_upstream_requests_total'
+        for chained in (False, True):
+            with self.subTest(chained=chained):
+                packet = bytearray(query())
+                packet[10:12] = struct.pack('!H', 32)
+                target = 12
+                for _ in range(32):
+                    owner = struct.pack('!H', 0xc000 | target)
+                    if chained:
+                        target = len(packet)
+                    packet += rr(65280, b'', owner)
+                before = self.metric(self.metrics(), upstream)
+                answer = self.udp(packet)
+                if chained:
+                    self.assertEqual(answer[3] & 15, 1)
+                    self.assertEqual(self.metric(self.metrics(), upstream), before)
+                else:
+                    self.assertEqual(answer, make_response(packet))
+                    self.assertEqual(self.metric(self.metrics(), upstream), before + 1)
 
     def test_udp_without_edns_truncates_to_512(self):
         out = self.udp(query(65001))
