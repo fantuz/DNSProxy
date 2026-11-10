@@ -15,6 +15,10 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install Clang and libcurl development headers
         run: |
+          # Use Ubuntu's HTTPS archive to avoid stalls on the runner's Azure mirror.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf '%s\n' 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
           sudo apt-get update
           sudo apt-get install -y clang libclang-rt-dev libcurl4-openssl-dev pkg-config
       - name: Fuzz DNS wire and HTTP cache parsers
