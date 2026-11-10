@@ -1,5 +1,8 @@
 # DNSProxy - RFC-compliant DNS-over-HTTPS proxy
 
+> Archived instructions for the retired `dnsp` and `dnsp-h2` editions. The
+> [current README](../README.md) covers building and running `dnsp-modern`.
+
 ## Why DNSProxy ?
 ### DNS transport tests, gone too far :)
 

@@ -16,23 +16,17 @@ multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
 This project grew out of DNS transport and privacy experiments dating to roughly
 2009–2010 and work surrounding [RFC 8484](https://www.rfc-editor.org/rfc/rfc8484).
 Historical project notes, experiments, and original CLI examples are preserved
-in [docs/README-legacy.md](docs/README-legacy.md). **Those legacy instructions
-do not describe `dnsp-modern`.**
+in [docs/README-legacy.md](docs/README-legacy.md).
 
 The upstream resolver handles recursion and DNSSEC validation. DNS privacy
 also depends on how clients route their DNS traffic and which upstream they use.
 
-## Which executable?
+## Supported executable
 
-| Executable | Role | Build | Status |
-| --- | --- | --- | --- |
-| `dnsp-modern` | Event-driven RFC 8484 DoH forwarder | `make` | Current implementation |
-| `dnsp-h2` | Historical DoH prototype with different features and CLI | `make dnsp-h2` | Legacy, requires a compatible toolchain |
-| `dnsp` | Pre-standardization HTTP/DNS experiment | Historical source in `dnsp.c` | Retired build target |
-
-The default build produces `dnsp-modern`. The old implementations use their own
-CLI flags and include features such as disk caching and custom TTL rewriting.
-See the [historical notes](docs/README-legacy.md) for their behavior.
+`make` builds `dnsp-modern`, the executable shipped in DNSProxy releases.
+The legacy `dnsp` and `dnsp-h2` compilation recipes have been removed from the
+current build. Their old target names print a retirement message, and the
+historical sources and CLI instructions are archived for reference.
 
 `dnsp-modern` now supports **persistent DNS-over-TCP client sessions**, ordered
 sequential/pipelined messages, and an adjustable `--tcp-idle-ms` timeout. See

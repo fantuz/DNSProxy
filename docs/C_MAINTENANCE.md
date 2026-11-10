@@ -11,9 +11,10 @@
 
 Use `git ls-files -ci --exclude-standard` to find files already tracked despite
 ignore rules. Check build inputs, scripts and docs before proposing a removal.
-For example, the legacy `dnsp-h2` recipe uses `encode.o` and `decode.o`, so their
-removal needs a separate decision about that build. Treat a binary with no
-known source as a historical artifact until its provenance is established.
+The `encode.o` and `decode.o` files are historical artifacts of the retired
+`dnsp-h2` build. The supported `dnsp-modern` build is defined in `modern.mk`.
+Treat a binary with no known source as a historical artifact until its provenance
+is established.
 [Git ignore documentation](https://git-scm.com/docs/gitignore)
 
 ## Review the C changes
