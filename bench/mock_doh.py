@@ -1,4 +1,4 @@
-"""Local TLS/ALPN HTTP/2 or HTTP/1.1 DoH upstream for repeatable benchmarks.
+"""Local HTTP/1.1, HTTP/2, and optional HTTP/3 DoH upstream for benchmarks.
 
 Uses Hypercorn (ASGI); tracks concurrent requests per TLS connection by peer
 IP/port as observed on the server, rather than inferring multiplexing from
@@ -219,7 +219,7 @@ class MockServer:
         config.bind = [f'127.0.0.1:{self.port}']
         config.certfile = str(self.cert)
         config.keyfile = str(self.key)
-        config.alpn_protocols = ['h2'] if self.protocol == 'h2' else ['http/1.1']
+        config.alpn_protocols = ['h2']
         config.accesslog = None
         config.errorlog = None
         config.loglevel = 'ERROR'
@@ -233,7 +233,15 @@ class MockServer:
             async def run():
                 self.loop = asyncio.get_running_loop()
                 self.stop = asyncio.Event()
-                await serve(self.app, config, shutdown_trigger=self.stop.wait)
+                quic = None
+                try:
+                    if self.protocol == 'h3':
+                        from mock_h3 import start_http3
+                        quic = await start_http3('127.0.0.1', self.port, self.cert, self.key, self.app)
+                    await serve(self.app, config, shutdown_trigger=self.stop.wait)
+                finally:
+                    if quic is not None:
+                        quic.close()
             try:
                 asyncio.run(run())
             except Exception as exc:
