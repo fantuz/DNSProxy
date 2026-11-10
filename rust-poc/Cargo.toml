@@ -1,0 +1,16 @@
+[package]
+name = "dnsp-modern-rust"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Rust DNSProxy transport and DNS wire parity proof of concept"
+
+[dependencies]
+curl = { version = "=0.4.50", features = ["http2"] }
+curl-sys = "0.4"
+libc = "0.2"
+socket2 = "0.6"
+
+[profile.release]
+lto = "thin"

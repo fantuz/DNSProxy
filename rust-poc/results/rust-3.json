@@ -1,0 +1,437 @@
+{
+  "schema": 1,
+  "description": "DNSProxy modern controlled TLS DoH benchmark",
+  "disclaimer": "Closed-loop selector-driven UDP queries; synthetic upstream in Python shares host CPU with load generator; do not treat as Internet DoH performance.",
+  "config": {
+    "binary": "./target/release/dnsp-modern-rust",
+    "protocol": "h2-h3",
+    "concurrency": [
+      1,
+      8,
+      32
+    ],
+    "duration": 2.0,
+    "warmup": 0.5,
+    "upstream_delay_ms": 1.0,
+    "answers": 1,
+    "udp_reply_max": null,
+    "max_host_connections": 8,
+    "h2_max_streams": 100,
+    "h2_idle_timeout": null,
+    "h2_max_requests": 10000000,
+    "mock_upstream_port": null,
+    "upstream_url": null,
+    "assert_h2_multiplex": true,
+    "assert_h3_multiplex": false,
+    "output": "results/rust-3.json",
+    "verbose": false
+  },
+  "host": {
+    "os": "Linux",
+    "cpu_count": 9
+  },
+  "results": [
+    {
+      "elapsed_s": 2.0,
+      "successful_queries": 982,
+      "failed_responses": 0,
+      "timeouts": 0,
+      "truncated_responses": 0,
+      "total_queries": 982,
+      "qps": 490.99,
+      "dns_response_bytes": 44190,
+      "dns_response_mib_s": 0.0211,
+      "p50_ms": 1.955,
+      "p95_ms": 2.499,
+      "p99_ms": 3.633,
+      "max_ms": 5.095,
+      "latency_samples": 982,
+      "protocol_requested": "h2",
+      "concurrency": 1,
+      "max_host_connections": 8,
+      "upstream_delay_ms": 1.0,
+      "proxy_cpu_seconds": 0.15,
+      "proxy_cpu_percent_of_one_core": 7.5,
+      "proxy_rss_start_bytes": 9326592,
+      "proxy_rss_end_bytes": 9326592,
+      "proxy_rss_peak_bytes": 9388032,
+      "proxy_rss_delta_bytes": 0,
+      "curl_metric_delta": {
+        "dnsp_upstream_requests_total": 982.0,
+        "dnsp_upstream_success_total": 982.0,
+        "dnsp_upstream_failures_total": 0.0,
+        "dnsp_upstream_timeouts_total": 0.0,
+        "dnsp_upstream_new_connections_total": 0.0,
+        "dnsp_upstream_reused_requests_total": 982.0,
+        "dnsp_upstream_http_responses_total{version=\"1\"}": 0.0,
+        "dnsp_upstream_http_responses_total{version=\"2\"}": 982.0,
+        "dnsp_upstream_duration_seconds_sum": 1.7603659999999999,
+        "dnsp_upstream_duration_seconds_count": 982.0,
+        "dnsp_overload_total": 0.0,
+        "dnsp_truncated_responses_total": 0.0,
+        "dnsp_upstream_http_responses_total{version=\"3\"}": 0.0
+      },
+      "upstream_phases": {
+        "queue": {
+          "samples": 982,
+          "mean_ms": 0.01
+        },
+        "tls": {
+          "samples": 0,
+          "mean_ms": null
+        },
+        "first_byte": {
+          "samples": 982,
+          "mean_ms": 1.651
+        }
+      },
+      "h2_idle_probe": null,
+      "upstream_observed": {
+        "upstream_connections_used": 1,
+        "upstream_http_versions": {
+          "2": 982
+        },
+        "upstream_max_simultaneous_per_connection": 1,
+        "upstream_max_simultaneous_total": 1,
+        "upstream_completed": 982,
+        "upstream_invalid": 0,
+        "upstream_inflight": 0
+      }
+    },
+    {
+      "elapsed_s": 2.002,
+      "successful_queries": 3446,
+      "failed_responses": 0,
+      "timeouts": 0,
+      "truncated_responses": 0,
+      "total_queries": 3446,
+      "qps": 1721.16,
+      "dns_response_bytes": 155070,
+      "dns_response_mib_s": 0.0739,
+      "p50_ms": 4.486,
+      "p95_ms": 6.163,
+      "p99_ms": 8.155,
+      "max_ms": 13.387,
+      "latency_samples": 3446,
+      "protocol_requested": "h2",
+      "concurrency": 8,
+      "max_host_connections": 8,
+      "upstream_delay_ms": 1.0,
+      "proxy_cpu_seconds": 0.42,
+      "proxy_cpu_percent_of_one_core": 20.98,
+      "proxy_rss_start_bytes": 9719808,
+      "proxy_rss_end_bytes": 9719808,
+      "proxy_rss_peak_bytes": 9895936,
+      "proxy_rss_delta_bytes": 0,
+      "curl_metric_delta": {
+        "dnsp_upstream_requests_total": 3446.0,
+        "dnsp_upstream_success_total": 3446.0,
+        "dnsp_upstream_failures_total": 0.0,
+        "dnsp_upstream_timeouts_total": 0.0,
+        "dnsp_upstream_new_connections_total": 0.0,
+        "dnsp_upstream_reused_requests_total": 3446.0,
+        "dnsp_upstream_http_responses_total{version=\"1\"}": 0.0,
+        "dnsp_upstream_http_responses_total{version=\"2\"}": 3446.0,
+        "dnsp_upstream_duration_seconds_sum": 14.434455,
+        "dnsp_upstream_duration_seconds_count": 3446.0,
+        "dnsp_overload_total": 0.0,
+        "dnsp_truncated_responses_total": 0.0,
+        "dnsp_upstream_http_responses_total{version=\"3\"}": 0.0
+      },
+      "upstream_phases": {
+        "queue": {
+          "samples": 3446,
+          "mean_ms": 0.008
+        },
+        "tls": {
+          "samples": 0,
+          "mean_ms": null
+        },
+        "first_byte": {
+          "samples": 3446,
+          "mean_ms": 3.747
+        }
+      },
+      "h2_idle_probe": null,
+      "upstream_observed": {
+        "upstream_connections_used": 1,
+        "upstream_http_versions": {
+          "2": 3446
+        },
+        "upstream_max_simultaneous_per_connection": 8,
+        "upstream_max_simultaneous_total": 8,
+        "upstream_completed": 3446,
+        "upstream_invalid": 0,
+        "upstream_inflight": 0
+      }
+    },
+    {
+      "elapsed_s": 2.019,
+      "successful_queries": 4619,
+      "failed_responses": 0,
+      "timeouts": 0,
+      "truncated_responses": 0,
+      "total_queries": 4619,
+      "qps": 2287.29,
+      "dns_response_bytes": 207855,
+      "dns_response_mib_s": 0.0982,
+      "p50_ms": 13.438,
+      "p95_ms": 17.866,
+      "p99_ms": 26.613,
+      "max_ms": 29.933,
+      "latency_samples": 4619,
+      "protocol_requested": "h2",
+      "concurrency": 32,
+      "max_host_connections": 8,
+      "upstream_delay_ms": 1.0,
+      "proxy_cpu_seconds": 0.7,
+      "proxy_cpu_percent_of_one_core": 34.67,
+      "proxy_rss_start_bytes": 9719808,
+      "proxy_rss_end_bytes": 11554816,
+      "proxy_rss_peak_bytes": 11669504,
+      "proxy_rss_delta_bytes": 1835008,
+      "curl_metric_delta": {
+        "dnsp_upstream_requests_total": 4619.0,
+        "dnsp_upstream_success_total": 4619.0,
+        "dnsp_upstream_failures_total": 0.0,
+        "dnsp_upstream_timeouts_total": 0.0,
+        "dnsp_upstream_new_connections_total": 0.0,
+        "dnsp_upstream_reused_requests_total": 4619.0,
+        "dnsp_upstream_http_responses_total{version=\"1\"}": 0.0,
+        "dnsp_upstream_http_responses_total{version=\"2\"}": 4619.0,
+        "dnsp_upstream_duration_seconds_sum": 62.31625,
+        "dnsp_upstream_duration_seconds_count": 4619.0,
+        "dnsp_overload_total": 0.0,
+        "dnsp_truncated_responses_total": 0.0,
+        "dnsp_upstream_http_responses_total{version=\"3\"}": 0.0
+      },
+      "upstream_phases": {
+        "queue": {
+          "samples": 4619,
+          "mean_ms": 0.007
+        },
+        "tls": {
+          "samples": 0,
+          "mean_ms": null
+        },
+        "first_byte": {
+          "samples": 4619,
+          "mean_ms": 11.762
+        }
+      },
+      "h2_idle_probe": null,
+      "upstream_observed": {
+        "upstream_connections_used": 1,
+        "upstream_http_versions": {
+          "2": 4619
+        },
+        "upstream_max_simultaneous_per_connection": 32,
+        "upstream_max_simultaneous_total": 32,
+        "upstream_completed": 4619,
+        "upstream_invalid": 0,
+        "upstream_inflight": 0
+      }
+    },
+    {
+      "elapsed_s": 2.002,
+      "successful_queries": 967,
+      "failed_responses": 0,
+      "timeouts": 0,
+      "truncated_responses": 0,
+      "total_queries": 967,
+      "qps": 483.12,
+      "dns_response_bytes": 43515,
+      "dns_response_mib_s": 0.0207,
+      "p50_ms": 1.883,
+      "p95_ms": 2.432,
+      "p99_ms": 3.187,
+      "max_ms": 26.093,
+      "latency_samples": 967,
+      "protocol_requested": "h3",
+      "concurrency": 1,
+      "max_host_connections": 8,
+      "upstream_delay_ms": 1.0,
+      "proxy_cpu_seconds": 0.27,
+      "proxy_cpu_percent_of_one_core": 13.49,
+      "proxy_rss_start_bytes": 9736192,
+      "proxy_rss_end_bytes": 10129408,
+      "proxy_rss_peak_bytes": 10203136,
+      "proxy_rss_delta_bytes": 393216,
+      "curl_metric_delta": {
+        "dnsp_upstream_requests_total": 967.0,
+        "dnsp_upstream_success_total": 967.0,
+        "dnsp_upstream_failures_total": 0.0,
+        "dnsp_upstream_timeouts_total": 0.0,
+        "dnsp_upstream_new_connections_total": 0.0,
+        "dnsp_upstream_reused_requests_total": 967.0,
+        "dnsp_upstream_http_responses_total{version=\"1\"}": 0.0,
+        "dnsp_upstream_http_responses_total{version=\"2\"}": 0.0,
+        "dnsp_upstream_duration_seconds_sum": 1.791172,
+        "dnsp_upstream_duration_seconds_count": 967.0,
+        "dnsp_overload_total": 0.0,
+        "dnsp_truncated_responses_total": 0.0,
+        "dnsp_upstream_http_responses_total{version=\"3\"}": 967.0
+      },
+      "upstream_phases": {
+        "queue": {
+          "samples": 967,
+          "mean_ms": 0.012
+        },
+        "tls": {
+          "samples": 0,
+          "mean_ms": null
+        },
+        "first_byte": {
+          "samples": 967,
+          "mean_ms": 1.77
+        }
+      },
+      "h2_idle_probe": null,
+      "upstream_observed": {
+        "upstream_connections_used": 1,
+        "upstream_http_versions": {
+          "3": 967
+        },
+        "upstream_max_simultaneous_per_connection": 1,
+        "upstream_max_simultaneous_total": 1,
+        "upstream_completed": 967,
+        "upstream_invalid": 0,
+        "upstream_inflight": 0
+      }
+    },
+    {
+      "elapsed_s": 2.006,
+      "successful_queries": 3193,
+      "failed_responses": 0,
+      "timeouts": 0,
+      "truncated_responses": 0,
+      "total_queries": 3193,
+      "qps": 1591.88,
+      "dns_response_bytes": 143685,
+      "dns_response_mib_s": 0.0683,
+      "p50_ms": 4.911,
+      "p95_ms": 6.603,
+      "p99_ms": 7.835,
+      "max_ms": 9.851,
+      "latency_samples": 3193,
+      "protocol_requested": "h3",
+      "concurrency": 8,
+      "max_host_connections": 8,
+      "upstream_delay_ms": 1.0,
+      "proxy_cpu_seconds": 1.3,
+      "proxy_cpu_percent_of_one_core": 64.81,
+      "proxy_rss_start_bytes": 10915840,
+      "proxy_rss_end_bytes": 11964416,
+      "proxy_rss_peak_bytes": 12128256,
+      "proxy_rss_delta_bytes": 1048576,
+      "curl_metric_delta": {
+        "dnsp_upstream_requests_total": 3193.0,
+        "dnsp_upstream_success_total": 3193.0,
+        "dnsp_upstream_failures_total": 0.0,
+        "dnsp_upstream_timeouts_total": 0.0,
+        "dnsp_upstream_new_connections_total": 0.0,
+        "dnsp_upstream_reused_requests_total": 3193.0,
+        "dnsp_upstream_http_responses_total{version=\"1\"}": 0.0,
+        "dnsp_upstream_http_responses_total{version=\"2\"}": 0.0,
+        "dnsp_upstream_duration_seconds_sum": 13.681515999999998,
+        "dnsp_upstream_duration_seconds_count": 3193.0,
+        "dnsp_overload_total": 0.0,
+        "dnsp_truncated_responses_total": 0.0,
+        "dnsp_upstream_http_responses_total{version=\"3\"}": 3193.0
+      },
+      "upstream_phases": {
+        "queue": {
+          "samples": 3193,
+          "mean_ms": 0.01
+        },
+        "tls": {
+          "samples": 0,
+          "mean_ms": null
+        },
+        "first_byte": {
+          "samples": 3193,
+          "mean_ms": 4.194
+        }
+      },
+      "h2_idle_probe": null,
+      "upstream_observed": {
+        "upstream_connections_used": 1,
+        "upstream_http_versions": {
+          "3": 3193
+        },
+        "upstream_max_simultaneous_per_connection": 5,
+        "upstream_max_simultaneous_total": 5,
+        "upstream_completed": 3193,
+        "upstream_invalid": 0,
+        "upstream_inflight": 0
+      }
+    },
+    {
+      "elapsed_s": 2.024,
+      "successful_queries": 2998,
+      "failed_responses": 0,
+      "timeouts": 0,
+      "truncated_responses": 0,
+      "total_queries": 2998,
+      "qps": 1481.57,
+      "dns_response_bytes": 134910,
+      "dns_response_mib_s": 0.0636,
+      "p50_ms": 21.315,
+      "p95_ms": 26.603,
+      "p99_ms": 30.315,
+      "max_ms": 33.123,
+      "latency_samples": 2998,
+      "protocol_requested": "h3",
+      "concurrency": 32,
+      "max_host_connections": 8,
+      "upstream_delay_ms": 1.0,
+      "proxy_cpu_seconds": 1.91,
+      "proxy_cpu_percent_of_one_core": 94.37,
+      "proxy_rss_start_bytes": 12226560,
+      "proxy_rss_end_bytes": 15503360,
+      "proxy_rss_peak_bytes": 15646720,
+      "proxy_rss_delta_bytes": 3276800,
+      "curl_metric_delta": {
+        "dnsp_upstream_requests_total": 2998.0,
+        "dnsp_upstream_success_total": 2998.0,
+        "dnsp_upstream_failures_total": 0.0,
+        "dnsp_upstream_timeouts_total": 0.0,
+        "dnsp_upstream_new_connections_total": 0.0,
+        "dnsp_upstream_reused_requests_total": 2998.0,
+        "dnsp_upstream_http_responses_total{version=\"1\"}": 0.0,
+        "dnsp_upstream_http_responses_total{version=\"2\"}": 0.0,
+        "dnsp_upstream_duration_seconds_sum": 53.368427,
+        "dnsp_upstream_duration_seconds_count": 2998.0,
+        "dnsp_overload_total": 0.0,
+        "dnsp_truncated_responses_total": 0.0,
+        "dnsp_upstream_http_responses_total{version=\"3\"}": 2998.0
+      },
+      "upstream_phases": {
+        "queue": {
+          "samples": 2998,
+          "mean_ms": 0.008
+        },
+        "tls": {
+          "samples": 0,
+          "mean_ms": null
+        },
+        "first_byte": {
+          "samples": 2998,
+          "mean_ms": 17.649
+        }
+      },
+      "h2_idle_probe": null,
+      "upstream_observed": {
+        "upstream_connections_used": 1,
+        "upstream_http_versions": {
+          "3": 2998
+        },
+        "upstream_max_simultaneous_per_connection": 5,
+        "upstream_max_simultaneous_total": 5,
+        "upstream_completed": 2998,
+        "upstream_invalid": 0,
+        "upstream_inflight": 0
+      }
+    }
+  ]
+}

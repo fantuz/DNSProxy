@@ -21,6 +21,10 @@ in [docs/README-legacy.md](docs/README-legacy.md).
 The upstream resolver handles recursion and DNSSEC validation. DNS privacy
 also depends on how clients route their DNS traffic and which upstream they use.
 
+## Rust feasibility study
+
+The [Rust proof of concept](rust-poc/README.md) records the source, test parity and loopback benchmarks against the C implementation. C is the supported implementation of `dnsp-modern`.
+
 ## Supported executable
 
 `make` builds `dnsp-modern`, the executable shipped in DNSProxy releases.
