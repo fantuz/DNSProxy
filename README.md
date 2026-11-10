@@ -420,3 +420,4 @@ builds, and manual release recovery.
 
 See the [C maintenance guide](docs/C_MAINTENANCE.md) for repository layout
 criteria, C review checks, and commands to run before opening a PR.
+See the [security policy](SECURITY.md) for private vulnerability reporting.
