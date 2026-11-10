@@ -37,17 +37,18 @@ load: each UDP client submits the next query only after receiving a reply or
 timing out. To explore connection parallelism, repeat with
 `--max-host-connections 8` (the default for the proxy outside benchmarks).
 
-For larger DNS payloads, use `--answers 240` (about 3.9 KB/reply). The synthetic
-client advertises EDNS UDP size 4096. The reported `dns_response_mib_s` counts
-DNS response payload bytes received over UDP; it is **not** HTTP/2 framing or
-wire-level network throughput. The mock does no recursion or caching.
+For full large UDP replies on loopback, use `--answers 240 --udp-reply-max 4096`
+(3,869 bytes per reply). The synthetic client advertises a 4,096-byte EDNS UDP
+buffer. The proxy's default 1,232-byte reply cap truncates these answers.
+The reported `dns_response_mib_s` counts complete DNS answer payloads received
+over UDP. The mock does no recursion or caching.
 
 ## Interpreting results
 
-* `qps` = successfully answered queries divided by elapsed wall-clock time.
-  Failed responses, timeouts, and upstream error counters are kept separately.
+* `qps` = complete `NOERROR` replies divided by elapsed wall-clock time.
+  Truncated replies (`TC=1`), failures, and timeouts are counted separately.
 * `p50_ms`, `p95_ms`, `p99_ms` = end-to-end UDP request/response latency,
-  measured using `perf_counter_ns()`; failures are not included in percentiles.
+  measured using `perf_counter_ns()` for complete successful replies.
 * `proxy_cpu_percent_of_one_core` = delta process user+system CPU time divided
   by elapsed wall time × 100. `200%` means two CPU cores worth of CPU time.
 * `proxy_rss_*` = Linux `/proc/PID` resident bytes; `proxy_rss_peak_bytes` is
