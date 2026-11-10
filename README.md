@@ -126,6 +126,8 @@ Run `./dnsp-modern --help` for the options available in your build.
 | `-l IPv4` | DNS UDP/TCP bind address | `127.0.0.1` |
 | `-p PORT` | DNS listener port, 1–65535 | `5300` |
 | `-s URL` | Upstream DoH endpoint | `https://cloudflare-dns.com/dns-query` |
+| `--backup-upstream URL` | Backup DoH endpoint for eligible transport failures | Disabled |
+| `--backup-bootstrap-address IP` | Numeric address for the backup HTTPS hostname | Resolve the hostname normally |
 | `-m PORT` | Loopback-only metrics port, 1–65535 and different from `-p` | Disabled for manual runs. The packaged service uses `9153`. |
 | `--bootstrap-address IP` | Numeric IPv4 or unbracketed IPv6 address for an HTTPS upstream hostname | Resolve the hostname normally |
 | `--edns-padding` | Pad eligible upstream HTTPS DNS queries to a multiple of 128 bytes | Disabled |
@@ -187,6 +189,10 @@ slower connection and more time for the reply.
 ```sh
 ./dnsp-modern --doh-connect-ms 2500 --doh-timeout-ms 5000
 ```
+
+With a backup configured, eligible queries reserve half of the available
+deadline for retry. See [upstream failover](docs/UPSTREAM_FAILOVER.md) for
+eligible requests, failure policy, and per-endpoint metrics.
 
 Check the active deadlines in the [on-demand status report](#on-demand-status-report).
 For systemd overrides, see the [packaging guide](packaging/README-packaging.md).
@@ -398,8 +404,6 @@ builds, and manual release recovery.
 
 - **IPv6 DNS listeners.** Accept local DNS traffic on `::1` and explicit IPv6
   addresses, with independent IPv4 and IPv6 bind tests.
-- **Configured upstream failover.** Retry transport failures within the
-  original time budget, using only resolvers the operator has chosen.
 - **DNS-aware response caching.** Bound memory, honor positive and negative
   TTLs, and start with queries free of client-specific EDNS options.
 - **Tail-latency metrics.** Add bounded latency buckets by client transport
