@@ -4,9 +4,13 @@
 [![CodeQL](https://github.com/fantuz/DNSProxy/actions/workflows/codeql.yml/badge.svg?branch=master)](https://github.com/fantuz/DNSProxy/actions/workflows/codeql.yml)
 [![HTTP/2 benchmark](https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-modern-benchmark.yml/badge.svg)](https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-modern-benchmark.yml)
 [![Latest modern release](https://img.shields.io/github/v/release/fantuz/DNSProxy?include_prereleases&filter=v*-modern&sort=date)](https://github.com/fantuz/DNSProxy/releases)
-[![Total release asset downloads](https://img.shields.io/github/downloads/fantuz/DNSProxy/total?label=asset%20downloads)](https://github.com/fantuz/DNSProxy/releases)
+[![Downloads](https://img.shields.io/github/downloads/fantuz/DNSProxy/total?label=downloads)](https://github.com/fantuz/DNSProxy/releases)
 [![MIT license](https://img.shields.io/github/license/fantuz/DNSProxy)](LICENSE)
 [![RFC 8484](https://img.shields.io/badge/DoH-RFC%208484-blue)](https://www.rfc-editor.org/rfc/rfc8484)
+
+[![Install DEB or RPM packages for amd64 and arm64](https://img.shields.io/badge/Install-DEB%2FRPM%20%C2%B7%20amd64%2Farm64-2e7d32)](packaging/README-packaging.md#packages-and-architectures)
+[![Upstream DoH with HTTP/2 and optional HTTP/3](https://img.shields.io/badge/Upstream%20DoH-HTTP%2F2%20%2B%20optional%20HTTP%2F3-0072b8)](#optional-upstream-http3)
+[![Security policy and private vulnerability reporting](https://img.shields.io/badge/Security-policy-6f42c1)](SECURITY.md)
 
 DNSProxy bridges conventional **DNS clients (UDP/TCP)** to upstream
 **DNS-over-HTTPS (DoH)** resolvers. The `dnsp-modern` forwarder
