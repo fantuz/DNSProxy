@@ -53,12 +53,12 @@ dig +tcp @127.0.0.1 -p 5300 example.com A
 curl -fsS http://127.0.0.1:9153/metrics
 ```
 
-Observe `dnsp_upstream_http_responses_total{version="2"}` and
-`dnsp_upstream_reused_requests_total` while generating traffic to evaluate
-HTTP/2 negotiation and connection reuse. Loopback integration tests exercise
-HTTP/1.1 only and do not prove remote HTTP/2 throughput. Metrics are process-
-local and reset on restart; they do not include DNS question names, client
-addresses, or other high-cardinality labels.
+Observe `dnsp_upstream_http_responses_total` by version and
+`dnsp_upstream_reused_requests_total` while generating traffic to check
+protocol negotiation and connection reuse. The benchmark and QUIC suites
+verify concurrent HTTP/2 and HTTP/3 streams with local upstreams. Metrics
+reset when the process restarts and omit query names and client addresses.
+See [deployment checks and test coverage](../docs/OPERATIONS.md).
 
 ## Packages and architectures
 
