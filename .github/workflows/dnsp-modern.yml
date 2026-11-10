@@ -8,15 +8,42 @@ name: DNSProxy modern - test and package
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish the current master VERSION if it is new
+        description: Publish a release from master
         type: boolean
         default: false
+      release_version:
+        description: Release version, for example 0.3.8 (blank uses VERSION)
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
+  prepare-release:
+    name: Prepare the manual release commit
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' &&
+      inputs.publish && inputs.release_version != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.prepare.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+      - id: prepare
+        env:
+          PUBLISH_REQUESTED: ${{ inputs.publish }}
+          REQUESTED_RELEASE_VERSION: ${{ inputs.release_version }}
+        run: sh scripts/prepare-release.sh
+
   plan:
+    needs: prepare-release
+    if: ${{ !cancelled() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped') }}
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.plan.outputs.version }}
@@ -29,11 +56,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.prepare-release.outputs.commit || github.sha }}
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - id: plan
         env:
           PUBLISH_REQUESTED: ${{ inputs.publish || false }}
+          REQUESTED_RELEASE_VERSION: ${{ inputs.release_version }}
+          PREPARED_RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
         run: sh scripts/ci-release-plan.sh
+      - name: Test release planning and publication with a local Git remote
+        if: github.event_name == 'pull_request'
+        run: python3 tests/test_release.py
       - name: Select checks for the proposed merge
         id: pr
         if: github.event_name == 'pull_request'
@@ -59,6 +92,7 @@ jobs:
 
   deb:
     needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     name: DEB ${{ matrix.distro }} ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -79,6 +113,8 @@ jobs:
             arch: arm64
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -103,6 +139,7 @@ jobs:
 
   debian:
     needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     name: DEB debian13 ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     container: debian:13-slim
@@ -120,6 +157,8 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends build-essential pkg-config libcurl4-openssl-dev dpkg-dev python3 git ca-certificates openssl
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
       - name: Build and inspect the package
         id: build
         env:
@@ -144,6 +183,7 @@ jobs:
 
   rpm:
     needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     name: RPM rocky9 ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     container: docker.io/rockylinux/rockylinux:9
@@ -160,6 +200,8 @@ jobs:
         run: |
           dnf install -y gcc make git rpm-build redhat-rpm-config libcurl-devel openssl python3 systemd-rpm-macros
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
       - name: Build and inspect the package
         id: build
         env:
@@ -185,10 +227,14 @@ jobs:
           retention-days: 14
 
   sanitizers:
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     name: AddressSanitizer and UndefinedBehaviorSanitizer
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -204,7 +250,9 @@ jobs:
 
   codeql:
     needs: plan
-    if: github.event_name == 'pull_request' && needs.plan.outputs.codeql == 'true'
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      github.event_name == 'pull_request' && needs.plan.outputs.codeql == 'true'
     permissions:
       contents: read
       security-events: write
@@ -212,12 +260,16 @@ jobs:
 
   fuzz:
     needs: plan
-    if: github.event_name == 'pull_request' && needs.plan.outputs.fuzz == 'true'
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      github.event_name == 'pull_request' && needs.plan.outputs.fuzz == 'true'
     uses: ./.github/workflows/dnsp-modern-fuzz.yml
 
   protocols:
     needs: plan
-    if: github.event_name == 'pull_request' && needs.plan.outputs.protocols == 'true'
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      github.event_name == 'pull_request' && needs.plan.outputs.protocols == 'true'
     uses: ./.github/workflows/dnsp-modern-benchmark.yml
 
   pr-checks:
@@ -253,8 +305,11 @@ jobs:
   publish:
     name: Publish the tested package set
     if: >-
-      github.event_name != 'pull_request' &&
-      (needs.plan.outputs.mode == 'master' || needs.plan.outputs.mode == 'tag')
+      !cancelled() && github.event_name != 'pull_request' &&
+      needs.plan.result == 'success' && needs.deb.result == 'success' &&
+      needs.debian.result == 'success' && needs.rpm.result == 'success' &&
+      needs.sanitizers.result == 'success' &&
+      (needs.plan.outputs.mode == 'master' || needs.plan.outputs.mode == 'tag' || needs.plan.outputs.mode == 'manual')
     needs: [plan, deb, debian, rpm, sanitizers]
     runs-on: ubuntu-24.04
     permissions:
