@@ -1,3 +1,4 @@
+#define _DEFAULT_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #include <arpa/inet.h>
 #include <curl/curl.h>
@@ -19,6 +20,10 @@
 #include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
+
+#ifndef DNSP_VERSION
+#define DNSP_VERSION "dev"
+#endif
 
 /* DNS/DoH forwarder. All descriptors and CURL handles are
  * owned by one event loop. Do not call libcurl from another thread. */
@@ -52,10 +57,21 @@ static uint64_t read_clock_ms(clockid_t clock_id) {
 }
 static uint64_t clock_ms(void) { return read_clock_ms(CLOCK_MONOTONIC); }
 
+typedef struct {
+    size_t remaining_pointers;
+    unsigned char *ttl_bytes; /* One bit per byte the proxy may rewrite. */
+} DnsNames;
+
+static bool touches_ttl(const unsigned char *map,size_t at,size_t len) {
+    for(size_t i=at;i<at+len;i++)
+        if(map[i/8]&(1u<<(i%8))) return true;
+    return false;
+}
+
 /* Expand DNS names, rejecting out-of-bounds and forward compression pointers.
  * The expanded wire representation is case-folded for QNAME comparison only. */
 static bool dns_name(const unsigned char *p,size_t n,size_t *offset,
-                     unsigned char out[256],size_t *outlen,bool compression,size_t *remaining_pointers) {
+                     unsigned char out[256],size_t *outlen,bool compression,DnsNames *names) {
     size_t at=*offset, end=0, used=0;
     unsigned hops=0;
     bool jumped=false;
@@ -63,16 +79,19 @@ static bool dns_name(const unsigned char *p,size_t n,size_t *offset,
         if(at>=n) return false;
         unsigned len=p[at];
         if((len&0xc0)==0xc0) {
-            if(!compression || at+1>=n || hops==DNS_MAX_POINTER_HOPS || !*remaining_pointers) return false;
+            if(!compression || at+1>=n || hops==DNS_MAX_POINTER_HOPS || !names->remaining_pointers ||
+               (jumped && names->ttl_bytes && touches_ttl(names->ttl_bytes,at,2))) return false;
             size_t target=((size_t)(len&0x3f)<<8)|p[at+1];
             if(target<DNS_HEADER || target>=at) return false; /* header or forward reference */
             hops++;
-            (*remaining_pointers)--;
+            names->remaining_pointers--;
             if(!jumped) end=at+2;
+            n=at; /* The encoded occurrence must end before this pointer. */
             at=target; jumped=true;
             continue;
         }
-        if(len&0xc0 || len>63 || at+1+len>n || used+1+len>255) return false;
+        if(len&0xc0 || len>63 || at+1+len>n || used+1+len>255 ||
+           (jumped && names->ttl_bytes && touches_ttl(names->ttl_bytes,at,1+len))) return false;
         out[used++]=(unsigned char)len;
         for(unsigned k=0;k<len;k++) {
             unsigned char c=p[at+1+k];
@@ -82,16 +101,32 @@ static bool dns_name(const unsigned char *p,size_t n,size_t *offset,
         if(!len) { *offset=jumped?end:at; *outlen=used; return true; }
     }
 }
-/* Check name fields in common RDATA formats. Keep unknown types opaque. */
-static bool dns_rr_names(const unsigned char *p,size_t pos,size_t end,uint16_t type,size_t *remaining_pointers) {
-    bool compression=true;
+/* Validate RDATA name fields that can carry compression, including the
+ * legacy types listed in RFC 3597 section 4. Unknown types stay opaque. */
+static bool dns_rr_names(const unsigned char *p,size_t pos,size_t end,uint16_t type,DnsNames *state) {
+    bool compression=true,opaque_suffix=false;
     size_t prefix=0,tail=0;
     unsigned names=1;
     switch(type) {
-        case 2: case 5: case 12: break; /* NS, CNAME, PTR */
+        case 2: case 3: case 4: case 5: case 7: case 8: case 9: case 12:
+            break; /* NS, MD, MF, CNAME, MB, MG, MR, PTR */
         case 6: names=2;tail=20;break; /* SOA */
-        case 15: prefix=2;break; /* MX */
+        case 14: case 17: names=2;break; /* MINFO, RP */
+        case 15: case 18: case 21: prefix=2;break; /* MX, AFSDB, RT */
+        case 24: prefix=18;opaque_suffix=true;break; /* SIG */
+        case 26: prefix=2;names=2;break; /* PX */
+        case 30: opaque_suffix=true;break; /* NXT */
         case 33: prefix=6;break; /* SRV, accept older senders using compression */
+        case 35: /* NAPTR order and preference, then three character strings. */
+            if(end-pos<4) return false;
+            pos+=4;
+            for(unsigned i=0;i<3;i++) {
+                if(pos==end) return false;
+                size_t len=p[pos++];
+                if(len>end-pos) return false;
+                pos+=len;
+            }
+            break;
         case 39: compression=false;break; /* DNAME */
         default: return true;
     }
@@ -100,8 +135,8 @@ static bool dns_rr_names(const unsigned char *p,size_t pos,size_t end,uint16_t t
     end-=tail;
     unsigned char name[256];size_t name_len;
     for(unsigned i=0;i<names;i++)
-        if(!dns_name(p,end,&pos,name,&name_len,compression,remaining_pointers)) return false;
-    return pos==end;
+        if(!dns_name(p,end,&pos,name,&name_len,compression,state)) return false;
+    return opaque_suffix || pos==end;
 }
 static bool dns_opt_options(const unsigned char *p,size_t pos,size_t end) {
     while(pos<end) {
@@ -136,10 +171,13 @@ static DnsResult dns_parse(const unsigned char *p,size_t n,const DnsInfo *reques
     uint16_t questions=be16(p+4);
     if(questions>1 || (p[3]&0x40) || (!response && (p[3]&0x0f))) return DNS_FORMERR;
     size_t pos=DNS_HEADER;
-    size_t remaining_pointers=n; /* Bound total pointer walks by the wire length. */
+    unsigned char ttl_bytes[(TCP_MAX+7)/8];
+    /* Backward references can only reach TTLs recorded before the name. */
+    DnsNames names={.remaining_pointers=n,.ttl_bytes=response?ttl_bytes:NULL};
+    if(response) memset(ttl_bytes,0,(n+7)/8);
     unsigned char name[256];size_t name_len=0;
     if(questions) {
-        if(!dns_name(p,n,&pos,info->qname,&info->qname_len,response,&remaining_pointers) ||
+        if(!dns_name(p,n,&pos,info->qname,&info->qname_len,response,&names) ||
            pos+4>n) return DNS_FORMERR;
         info->qtype=be16(p+pos);info->qclass=be16(p+pos+2);
         pos+=4;
@@ -155,11 +193,15 @@ static DnsResult dns_parse(const unsigned char *p,size_t n,const DnsInfo *reques
     for(size_t section=0;section<3;section++) {
         for(size_t i=0;i<counts[section];i++) {
             size_t owner=pos;
-            if(!dns_name(p,n,&pos,name,&name_len,true,&remaining_pointers) || pos+10>n) return DNS_FORMERR;
+            if(!dns_name(p,n,&pos,name,&name_len,true,&names) || pos+10>n) return DNS_FORMERR;
             uint16_t type=be16(p+pos),klass=be16(p+pos+2),rdlen=be16(p+pos+8);
             if(section==2 && (type==24 || type==250)) info->message_signature=true;
             unsigned char ext_rcode=p[pos+4];
             bool opt_do=(p[pos+6]&0x80)!=0;
+            if(response && type!=41) {
+                for(size_t ttl=pos+4;ttl<pos+8;ttl++)
+                    ttl_bytes[ttl/8]|=(unsigned char)(1u<<(ttl%8));
+            }
             pos+=10;
             if(type==41) {
                 if(section!=2 || info->has_opt) return DNS_FORMERR;
@@ -172,7 +214,7 @@ static DnsResult dns_parse(const unsigned char *p,size_t n,const DnsInfo *reques
                 if(i+1==counts[2] && !p[pos-5] && (response || !ext_rcode))
                     info->final_opt_rdlen=pos-2;
                 if(p[owner]!=0 || rdlen>n-pos || !dns_opt_options(p,pos,pos+rdlen)) return DNS_FORMERR;
-            } else if(rdlen>n-pos || !dns_rr_names(p,pos,pos+rdlen,type,&remaining_pointers)) return DNS_FORMERR;
+            } else if(rdlen>n-pos || !dns_rr_names(p,pos,pos+rdlen,type,&names)) return DNS_FORMERR;
             pos+=rdlen;
         }
     }
@@ -188,7 +230,12 @@ static DnsResult dns_parse(const unsigned char *p,size_t n,const DnsInfo *reques
 
 typedef struct Client Client;
 typedef struct Query Query;
-typedef struct {struct sockaddr_in peer;uint16_t id;uint64_t deadline_ms;} UdpWaiter;
+typedef struct {in_addr_t destination,source;} UdpLocal;
+typedef union {
+    struct cmsghdr align;
+    unsigned char bytes[CMSG_SPACE(sizeof(struct in_pktinfo))];
+} UdpControl;
+typedef struct {struct sockaddr_in peer;UdpLocal local;uint16_t id;uint64_t deadline_ms;} UdpWaiter;
 typedef struct {
     size_t count;
     uint16_t offset[CACHE_MAX_ANSWERS];
@@ -228,6 +275,7 @@ struct Query {
     uint64_t failover_deadline_ms;
     DnsInfo info;
     struct sockaddr_storage peer;socklen_t peer_len;
+    UdpLocal udp_local;
     Client *client;uint64_t generation;int udp_fd;
     bool shareable_udp,added_padding;
     size_t udp_waiter_count;
@@ -283,18 +331,23 @@ typedef enum {
     LOG_CAPACITY,LOG_SETUP,LOG_TIMEOUT,LOG_TRANSPORT,LOG_STATUS,LOG_CONTENT,LOG_DNS,
     LOG_TCP_BUFFER,LOG_COUNT
 } Failure;
-static void log_failure(Failure event,bool tcp,CURLcode code,long status) {
+static void log_failure(Failure event,bool tcp,CURLcode code,long status,
+                        const Upstream *endpoint,long proxy_status) {
     static const char *const names[LOG_COUNT]={
         "capacity","upstream_setup","upstream_timeout","upstream_transport",
         "upstream_http_status","upstream_content_type","upstream_dns_response","tcp_buffer_allocation"
     };
-    static struct {uint64_t next,suppressed;} rate[LOG_COUNT];
+    static const char *const roles[]={"none","primary","backup"};
+    static struct {uint64_t next,suppressed;} rate[LOG_COUNT][3];
+    size_t role=endpoint==&primary?1:endpoint==&backup?2:0;
     uint64_t now=clock_ms();
-    if(now<rate[event].next) {rate[event].suppressed++;return;}
-    fprintf(stderr,"level=warning event=%s transport=%s curl_code=%d http_status=%ld suppressed=%llu\n",
-            names[event],tcp?"tcp":"udp",(int)code,status,(unsigned long long)rate[event].suppressed);
-    rate[event].next=now+10000;
-    rate[event].suppressed=0;
+    if(now<rate[event][role].next) {rate[event][role].suppressed++;return;}
+    fprintf(stderr,"level=warning event=%s transport=%s curl_code=%d http_status=%ld"
+            " upstream=%s proxy_connect_status=%ld suppressed=%llu\n",
+            names[event],tcp?"tcp":"udp",(int)code,status,roles[role],proxy_status,
+            (unsigned long long)rate[event][role].suppressed);
+    rate[event][role].next=now+10000;
+    rate[event][role].suppressed=0;
 }
 static long select_http_version(int features,unsigned version_num,bool prefer_h3) {
     if(prefer_h3) {
@@ -306,6 +359,31 @@ static long select_http_version(int features,unsigned version_num,bool prefer_h3
         return CURL_HTTP_VERSION_NONE;
     }
     return features&CURL_VERSION_HTTP2?CURL_HTTP_VERSION_2TLS:CURL_HTTP_VERSION_1_1;
+}
+
+static bool init_curl(void) {
+    CURLcode code=curl_global_init(CURL_GLOBAL_DEFAULT);
+    if(code==CURLE_OK) return true;
+    fprintf(stderr,"level=error event=curl_global_init code=%d\n",(int)code);
+    return false;
+}
+
+static int show_version(void) {
+    if(!init_curl()) return 1;
+    const curl_version_info_data *info=curl_version_info(CURLVERSION_NOW);
+    int features=info?info->features:0;
+    bool http3=false;
+#ifdef CURL_VERSION_HTTP3
+    http3=(features&CURL_VERSION_HTTP3)!=0;
+#endif
+    printf("dnsp-modern %s\nlibcurl_build=%s\nlibcurl_runtime=%s\n"
+           "tls_backend=%s\nhttp2=%s\nhttp3=%s\nprefer_h3=%s\n",
+           DNSP_VERSION,LIBCURL_VERSION,info?info->version:"unknown",
+           info && info->ssl_version?info->ssl_version:"none",
+           features&CURL_VERSION_HTTP2?"yes":"no",http3?"yes":"no",
+           select_http_version(features,info?info->version_num:0,true)!=CURL_HTTP_VERSION_NONE?"yes":"no");
+    curl_global_cleanup();
+    return 0;
 }
 
 static int on_curl_socket(CURL *easy,curl_socket_t fd,int what,void *user,void *socketp) {
@@ -399,13 +477,28 @@ static void close_client(Client *c) {
     c->busy=c->read_eof=c->out_satisfies_query=false;c->generation++;c->queries_started=0;
     c->frame_deadline=c->write_deadline=0;
 }
+static ssize_t send_udp_reply(int fd,struct msghdr msg,in_addr_t source) {
+    UdpControl control={0};
+    if(source) {
+        msg.msg_control=control.bytes;
+        msg.msg_controllen=sizeof(control.bytes);
+        struct cmsghdr *cmsg=CMSG_FIRSTHDR(&msg);
+        cmsg->cmsg_level=IPPROTO_IP;
+        cmsg->cmsg_type=IP_PKTINFO;
+        cmsg->cmsg_len=CMSG_LEN(sizeof(struct in_pktinfo));
+        /* Leave ifindex zero so routing keeps the selected local address. */
+        struct in_pktinfo info={.ipi_spec_dst.s_addr=source};
+        memcpy(CMSG_DATA(cmsg),&info,sizeof(info));
+    }
+    return sendmsg(fd,&msg,0);
+}
 static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_query) {
     if(q->client) {
         Client *c=q->client;
         if(c->fd>=0 && c->generation==q->generation) {
             c->out=malloc(n+2);
             if(!c->out) {
-                log_failure(LOG_TCP_BUFFER,true,CURLE_OUT_OF_MEMORY,0);
+                log_failure(LOG_TCP_BUFFER,true,CURLE_OUT_OF_MEMORY,0,NULL,0);
                 return;
             }
             c->out[0]=(unsigned char)(n>>8);c->out[1]=(unsigned char)n;
@@ -414,7 +507,13 @@ static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_qu
             c->write_deadline=clock_ms()+tcp_io_ms;
         }
     } else {
-        ssize_t written=sendto(q->udp_fd,p,n,0,(struct sockaddr*)&q->peer,q->peer_len);
+        ssize_t written;
+        if(q->udp_local.source) {
+            struct iovec part={.iov_base=(void*)p,.iov_len=n};
+            struct msghdr message={.msg_name=&q->peer,.msg_namelen=q->peer_len,
+                                   .msg_iov=&part,.msg_iovlen=1};
+            written=send_udp_reply(q->udp_fd,message,q->udp_local.source);
+        } else written=sendto(q->udp_fd,p,n,0,(struct sockaddr*)&q->peer,q->peer_len);
         if(satisfies_query && written==(ssize_t)n) metrics.queries_satisfied++;
         for(size_t i=0;i<q->udp_waiter_count;i++) {
             UdpWaiter *waiter=&q->udp_waiters[i];
@@ -423,7 +522,7 @@ static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_qu
                                    {.iov_base=(void*)(p+2),.iov_len=n-2} };
             struct msghdr message={.msg_name=&waiter->peer,.msg_namelen=sizeof(waiter->peer),
                                    .msg_iov=parts,.msg_iovlen=2};
-            written=sendmsg(q->udp_fd,&message,0);
+            written=send_udp_reply(q->udp_fd,message,waiter->local.source);
             if(satisfies_query && written==(ssize_t)n) metrics.queries_satisfied++;
         }
     }
@@ -565,11 +664,11 @@ static bool cache_ttls(const Query *q,const DnsInfo *info,CacheTtls *ttls) {
     if(n>CACHE_MAX_REPLY || (p[2]&2) || (p[3]&15) || be16(p+4)!=1 || be16(p+8) ||
        !answers || answers>CACHE_MAX_ANSWERS) return false;
     *ttls=(CacheTtls){.count=answers,.min_ttl=UINT32_MAX};
-    size_t remaining_pointers=n;
+    DnsNames names={.remaining_pointers=n}; /* The response was already validated. */
     bool has_address=false;
     for(size_t i=0;i<answers;i++) {
         unsigned char name[256];size_t name_len;
-        if(!dns_name(p,n,&pos,name,&name_len,true,&remaining_pointers) || n-pos<10) return false;
+        if(!dns_name(p,n,&pos,name,&name_len,true,&names) || n-pos<10) return false;
         uint16_t type=be16(p+pos),rdlen=be16(p+pos+8);
         if(rdlen>n-pos-10 || be16(p+pos+2)!=1 || (type!=5 && type!=info->qtype)) return false;
         if(type==info->qtype) {
@@ -696,7 +795,8 @@ static void strip_doh_padding(Query *q,const DnsInfo *info) {
     q->resp_len=write_pos;
 }
 static bool join_udp_query(const Query *pending,const unsigned char *data) {
-    UdpWaiter incoming={.id=be16(data),.deadline_ms=clock_ms()+(uint64_t)doh_timeout_ms};
+    UdpWaiter incoming={.local=pending->udp_local,.id=be16(data),
+                        .deadline_ms=clock_ms()+(uint64_t)doh_timeout_ms};
     memcpy(&incoming.peer,&pending->peer,sizeof(incoming.peer));
     Query *available=NULL;
     for(Query *q=active;q;q=q->next) {
@@ -704,10 +804,12 @@ static bool join_udp_query(const Query *pending,const unsigned char *data) {
            memcmp(q->request+2,data+2,q->req_len-2)!=0) continue;
         struct sockaddr_in leader;
         memcpy(&leader,&q->peer,sizeof(leader));
-        if(incoming.id==be16(q->request) && same_udp_peer(&incoming.peer,&leader)) return true;
+        if(incoming.id==be16(q->request) && incoming.local.destination==q->udp_local.destination &&
+           same_udp_peer(&incoming.peer,&leader)) return true;
         for(size_t i=0;i<q->udp_waiter_count;i++) {
             UdpWaiter *waiter=&q->udp_waiters[i];
-            if(incoming.id==waiter->id && same_udp_peer(&incoming.peer,&waiter->peer)) return true;
+            if(incoming.id==waiter->id && incoming.local.destination==waiter->local.destination &&
+               same_udp_peer(&incoming.peer,&waiter->peer)) return true;
         }
         if(!available && q->udp_waiter_count<MAX_UDP_WAITERS) available=q;
     }
@@ -716,8 +818,8 @@ static bool join_udp_query(const Query *pending,const unsigned char *data) {
     return true;
 }
 static bool submit_until(const unsigned char *data,size_t len,Client *client,int udp_fd,
-                         const struct sockaddr_storage *peer,socklen_t peer_len,uint64_t deadline_ms,
-                         Upstream *endpoint);
+                         const struct sockaddr_storage *peer,socklen_t peer_len,UdpLocal local,
+                         uint64_t deadline_ms,Upstream *endpoint);
 static void retry_udp_waiters(const Query *q,size_t count) {
     /* Coalescing accepts only plain, single-question address queries. */
     unsigned char request[CACHE_MAX_QUERY];
@@ -729,7 +831,7 @@ static void retry_udp_waiters(const Query *q,size_t count) {
         request[0]=(unsigned char)(waiter->id>>8);
         request[1]=(unsigned char)waiter->id;
         (void)submit_until(request,q->req_len,NULL,q->udp_fd,&peer,sizeof(waiter->peer),
-                           waiter->deadline_ms,q->upstream);
+                           waiter->local,waiter->deadline_ms,q->upstream);
     }
 }
 static bool start_upstream(Query *q,long timeout_ms) {
@@ -776,7 +878,7 @@ static bool start_upstream(Query *q,long timeout_ms) {
 fail:
     if(q->easy) curl_easy_cleanup(q->easy);
     q->easy=NULL;
-    log_failure(LOG_SETUP,q->client!=NULL,setup_code,0);
+    log_failure(LOG_SETUP,q->client!=NULL,setup_code,0,endpoint,0);
     return false;
 }
 static bool retryable_transport(CURLcode code) {
@@ -814,12 +916,11 @@ static bool h3_verification_pending(CURL *easy,CURLcode code) {
     return false;
 #endif
 }
-static bool retry_on_backup(Query *q,CURLcode code,long status) {
+static bool retry_on_backup(Query *q,CURLcode code,long status,long proxy_status) {
     if(q->upstream!=&primary || !q->failover_deadline_ms || status>=300 || !retryable_transport(code))
         return false;
     /* A CONNECT denial or TLS error can also surface as a transport failure. */
-    long proxy_status=0,verify=0,proxy_verify=0;
-    curl_easy_getinfo(q->easy,CURLINFO_HTTP_CONNECTCODE,&proxy_status);
+    long verify=0,proxy_verify=0;
     curl_easy_getinfo(q->easy,CURLINFO_SSL_VERIFYRESULT,&verify);
     curl_easy_getinfo(q->easy,CURLINFO_PROXY_SSL_VERIFYRESULT,&proxy_verify);
     if(proxy_status>=300 || proxy_verify) return false;
@@ -908,8 +1009,10 @@ static void complete(Query *q,CURLcode code) {
         metrics.upstream_failed++;q->upstream->failures++;
         if(failure==LOG_TIMEOUT) metrics.upstream_timeouts++;
         if(failure==LOG_CONTENT || failure==LOG_DNS) metrics.invalid_responses++;
-        log_failure(failure,q->client!=NULL,code,status);
-        if(retry_on_backup(q,code,status)) return;
+        long proxy_status=0;
+        curl_easy_getinfo(q->easy,CURLINFO_HTTP_CONNECTCODE,&proxy_status);
+        log_failure(failure,q->client!=NULL,code,status,q->upstream,proxy_status);
+        if(retry_on_backup(q,code,status,proxy_status)) return;
         send_error(q,q->request,2);
     }
     Client *client=q->client;
@@ -927,13 +1030,13 @@ static bool failover_eligible(const unsigned char *data,const DnsInfo *info) {
     return !additional || (additional==1 && info->final_opt_rdlen && !be16(data+info->final_opt_rdlen));
 }
 static bool submit_until(const unsigned char *data,size_t len,Client *client,int udp_fd,
-                         const struct sockaddr_storage *peer,socklen_t peer_len,uint64_t deadline_ms,
-                         Upstream *endpoint) {
+                         const struct sockaddr_storage *peer,socklen_t peer_len,UdpLocal local,
+                         uint64_t deadline_ms,Upstream *endpoint) {
     DnsInfo info;
     DnsResult result=dns_parse(data,len,NULL,&info);
     if(result==DNS_DROP) {metrics.invalid_queries++;return false;}
     Query pending={.req_len=len,.info=info,.client=client,.generation=client?client->generation:0,
-                   .udp_fd=udp_fd,.peer_len=peer_len,.upstream=endpoint};
+                   .udp_fd=udp_fd,.peer_len=peer_len,.udp_local=local,.upstream=endpoint};
     if(peer) pending.peer=*peer;
     if(result!=DNS_OK) {
         if(result==DNS_FORMERR) metrics.invalid_queries++;
@@ -963,7 +1066,7 @@ static bool submit_until(const unsigned char *data,size_t len,Client *client,int
         return true;
     }
     if(active_count>=MAX_ACTIVE) {
-        log_failure(LOG_CAPACITY,client!=NULL,CURLE_OK,0);
+        log_failure(LOG_CAPACITY,client!=NULL,CURLE_OK,0,NULL,0);
         goto reject;
     }
 
@@ -988,15 +1091,15 @@ static bool submit_until(const unsigned char *data,size_t len,Client *client,int
     if(!deadline_ms) record_client_query(client);
     return true;
 setup_failure:
-    log_failure(LOG_SETUP,client!=NULL,CURLE_OUT_OF_MEMORY,0);
+    log_failure(LOG_SETUP,client!=NULL,CURLE_OUT_OF_MEMORY,0,endpoint,0);
 reject:
     metrics.overload++;
     send_error(&pending,data,2);
     return true; /* A local reply is queued for a valid TCP query. */
 }
 static bool submit(const unsigned char *data,size_t len,Client *client,int udp_fd,
-                   const struct sockaddr_storage *peer,socklen_t peer_len) {
-    return submit_until(data,len,client,udp_fd,peer,peer_len,0,&primary);
+                   const struct sockaddr_storage *peer,socklen_t peer_len,UdpLocal local) {
+    return submit_until(data,len,client,udp_fd,peer,peer_len,local,0,&primary);
 }
 static int listener(const char *role,int type,const char *bindip,int port) {
     struct sockaddr_in a={.sin_family=AF_INET,.sin_port=htons((uint16_t)port)};
@@ -1007,7 +1110,9 @@ static int listener(const char *role,int type,const char *bindip,int port) {
     int fd=socket(AF_INET,type,0),yes=1;
     if(fd>=0) {
         setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes));
-        if(nonblock(fd)==0 && bind(fd,(struct sockaddr*)&a,sizeof(a))==0 &&
+        bool pktinfo=type!=SOCK_DGRAM || a.sin_addr.s_addr!=htonl(INADDR_ANY) ||
+                     setsockopt(fd,IPPROTO_IP,IP_PKTINFO,&yes,sizeof(yes))==0;
+        if(pktinfo && nonblock(fd)==0 && bind(fd,(struct sockaddr*)&a,sizeof(a))==0 &&
            (type!=SOCK_STREAM || listen(fd,128)==0)) return fd;
     }
     int error=errno;
@@ -1022,7 +1127,7 @@ static int listener(const char *role,int type,const char *bindip,int port) {
  * Responses are emitted in request order. */
 static bool start_tcp_query(Client *c) {
     if(c->fd<0 || c->busy || c->out_len || !c->need || c->have!=c->need) return true;
-    if(!submit(c->in,c->need,c,-1,NULL,0) || (!c->busy && !c->out_len)) {
+    if(!submit(c->in,c->need,c,-1,NULL,0,(UdpLocal){0}) || (!c->busy && !c->out_len)) {
         close_client(c);
         return false;
     }
@@ -1076,7 +1181,7 @@ static void tcp_io(Client *c,short events) {
         if(length<DNS_HEADER) {close_client(c);return;}
         c->in=malloc(length);
         if(!c->in) {
-            log_failure(LOG_TCP_BUFFER,true,CURLE_OUT_OF_MEMORY,0);
+            log_failure(LOG_TCP_BUFFER,true,CURLE_OUT_OF_MEMORY,0,NULL,0);
             close_client(c);
             return;
         }
@@ -1094,12 +1199,24 @@ static void udp_io(int fd) {
     for(int i=0;i<UDP_BATCH_PACKETS && received<UDP_BATCH_BYTES;i++) {
         struct sockaddr_storage peer={0};
         struct iovec iov={.iov_base=buf,.iov_len=sizeof(buf)};
-        struct msghdr msg={.msg_name=&peer,.msg_namelen=sizeof(peer),.msg_iov=&iov,.msg_iovlen=1};
+        UdpControl control;
+        struct msghdr msg={.msg_name=&peer,.msg_namelen=sizeof(peer),.msg_iov=&iov,.msg_iovlen=1,
+                           .msg_control=control.bytes,.msg_controllen=sizeof(control.bytes)};
         ssize_t n=recvmsg(fd,&msg,0);
         if(n<0) break;
         received+=(size_t)n;
-        if(msg.msg_flags&MSG_TRUNC) {metrics.invalid_queries++;continue;}
-        (void)submit(buf,(size_t)n,NULL,fd,&peer,msg.msg_namelen);
+        if(msg.msg_flags&(MSG_TRUNC|MSG_CTRUNC)) {metrics.invalid_queries++;continue;}
+        UdpLocal local={0};
+        for(struct cmsghdr *cmsg=CMSG_FIRSTHDR(&msg);cmsg;cmsg=CMSG_NXTHDR(&msg,cmsg)) {
+            if(cmsg->cmsg_level==IPPROTO_IP && cmsg->cmsg_type==IP_PKTINFO &&
+               cmsg->cmsg_len>=CMSG_LEN(sizeof(struct in_pktinfo))) {
+                struct in_pktinfo info;
+                memcpy(&info,CMSG_DATA(cmsg),sizeof(info));
+                local=(UdpLocal){.destination=info.ipi_addr.s_addr,.source=info.ipi_spec_dst.s_addr};
+                break;
+            }
+        }
+        (void)submit(buf,(size_t)n,NULL,fd,&peer,msg.msg_namelen,local);
     }
 }
 static void drain_completions(void) {
@@ -1431,6 +1548,7 @@ static void usage(FILE *stream,const char *program) {
             "  --doh-timeout-ms MS          Total upstream deadline, %d..%d (default %d)\n"
             "  --cache-entries N            In-memory DNS cache slots, 0..%d (default disabled)\n"
             "  --udp-reply-max BYTES        UDP reply cap, 512..%d (default %d)\n"
+            "  -V, --version                Show DNSProxy version and libcurl capabilities\n"
             "  -h, --help                   Show this help\n",
             program,MAX_CLIENTS,TCP_MAX_PER_SOURCE,MIN_TIMEOUT_MS,MAX_TCP_TIMEOUT_MS,TCP_IDLE_MS,
             MIN_TIMEOUT_MS,MAX_TCP_TIMEOUT_MS,TCP_IO_MS,
@@ -1446,6 +1564,7 @@ int main(int argc,char **argv) {
     primary.url="https://cloudflare-dns.com/dns-query";
     for(int i=1;i<argc;i++) {
         if(!strcmp(argv[i],"--help") || !strcmp(argv[i],"-h")) {usage(stdout,argv[0]);return 0;}
+        else if(!strcmp(argv[i],"--version") || !strcmp(argv[i],"-V")) return show_version();
         else if(!strcmp(argv[i],"-l") && i+1<argc) bindip=argv[++i];
         else if(!strcmp(argv[i],"-p") && i+1<argc) port=(int)parse_range(argv[++i],1,65535);
         else if(!strcmp(argv[i],"-s") && i+1<argc) primary.url=argv[++i];
@@ -1516,11 +1635,7 @@ int main(int argc,char **argv) {
     if(sigaction(SIGUSR1,&report_action,NULL)<0) {
         perror("sigaction SIGUSR1");return 1;
     }
-    CURLcode global_code=curl_global_init(CURL_GLOBAL_DEFAULT);
-    if(global_code!=CURLE_OK) {
-        fprintf(stderr,"level=error event=curl_global_init code=%d\n",(int)global_code);
-        return 1;
-    }
+    if(!init_curl()) return 1;
     const curl_version_info_data *curl_info=curl_version_info(CURLVERSION_NOW);
     upstream_http_version=select_http_version(curl_info?curl_info->features:0,
                                               curl_info?curl_info->version_num:0,prefer_h3);
@@ -1588,8 +1703,10 @@ int main(int argc,char **argv) {
     const char *http_preference=prefer_h3?"h3":"http/1.1";
     if(!primary.loopback_http && upstream_http_version==CURL_HTTP_VERSION_2TLS) http_preference="h2";
     uint64_t started_ms=clock_ms();
-    fprintf(stderr,"level=info event=listening address=%s port=%d metrics_port=%d upstream_scheme=%s http_preference=%s backup=%s\n",
-            bindip,port,metrics_port,primary.loopback_http?"http":"https",http_preference,backup.url?"enabled":"disabled");
+    fprintf(stderr,"level=info event=listening address=%s port=%d metrics_port=%d upstream_scheme=%s"
+            " http_preference=%s backup=%s libcurl_build=%s libcurl_runtime=%s\n",
+            bindip,port,metrics_port,primary.loopback_http?"http":"https",http_preference,
+            backup.url?"enabled":"disabled",LIBCURL_VERSION,curl_info?curl_info->version:"unknown");
     exitcode=0;
     while(!stopping) {
         uint64_t now=clock_ms();
