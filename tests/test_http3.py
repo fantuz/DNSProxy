@@ -1,6 +1,6 @@
 """Loopback HTTP/3 tests. Requires a QUIC-capable libcurl and aioquic."""
 import asyncio
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
@@ -146,6 +146,36 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(stats['dnsp_upstream_endpoint_requests_total{role="primary"}'], 1)
                         self.assertEqual(stats['dnsp_upstream_endpoint_replies_total{role="backup"}'], 1)
                         self.assertEqual(stats['dnsp_upstream_http_responses_total{version="2"}'], 1)
+
+    async def test_oversized_doh_reply_is_terminal_and_proxy_recovers(self):
+        async with self.upstream() as (backup, cert, key):
+            for version, mode in ((2, 'auto'), (3, 'prefer-h3')):
+                with self.subTest(version=version):
+                    # 4,096 A records alone exceed the maximum DNS message length.
+                    primary = MockServer(free_port(), cert, key, answers=4096)
+                    async with AsyncExitStack() as stack:
+                        if version == 2:
+                            primary.start()
+                            stack.push_async_callback(asyncio.to_thread, primary.close)
+                            await asyncio.to_thread(await_ready, primary.port, None, 'HTTP/2 mock')
+                            self.assertIsNone(primary.failure)
+                        else:
+                            await stack.enter_async_context(quic_upstream(primary, cert, key))
+                        with self.proxy(primary.port, cert, mode=mode, backup_port=backup.port) as (dns, metrics):
+                            rejected = await asyncio.to_thread(one_load, dns, 1, 0)
+                            self.assertEqual(rejected['failed_responses'], 1, rejected)
+                            self.assertEqual(rejected['truncated_responses'] + rejected['timeouts'], 0, rejected)
+                            stats = metric_snapshot(metrics)
+                            self.assertEqual(stats['dnsp_upstream_endpoint_requests_total{role="backup"}'], 0)
+                            self.assertEqual(stats[f'dnsp_upstream_http_responses_total{{version="{version}"}}'], 1)
+
+                            # The next query has its own failover budget.
+                            primary.app.answers = 1
+                            answer = await asyncio.to_thread(one_load, dns, 1, 0)
+                            self.assertEqual(answer['successful_queries'], 1, answer)
+                            stats = metric_snapshot(metrics)
+                            self.assertEqual(stats['dnsp_upstream_endpoint_requests_total{role="primary"}'], 2)
+                            self.assertEqual(stats['dnsp_queries_inflight'], 0)
 
     def test_rejects_plaintext_upstream(self):
         proc = subprocess.run([str(BASE/'dnsp-modern'), '--upstream-http', 'prefer-h3',

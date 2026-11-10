@@ -16,6 +16,7 @@ import time
 import tempfile
 import unittest
 from pathlib import Path
+from select import select
 
 BASE = Path(__file__).resolve().parent.parent
 BINARY = Path(os.environ.get('DNSP_TEST_BINARY', BASE/'dnsp-modern'))
@@ -349,6 +350,7 @@ class Tests(unittest.TestCase):
 
     def test_tcp_source_limit_and_idle_pressure(self):
         rejected = 'dnsp_tcp_connections_rejected_total{reason="source_limit"}'
+        capacity = 'dnsp_tcp_connections_rejected_total{reason="capacity"}'
         idle_timeouts = 'dnsp_tcp_idle_timeouts_total'
         before = self.metrics()
         with ExitStack() as sockets:
@@ -361,15 +363,22 @@ class Tests(unittest.TestCase):
                 connect('127.0.0.2')
             self.assertEqual(connect('127.0.0.2').recv(1), b'')
             self.assertEqual(self.metric(self.metrics(), rejected), self.metric(before, rejected) + 1)
-            self.assertEqual(self.tcp(query()), make_response(query()))
+            control = connect('127.0.0.1')
+            control.sendall(self.frame(QUERY))
+            self.assertEqual(self.tcp_frame(control), make_response(QUERY))
 
-            for source in ('127.0.0.3', '127.0.0.4'):
-                for _ in range(32):
+            for source, count in (('127.0.0.3', 32), ('127.0.0.4', 32), ('127.0.0.5', 31)):
+                for _ in range(count):
                     connect(source)
-            # At 96 clients the first idle socket expires well before the 15s default.
+            self.assertEqual(connect('127.0.0.6').recv(1), b'')
+            self.assertEqual(self.metric(self.metrics(), capacity), self.metric(before, capacity) + 1)
+            # Under pressure the first idle socket expires before the 15s default.
             first.settimeout(6)
             self.assertEqual(first.recv(1), b'')
             self.assertGreater(self.metric(self.metrics(), idle_timeouts), self.metric(before, idle_timeouts))
+            client = connect('127.0.0.6')
+            client.sendall(self.frame(QUERY))
+            self.assertEqual(self.tcp_frame(client), make_response(QUERY))
 
     def test_tcp_pipelined_frames_ordered(self):
         count = 8
@@ -478,6 +487,17 @@ class Tests(unittest.TestCase):
                 time.sleep(0.005)
             self.assertEqual(self.tcp_frame(sock)[:2], packet[:2])
 
+    def test_tcp_closes_invalid_frames_before_forwarding(self):
+        response = make_response(QUERY)
+        upstream = 'dnsp_upstream_requests_total'
+        for frame in (struct.pack('!H', 11), self.frame(response)):
+            with self.subTest(frame=frame), socket.create_connection(('127.0.0.1', self.port), timeout=3) as client:
+                before = self.metric(self.metrics(), upstream)
+                client.sendall(frame)
+                self.assertEqual(client.recv(1), b'')
+                self.assertEqual(self.metric(self.metrics(), upstream), before)
+        self.assertEqual(self.tcp(QUERY), response)
+
     def test_tcp_deadlines(self):
         # A dedicated instance allows shorter client deadlines.
         port, metrics_port = unused_ports()
@@ -535,6 +555,14 @@ class Tests(unittest.TestCase):
                                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                           timeout=2)
                     self.assertEqual(proc.returncode, 2, proc.stderr)
+
+    def test_reject_invalid_connection_limits(self):
+        for option, too_large in (('--tcp-max-per-source', '129'), ('--max-host-connections', '17')):
+            for raw in ('0', too_large, 'invalid'):
+                with self.subTest(option=option, raw=raw):
+                    result = subprocess.run([str(BINARY), option, raw], capture_output=True, timeout=3)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn(f'invalid {option}'.encode(), result.stderr)
 
     def metrics(self, port=None):
         c = http.client.HTTPConnection('127.0.0.1', port or self.metrics_port, timeout=4)
@@ -670,6 +698,45 @@ class Tests(unittest.TestCase):
         self.assertEqual(out[:2], QUERY[:2])
         self.assertEqual(out[2:4], b'\x81\x80')
         self.assertEqual(out[12:], QUERY[12:])
+
+    def test_udp_overload_rejects_new_work_and_recovers(self):
+        gate = threading.Event()
+        self.server.coalesce_gate = gate
+        # EDNS keeps each request independent while the fixture holds its reply.
+        template = query(edns=1232)
+        packet = template[:12] + b'\x08coalesce' + template[16:]
+        target = ('127.0.0.1', self.port)
+        inflight = 'dnsp_queries_inflight'
+        requests = 'dnsp_upstream_requests_total'
+        overload = 'dnsp_overload_total'
+        capacity = 128
+        before = self.metrics()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as held:
+            held.settimeout(4)
+            held.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 256 * 1024)
+            try:
+                deadline = time.monotonic() + 2
+                # Confirm each batch before sending more so the socket queue has room.
+                for start in range(0, capacity, 16):
+                    end = min(start + 16, capacity)
+                    for ident in range(start, end):
+                        held.sendto(struct.pack('!H', ident) + packet[2:], target)
+                    while self.metric(self.metrics(), inflight) != end:
+                        self.assertLess(time.monotonic(), deadline, 'upstream request slots did not fill')
+                        time.sleep(.01)
+                extra_id = struct.pack('!H', capacity)
+                rejected = self.udp(extra_id + packet[2:])
+                self.assertEqual(rejected[:2], extra_id)
+                self.assertEqual(rejected[3] & 15, 2)
+                after = self.metrics()
+                self.assertEqual(self.metric(after, overload), self.metric(before, overload) + 1)
+                self.assertEqual(self.metric(after, requests), self.metric(before, requests) + capacity)
+            finally:
+                gate.set()
+            completed = {struct.unpack_from('!H', held.recv(4096))[0] for _ in range(capacity)}
+            self.assertEqual(completed, set(range(capacity)))
+        self.assertEqual(self.metric(self.metrics(), inflight), 0)
+        self.assertEqual(self.udp(QUERY), make_response(QUERY))
 
     def test_udp_input_bounds_and_valid_prefix(self):
         self.assertEqual(len(self.udp(sized_query(1232))), 1232)
@@ -922,6 +989,23 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.metric(after, 'dnsp_queries_inflight'), 0)
         self.assertGreater(self.metric(after, 'dnsp_upstream_http_responses_total{version="1"}'), 0)
         self.assertGreater(self.metric(after, 'dnsp_upstream_duration_seconds_count'), 0)
+
+    def test_metrics_handles_partial_and_invalid_requests(self):
+        target = ('127.0.0.1', self.metrics_port)
+        with socket.create_connection(target, timeout=3) as pending:
+            pending.sendall(b'GET /metrics HTTP/1.1\r\n')
+            for request in (b'GET /other HTTP/1.1\r\n\r\n', b'x' * 512):
+                with self.subTest(size=len(request)), socket.create_connection(target, timeout=3) as client:
+                    client.sendall(request)
+                    self.assertEqual(client.recv(1), b'')
+            self.assertIn('dnsp_queries_inflight', self.metrics())
+            self.assertFalse(select([pending], [], [], 0)[0])
+
+            pending.sendall(b'\r\n')
+            with http.client.HTTPResponse(pending) as response:
+                response.begin()
+                self.assertEqual(response.status, 200)
+                self.assertIn(b'dnsp_queries_inflight', response.read())
 
     def test_sigusr1_report(self):
         before = self.metrics()
@@ -1424,11 +1508,26 @@ class FailoverTests(unittest.TestCase):
                 self.assertEqual(tunnel.tunnels, ['blocked.invalid:443'])
                 self.assertEqual(backup.received, [])
 
-    def test_cookie_query_stays_on_primary(self):
-        packet = edns_options(query(edns=1232), struct.pack('!HH', 10, 8) + bytes(8))
+    def test_ineligible_queries_stay_on_primary(self):
+        cookie = edns_options(query(edns=1232), struct.pack('!HH', 10, 8) + bytes(8))
+        # The fixture treats the synthetic MAC as opaque, as does the proxy.
+        mac = bytes(16)
+        tsig = (b'\x0bhmac-sha256\0' + bytes(6) + struct.pack('!HH', 300, len(mac)) + mac +
+                struct.pack('!HHH', 0x1234, 0, 0))
+        signed = (QUERY[:10] + b'\0\1' + QUERY[12:] + b'\x03key\0' +
+                  struct.pack('!HHIH', 250, 255, 0, len(tsig)) + tsig)
+        cases = (
+            ('cookie', cookie), ('signed', signed), ('TKEY', query(249)), ('TSIG', query(250)),
+            ('CHAOS class', QUERY[:-2] + b'\0\3'), ('questionless', QUERY[:4] + bytes(8)),
+        )
         with self.endpoint('partial') as primary, self.endpoint() as backup:
             with self.proxy(self.url(primary), self.url(backup)) as (port, _):
-                self.assertEqual(self.udp(port, packet)[3] & 15, 2)
+                for name, packet in cases:
+                    with self.subTest(query=name):
+                        response = self.udp(port, packet)
+                        self.assertEqual(response[:2], packet[:2])
+                        self.assertEqual(response[3] & 15, 2)
+                self.assertEqual(primary.received, [packet for _, packet in cases])
                 self.assertEqual(backup.received, [])
 
     def test_coalesced_udp_waiters_keep_ids_on_backup(self):
@@ -1485,8 +1584,16 @@ class FailoverTests(unittest.TestCase):
             with self.endpoint('partial') as plain, self.endpoint(tls=tls) as secure:
                 secure_url = f'https://resolver.invalid:{secure.server_port}/dns-query'
                 with self.proxy(self.url(plain), secure_url, '--ca-file', cert,
-                                '--backup-bootstrap-address', '127.0.0.1') as (port, _):
+                                '--backup-bootstrap-address', '127.0.0.1', '--edns-padding') as (port, _):
                     self.assertTrue(self.udp(port).endswith(secure.address))
+                    packet = query(edns=1232)
+                    response = self.udp(port, packet)
+                    padded = edns_options(packet, padding_option(128 - len(packet)))
+                    self.assertEqual(plain.received[-1], packet)
+                    self.assertEqual(secure.received[-1], padded)
+                    self.assertEqual(response[:2], packet[:2])
+                    end = question_end(packet)
+                    self.assertEqual(response[end:], rr(1, secure.address) + packet[end:])
                 plain.received.clear()
                 plain.mode = 'answer'
                 wrong_url = f'https://wrong.invalid:{secure.server_port}/dns-query'

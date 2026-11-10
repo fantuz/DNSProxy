@@ -21,6 +21,48 @@ static bool udp_dispatch_is_bounded(void) {
     return ok;
 }
 
+static bool tcp_write_resumes_under_backpressure(void) {
+    int fd[2];
+    if(socketpair(AF_UNIX,SOCK_STREAM,0,fd)<0) return false;
+    int send_buffer=4096;
+    bool ok=setsockopt(fd[0],SOL_SOCKET,SO_SNDBUF,&send_buffer,sizeof(send_buffer))==0 &&
+            nonblock(fd[0])==0 && nonblock(fd[1])==0;
+    Client client={.fd=fd[0]};
+    Query q={.client=&client};
+    static unsigned char payload[TCP_MAX],wire[TCP_MAX+2];
+    for(size_t i=0;i<sizeof(payload);i++) payload[i]=(unsigned char)(i^(i>>8));
+    uint64_t satisfied=metrics.queries_satisfied;
+    if(ok) {
+        reply_dns(&q,payload,sizeof(payload),true);
+        uint64_t deadline=client.write_deadline;
+        tcp_io(&client,POLLOUT);
+        size_t first_write=client.sent;
+        tcp_io(&client,POLLOUT); /* No room in the socket until the peer reads. */
+        ok=first_write>0 && first_write<sizeof(wire) && client.sent==first_write &&
+           deadline && tcp_deadline(&client,TCP_IDLE_MS)==deadline && metrics.queries_satisfied==satisfied;
+
+        size_t received=0;
+        while(ok && received<sizeof(wire)) {
+            ssize_t n=recv(fd[1],wire+received,sizeof(wire)-received,0);
+            if(n<=0) {ok=false;break;}
+            received+=(size_t)n;
+            tcp_io(&client,POLLOUT);
+        }
+        ok=ok && !client.out && !client.write_deadline && metrics.queries_satisfied==satisfied+1 &&
+           be16(wire)==sizeof(payload) && !memcmp(wire+2,payload,sizeof(payload));
+    }
+    if(ok) {
+        reply_dns(&q,payload,sizeof(payload),true);
+        ok=client.out!=NULL;
+        close(fd[1]);fd[1]=-1;
+        tcp_io(&client,POLLOUT);
+        ok=ok && client.fd<0 && !client.out && metrics.queries_satisfied==satisfied+1;
+    }
+    close_client(&client);
+    if(fd[1]>=0) close(fd[1]);
+    return ok;
+}
+
 int main(void) {
     Query q={0};
     char body[]="dns";
@@ -65,5 +107,6 @@ int main(void) {
                be16(client.out+2)==0x1234 && (client.out[5]&15)==2;
     free(client.out);
     if(!valid) return 11;
-    return udp_dispatch_is_bounded()?0:12;
+    if(!udp_dispatch_is_bounded()) return 12;
+    return tcp_write_resumes_under_backpressure()?0:13;
 }
