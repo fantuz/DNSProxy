@@ -146,7 +146,7 @@ jobs:
     needs: plan
     name: RPM rocky9 ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    container: quay.io/rockylinux/rockylinux:9
+    container: docker.io/rockylinux/rockylinux:9
     strategy:
       fail-fast: false
       matrix:
