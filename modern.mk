@@ -2,12 +2,13 @@ CC ?= cc
 CFLAGS ?= -O2 -g
 PKG_CONFIG ?= pkg-config
 CURL_FLAGS := $(shell $(PKG_CONFIG) --cflags --libs libcurl)
+DNSP_BUILD_VERSION := $(shell sed -nE '/^[0-9]+\.[0-9]+\.[0-9]+$$/p' VERSION)
 
 .PHONY: all modern-check clean
 all: dnsp-modern
 
-dnsp-modern: dnsp-modern.c modern.mk
-	$(CC) $(CPPFLAGS) -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic $(LDFLAGS) -o $@ $< $(CURL_FLAGS) $(LDLIBS)
+dnsp-modern: dnsp-modern.c modern.mk VERSION
+	$(CC) $(CPPFLAGS) -DDNSP_VERSION='"$(DNSP_BUILD_VERSION)"' -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic $(LDFLAGS) -o $@ $< $(CURL_FLAGS) $(LDLIBS)
 
 modern-check: dnsp-modern
 	@set -e; probe=$$(mktemp); trap 'rm -f "$$probe"' 0; \

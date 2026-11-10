@@ -39,8 +39,8 @@ def edns_options(packet, options):
     return packet[:-2] + struct.pack('!H', len(options)) + options
 
 
-def rr(typ, data, owner=b'\xc0\x0c'):
-    return owner + struct.pack('!HHIH', typ, 1, 60, len(data)) + data
+def rr(typ, data, owner=b'\xc0\x0c', *, ttl=60):
+    return owner + struct.pack('!HHIH', typ, 1, ttl, len(data)) + data
 
 
 def question_end(data):
@@ -124,6 +124,21 @@ def make_response(data):
         return data[:2] + struct.pack('!HHHHH', flags, 0, 0, 0, 0)
     elif typ == 65024:  # NXDOMAIN
         r[3] |= 3
+    elif typ in (65025, 65026, 65027):
+        r[6:8] = b'\0\2'
+        # These TTL bytes look like an encoded name. The second owner
+        # either starts there or spans it from the last CLASS octet.
+        offset = 5 if typ == 65026 else 6
+        pointer = struct.pack('!H', 0xc000 | (end + offset))
+        ttl = 0x61000000 if typ == 65026 else 0x01610000
+        r += rr(1, b'\xc0\x00\x02\x01', ttl=ttl)
+        if typ == 65027:
+            r += rr(17, pointer + b'\xc0\x0c')  # Legacy RP RDATA.
+        else:
+            r += rr(1, b'\xc0\x00\x02\x02', owner=pointer)
+    elif typ == 65028:  # A legal compressed legacy name still ages.
+        r[6:8] = b'\0\1'
+        r += rr(17, b'\xc0\x0c' * 2)
     elif typ in RR_FIXTURES or typ == 255:
         r[6:8] = b'\0\1'
         r += rr(typ, RR_FIXTURES[typ]) if typ != 255 else rr(13, b'\x07RFC8482\0')
@@ -167,6 +182,8 @@ class DoH(http.server.BaseHTTPRequestHandler):
             self.send_header('Cache-Control', 'no-store')
         media = {65008: 'text/plain', 65021: 'Application/DNS-Message ; fixture=ok'}
         self.send_header('Content-Type', media.get(typ, 'application/dns-message'))
+        if 65025 <= typ <= 65028:
+            self.send_header('Age', '1')
         self.send_header('Content-Length', str(len(r)))
         self.end_headers()
         try:
@@ -1062,7 +1079,17 @@ class Tests(unittest.TestCase):
         self.assertNotIn('google.com', log)
         self.assertEqual(log.count('event=upstream_http_status'), 1)
         self.assertIn('event=upstream_http_status transport=udp curl_code=0 http_status=502', log)
+        self.assertIn('upstream=primary proxy_connect_status=0', log)
         self.assertIn('event=upstream_content_type', log)
+
+    def test_version_reports_libcurl_build_and_runtime(self):
+        result = subprocess.run([str(BINARY), '--version'], capture_output=True, text=True, timeout=3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout, r'^dnsp-modern (?:[0-9]+\.[0-9]+\.[0-9]+|dev)\n')
+        for field in ('libcurl_build', 'libcurl_runtime', 'tls_backend'):
+            self.assertRegex(result.stdout, rf'(?m)^{field}=\S')
+        for field in ('http2', 'http3', 'prefer_h3'):
+            self.assertRegex(result.stdout, rf'(?m)^{field}=(?:yes|no)$')
 
     def test_listener_failure_reports_role(self):
         with socket.socket() as occupied:
@@ -1136,6 +1163,19 @@ class Tests(unittest.TestCase):
                 result = subprocess.run([str(BINARY), *args], capture_output=True, timeout=3)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn(args[0].encode(), result.stderr)
+
+    def test_compression_cannot_read_ttl_bytes(self):
+        for typ in (65025, 65026, 65027):
+            with self.subTest(typ=typ):
+                q = query(typ)
+                reply = self.udp(q)
+                self.assertEqual(reply[3] & 15, 2)
+                self.assertEqual(reply[12:], q[12:])
+
+        q = query(65028)
+        reply = self.udp(q)
+        self.assertEqual(reply[3] & 15, 0)
+        self.assertEqual(reply[len(q):], rr(17, b'\xc0\x0c' * 2, ttl=59))
 
     def test_forwarded_age_without_cache_hit(self):
         upstream = HTTP(('127.0.0.1', 0), CacheDoH)
@@ -1562,6 +1602,53 @@ class FailoverTests(unittest.TestCase):
                     self.assertEqual(len(backup.received), requests)
                     self.assertEqual(len(primary.received), 1)
                     self.assertEqual(Tests.metric(Tests.metrics(self, metrics), 'dnsp_udp_queries_coalesced_total'), 1)
+
+    def test_wildcard_udp_source_on_upstream_cache_and_local_replies(self):
+        with self.endpoint() as primary, self.endpoint() as backup:
+            with self.proxy(self.url(primary), self.url(backup), '-l', '0.0.0.0',
+                            '--cache-entries', '16') as (port, metrics), \
+                 socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.bind(('127.0.0.1', 0))
+                sock.settimeout(3)
+                target = ('127.0.0.2', port)
+                sock.connect(target)
+                malformed = QUERY[:3] + b'\x01' + QUERY[4:]
+                for packet, rcode in ((QUERY, 0), (query(ident=42), 0), (malformed, 1)):
+                    sock.send(packet)
+                    reply, peer = sock.recvfrom(4096)
+                    self.assertEqual(peer, target)
+                    self.assertEqual(reply[:2], packet[:2])
+                    self.assertEqual(reply[3] & 15, rcode)
+                self.assertEqual(primary.received, [QUERY])
+                self.assertEqual(backup.received, [])
+                self.assertEqual(Tests.metric(Tests.metrics(self, metrics), 'dnsp_cache_hits_total'), 1)
+
+    def test_wildcard_udp_coalesces_across_destinations_and_keeps_reply_sources(self):
+        for mode, requests in (('answer', 1), ('nostore', 2)):
+            with self.subTest(backup=mode), self.endpoint('stall') as primary, self.endpoint(mode) as backup:
+                with self.proxy(self.url(primary), self.url(backup), '-l', '0.0.0.0',
+                                connect_ms=1500, total_ms=3000) as (port, metrics), \
+                     socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.bind(('127.0.0.1', 0))
+                    sock.settimeout(4)
+                    first, second = ('127.0.0.1', port), ('127.0.0.2', port)
+                    sock.sendto(QUERY, first)
+                    self.assertTrue(primary.started.wait(3))
+                    sock.sendto(QUERY, second)
+                    sock.sendto(QUERY, second)  # Retransmission to the same local IP.
+                    sources = []
+                    for _ in range(2):
+                        reply, peer = sock.recvfrom(4096)
+                        self.assertEqual(reply[:2], QUERY[:2])
+                        self.assertEqual(reply[3] & 15, 0)
+                        sources.append(peer)
+                    self.assertCountEqual(sources, [first, second])
+                    sock.settimeout(.1)
+                    with self.assertRaises(socket.timeout):
+                        sock.recv(4096)
+                    self.assertEqual(primary.received, [QUERY])
+                    self.assertEqual(backup.received, [QUERY] * requests)
+                    self.assertEqual(Tests.metric(Tests.metrics(self, metrics), 'dnsp_udp_queries_coalesced_total'), 2)
 
     def test_tcp_disconnect_cancels_backup_transfer(self):
         with self.endpoint('partial') as primary, self.endpoint('stall') as backup:

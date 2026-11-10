@@ -135,6 +135,7 @@ Run `./dnsp-modern --help` for the options available in your build.
 | `--doh-timeout-ms MS` | Total deadline for an upstream request, 100–60000 ms | `3000` |
 | `--cache-entries N` | In-memory DNS answer cache slots, 0–1024 | `0` (disabled) |
 | `--udp-reply-max BYTES` | Maximum UDP reply size with EDNS, 512–4096 | `1232` |
+| `-V`, `--version` | Print DNSProxy and libcurl versions, the TLS backend, and HTTP capabilities | |
 | `-h`, `--help` | Print options and exit | |
 
 Unknown options or invalid numeric options exit with status 2. Remote upstreams
@@ -226,8 +227,11 @@ flowchart LR
 - The IPv4 UDP listener accepts up to 65,507 bytes per datagram. TCP and the
   DoH wire body accept DNS messages up to 65,535 bytes. DNS/TCP carries a
   two-byte length prefix outside that limit. Name compression pointer walks
-  are bounded across each message. The UDP receive loop yields after 32
-  datagrams or after reaching 64 KiB of wire data, whichever comes first.
+  are bounded across each message. Compressed names cannot read the TTL bytes
+  the proxy may age. The UDP receive loop yields after 32 datagrams or after
+  reaching 64 KiB of wire data, whichever comes first.
+- On an IPv4 wildcard bind, Linux packet information preserves the local
+  address for UDP replies, including cache hits and coalesced replies.
 - UDP replies are limited to 512 bytes without EDNS. With EDNS, the client's
   advertised size is clamped between 512 and `--udp-reply-max` (default 1232).
   Larger replies use `TC=1` for TCP
@@ -315,15 +319,17 @@ cumulative since start.
 
 The proxy writes startup and failure diagnostics to stderr. For a systemd
 installation, read them with `journalctl -u dnsp-modern`. Warnings include an
-event name, client transport, and numeric libcurl and HTTP codes when
-available. Each warning category emits at most once per ten seconds. The next
-warning in that category reports how many messages it suppressed. The log
-omits the upstream URL, DNS questions, payloads, and client addresses.
+event name, client transport, upstream role, and numeric libcurl, HTTP and
+proxy CONNECT codes when available. Each warning category emits at most once
+per upstream role every ten seconds. The next warning reports how many messages
+it suppressed. Startup logs identify the build-time and runtime libcurl versions.
+The log omits the upstream URL, DNS questions, payloads, and client addresses.
 
 Matching in-flight UDP A and AAAA queries without EDNS can share one upstream
 transfer. Each reply uses the caller's transaction ID, and repeated datagrams
-from the same endpoint and ID use one reply slot. Each transfer can serve the
-original request plus eight waiters. They share the original upstream deadline.
+with the same client endpoint, local destination and ID use one reply slot.
+Each transfer can serve the original request plus eight waiters. They share the
+original upstream deadline.
 When the returned HTTP response forbids reuse, joined clients get separate
 upstream attempts within their original time budgets.
 
