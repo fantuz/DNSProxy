@@ -61,6 +61,12 @@ scan cover complementary cases.
 [AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html) ·
 [UndefinedBehaviorSanitizer](https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html)
 
+Use `DNSProxy PR checks` as the required GitHub Actions status for `master`.
+It checks the proposed merge commit and verifies the package and sanitizer jobs
+along with CodeQL, parser fuzzing, and HTTP/2 and HTTP/3 checks selected for the
+files that changed. Require PR branches to be up to date before merging so the
+check covers the current base.
+
 Review CI for the target architectures. Package changes should pass the DEB and
 RPM jobs, including the install and removal checks. Keep source removals,
 build changes, and behavior changes in separate PRs when they can be verified

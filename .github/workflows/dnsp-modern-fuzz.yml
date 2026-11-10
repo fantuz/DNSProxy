@@ -2,14 +2,7 @@ name: DNSProxy modern - parser fuzzing
 
 "on":
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'dnsp-modern.c'
-      - 'modern.mk'
-      - 'tests/fuzz_dns.c'
-      - 'tests/make_fuzz_corpus.py'
-      - 'tests/test_modern.py'
-      - '.github/workflows/dnsp-modern-fuzz.yml'
+  workflow_call:
 
 permissions:
   contents: read

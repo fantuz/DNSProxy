@@ -23,12 +23,39 @@ jobs:
       tag: ${{ steps.plan.outputs.tag }}
       mode: ${{ steps.plan.outputs.mode }}
       commit: ${{ steps.plan.outputs.commit }}
+      codeql: ${{ steps.pr.outputs.codeql }}
+      fuzz: ${{ steps.pr.outputs.fuzz }}
+      protocols: ${{ steps.pr.outputs.protocols }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - id: plan
         env:
           PUBLISH_REQUESTED: ${{ inputs.publish || false }}
         run: sh scripts/ci-release-plan.sh
+      - name: Select checks for the proposed merge
+        id: pr
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          check_paths() {
+            local check=$1 result=0
+            shift
+            git diff --quiet --no-ext-diff --no-renames HEAD^1 HEAD -- "$@" || result=$?
+            case "$result" in
+              0) printf '%s=false\n' "$check" >> "$GITHUB_OUTPUT" ;;
+              1) printf '%s=true\n' "$check" >> "$GITHUB_OUTPUT" ;;
+              *) return "$result" ;;
+            esac
+          }
+
+          common=(dnsp-modern.c modern.mk VERSION .github/workflows/dnsp-modern.yml)
+          check_paths codeql "${common[@]}" .github/workflows/codeql.yml
+          check_paths fuzz "${common[@]}" tests/fuzz_dns.c tests/make_fuzz_corpus.py \
+            tests/test_modern.py .github/workflows/dnsp-modern-fuzz.yml
+          check_paths protocols "${common[@]}" bench/ tests/test_benchmark.py tests/test_http3.py \
+            tests/test_modern.py .github/workflows/dnsp-modern-benchmark.yml
 
   deb:
     needs: plan
@@ -174,6 +201,54 @@ jobs:
           DNSP_TEST_STARTUP_TIMEOUT: '12'
         run: |
           make -B -f modern.mk modern-check CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
+
+  codeql:
+    needs: plan
+    if: github.event_name == 'pull_request' && needs.plan.outputs.codeql == 'true'
+    permissions:
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/codeql.yml
+
+  fuzz:
+    needs: plan
+    if: github.event_name == 'pull_request' && needs.plan.outputs.fuzz == 'true'
+    uses: ./.github/workflows/dnsp-modern-fuzz.yml
+
+  protocols:
+    needs: plan
+    if: github.event_name == 'pull_request' && needs.plan.outputs.protocols == 'true'
+    uses: ./.github/workflows/dnsp-modern-benchmark.yml
+
+  pr-checks:
+    name: DNSProxy PR checks
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs: [plan, deb, debian, rpm, sanitizers, codeql, fuzz, protocols]
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Verify PR check results
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          jobs = json.loads(os.environ["JOB_RESULTS"])
+          planned = jobs["plan"]["outputs"]
+          optional = {"codeql", "fuzz", "protocols"}
+          failed = []
+          for name, job in sorted(jobs.items()):
+              expected = "skipped" if name in optional and planned.get(name) == "false" else "success"
+              result = job["result"]
+              print(f"{name}: {result} (expected {expected})")
+              if result != expected:
+                  failed.append(name)
+          if failed:
+              sys.exit("PR checks failed: " + ", ".join(failed))
+          PY
 
   publish:
     name: Publish the tested package set
