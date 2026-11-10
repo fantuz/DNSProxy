@@ -165,13 +165,17 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
                             rejected = await asyncio.to_thread(one_load, dns, 1, 0)
                             self.assertEqual(rejected['failed_responses'], 1, rejected)
                             self.assertEqual(rejected['truncated_responses'] + rejected['timeouts'], 0, rejected)
+                            stats = metric_snapshot(metrics)
+                            self.assertEqual(stats['dnsp_upstream_endpoint_requests_total{role="backup"}'], 0)
+                            self.assertEqual(stats[f'dnsp_upstream_http_responses_total{{version="{version}"}}'], 1)
 
+                            # The next query has its own failover budget.
                             primary.app.answers = 1
                             answer = await asyncio.to_thread(one_load, dns, 1, 0)
                             self.assertEqual(answer['successful_queries'], 1, answer)
                             stats = metric_snapshot(metrics)
-                            self.assertEqual(stats['dnsp_upstream_endpoint_requests_total{role="backup"}'], 0)
-                            self.assertEqual(stats[f'dnsp_upstream_http_responses_total{{version="{version}"}}'], 2)
+                            self.assertEqual(stats['dnsp_upstream_endpoint_requests_total{role="primary"}'], 2)
+                            self.assertEqual(stats['dnsp_queries_inflight'], 0)
 
     def test_rejects_plaintext_upstream(self):
         proc = subprocess.run([str(BASE/'dnsp-modern'), '--upstream-http', 'prefer-h3',
