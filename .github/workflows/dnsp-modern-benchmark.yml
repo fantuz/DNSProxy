@@ -74,7 +74,7 @@ jobs:
           RUN python3 -m venv /opt/bench && /opt/bench/bin/python -m pip install \
               'hypercorn==0.18.0' 'h2==4.3.0' 'aioquic==1.3.0'
           WORKDIR /src
-          COPY dnsp-modern.c modern.mk ./
+          COPY dnsp-modern.c modern.mk VERSION ./
           COPY bench/ bench/
           COPY tests/ tests/
           RUN make -f modern.mk dnsp-modern
