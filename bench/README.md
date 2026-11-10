@@ -103,8 +103,8 @@ the mock can interrupt a query at the retirement boundary.
 ### Upstream packet loss and delay on Linux
 
 Install `iproute2` and use a host with the kernel `netem` queue discipline.
-The wrapper creates a temporary network namespace and shapes only IPv4 TCP
-traffic to or from the mock DoH port. The DNS and metrics links stay on
+The wrapper creates a temporary network namespace and shapes only IPv4 TCP and
+UDP traffic to or from the mock DoH port. The DNS and metrics links stay on
 unshaped loopback. The first two arguments are one-way delay and packet loss.
 
 ```bash
@@ -116,6 +116,28 @@ sudo sh bench/netem.sh 10ms 0.5% .bench-venv/bin/python \
 Compare against the same command with `0ms 0%`. The wrapper prints queue
 statistics so the run records whether packets were dropped. The namespace and
 its traffic rules disappear when the benchmark exits.
+
+### HTTP/2 versus HTTP/3
+
+Use a binary linked to an HTTP/3-capable libcurl and install `aioquic` into the
+benchmark environment. The H2 and H3 scenarios use the same DNS fixture data,
+upstream service delay, and client concurrency. The H3 scenario uses aioquic
+for QUIC and offers the same local HTTP/2 server as TCP fallback.
+
+```sh
+.bench-venv/bin/python -m pip install 'aioquic==1.3.0'
+sudo sh bench/netem.sh 10ms 0.5% .bench-venv/bin/python \
+  --protocol h2-h3 --concurrency 8,32,64 --duration 5 \
+  --output dist/bench-h2-h3-loss.json
+```
+
+Run the same workload without `netem` for a baseline. Compare p99 alongside
+failure counts, timeouts, and CPU. Check the negotiated versions in
+`curl_metric_delta` and `upstream_observed.upstream_http_versions` before
+comparing protocols. HTTP/3 preference can yield TCP fallback on a slow or
+lossy link. Use `--assert-h3-multiplex` when a run must negotiate HTTP/3 and
+show concurrent streams at eight or more clients. The default `--protocol both`
+still compares HTTP/2 with HTTP/1.1.
 
 ### Longer stability check
 
