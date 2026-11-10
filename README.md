@@ -67,6 +67,9 @@ bind **127.0.0.1** regardless of `-l`.
 
 ### Quick tests
 
+See [deployment checks](docs/OPERATIONS.md) for protocol troubleshooting and
+the coverage of each test suite.
+
 With the proxy running, open a second terminal. Check a UDP query, a TCP query,
 and an EDNS query that requests DNSSEC records.
 
