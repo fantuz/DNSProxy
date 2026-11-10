@@ -128,7 +128,7 @@ def one_load(port, concurrency, seconds):
     selector = selectors.DefaultSelector()
     states = {}
     samples = array('f')  # microseconds, 4 bytes/observation
-    errors = timeouts = received_bytes = 0
+    errors = timeouts = truncated = received_bytes = 0
     idle_timeout_s = 3.5  # proxy upstream deadline is 3.0 s
 
     def submit(s, state):
@@ -175,7 +175,11 @@ def one_load(port, concurrency, seconds):
                     answer = s.recv(4096)
                     elapsed_us = (time.perf_counter_ns()-state['sent_ns'])/1000.0
                     if (len(answer)<12 or answer[:2] != state['id'].to_bytes(2, 'big')
-                            or not answer[2]&0x80 or answer[3]&15):
+                            or not answer[2]&0x80):
+                        errors += 1
+                    elif answer[2]&0x02:
+                        truncated += 1
+                    elif answer[3]&15:
                         errors += 1
                     else:
                         samples.append(elapsed_us)
@@ -211,8 +215,8 @@ def one_load(port, concurrency, seconds):
     n = len(samples)
     return {
         'elapsed_s': round(elapsed, 3), 'successful_queries': n,
-        'failed_responses': errors, 'timeouts': timeouts,
-        'total_queries': n+errors+timeouts, 'qps': round(n/elapsed, 2),
+        'failed_responses': errors, 'timeouts': timeouts, 'truncated_responses': truncated,
+        'total_queries': n+errors+timeouts+truncated, 'qps': round(n/elapsed, 2),
         'dns_response_bytes': received_bytes,
         'dns_response_mib_s': round(received_bytes/elapsed/1048576, 4),
         'p50_ms': round(percentile(samples, 50)/1000, 3) if n else None,
@@ -274,6 +278,8 @@ def run_suite(args, protocol, tmpdir):
             url = f'https://localhost:{upstream_port}/dns-query'
         cmd = [str(args.binary), '-p', str(proxy_port), '-m', str(metrics_port),
                '-s', url, '--max-host-connections', str(args.max_host_connections)]
+        if args.udp_reply_max is not None:
+            cmd += ['--udp-reply-max', str(args.udp_reply_max)]
         if cert:
             cmd += ['--ca-file', str(cert), '--bootstrap-address', '127.0.0.1']
         f = proxy_log.open('wb')
@@ -339,6 +345,7 @@ def run_suite(args, protocol, tmpdir):
             obs = result['upstream_observed'] or {}
             print(f"{protocol:4s}  c={concurrency:3d}  qps={result['qps']:9.1f}  "
                   f"p95={result['p95_ms']!s:>8} ms  p99={result['p99_ms']!s:>8} ms  "
+                  f"truncated={result['truncated_responses']}  "
                   f"cpu={result['proxy_cpu_percent_of_one_core']}%  "
                   f"dnsMiB/s={result['dns_response_mib_s']:.3f}  "
                   f"new={result['curl_metric_delta']['dnsp_upstream_new_connections_total']:.0f}  "
@@ -370,6 +377,7 @@ def parse_args():
     parser.add_argument('--warmup', type=float, default=1.0, help='Warmup seconds per level')
     parser.add_argument('--upstream-delay-ms', type=float, default=5.0)
     parser.add_argument('--answers', type=int, default=1, help='A records per reply (1..240); tests response payload size')
+    parser.add_argument('--udp-reply-max', type=int, help='Proxy UDP reply cap in bytes (512..4096)')
     parser.add_argument('--max-host-connections', type=int, default=1)
     parser.add_argument('--h2-max-streams', type=int, default=100,
                         help='Advertised HTTP/2 stream limit on the synthetic upstream')
@@ -400,6 +408,8 @@ def parse_args():
         parser.error('--h2-idle-timeout must be a positive finite number')
     if args.mock_upstream_port is not None and not 1 <= args.mock_upstream_port <= 65535:
         parser.error('--mock-upstream-port must be in 1..65535')
+    if args.udp_reply_max is not None and not 512 <= args.udp_reply_max <= 4096:
+        parser.error('--udp-reply-max must be in 512..4096')
     h2_controls = (args.h2_idle_timeout is not None or
                    args.h2_max_streams != 100 or args.h2_max_requests != 10_000_000)
     if args.upstream_url and (h2_controls or args.mock_upstream_port is not None):
@@ -433,7 +443,7 @@ def main():
     output.write_text(json.dumps(document, indent=2)+'\n')
     with output.with_suffix('.csv').open('w', newline='') as f:
         fields = ['protocol_requested', 'concurrency', 'successful_queries',
-                  'failed_responses', 'timeouts', 'qps', 'dns_response_mib_s', 'p50_ms', 'p95_ms',
+                  'failed_responses', 'timeouts', 'truncated_responses', 'qps', 'dns_response_mib_s', 'p50_ms', 'p95_ms',
                   'p99_ms', 'max_ms', 'proxy_cpu_percent_of_one_core',
                   'proxy_rss_end_bytes', 'proxy_rss_peak_bytes', 'proxy_rss_delta_bytes']
         writer = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')

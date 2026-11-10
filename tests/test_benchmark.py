@@ -38,6 +38,31 @@ class BenchmarkUnitTests(unittest.TestCase):
 
 
 class BenchmarkIntegrationTests(unittest.TestCase):
+    def test_large_udp_replies_distinguish_truncation_from_success(self):
+        with tempfile.TemporaryDirectory(prefix='dnsp-large-bench-') as td:
+            for cap in (None, 4096):
+                with self.subTest(cap=cap):
+                    dest = Path(td)/f'results-{cap}.json'
+                    cmd = [sys.executable, str(BASE/'bench/bench_modern.py'),
+                           '--protocol', 'h2', '--concurrency', '1', '--answers', '240',
+                           '--warmup', '0.1', '--duration', '0.2', '--output', str(dest)]
+                    if cap is not None:
+                        cmd.extend(['--udp-reply-max', str(cap)])
+                    out = subprocess.run(cmd, text=True, capture_output=True, timeout=30)
+                    self.assertEqual(out.returncode, 0, f'{out.stdout}\n{out.stderr}')
+                    row, = json.loads(dest.read_text())['results']
+                    self.assertEqual(row['failed_responses'] + row['timeouts'], 0, row)
+                    if cap is None:
+                        self.assertGreater(row['truncated_responses'], 0)
+                        self.assertEqual(row['truncated_responses'], row['total_queries'])
+                        self.assertEqual(row['successful_queries'], 0)
+                        self.assertEqual(row['dns_response_bytes'], 0)
+                        self.assertIsNone(row['p99_ms'])
+                    else:
+                        self.assertEqual(row['truncated_responses'], 0)
+                        self.assertGreater(row['successful_queries'], 0)
+                        self.assertEqual(row['dns_response_bytes'], 3869 * row['successful_queries'])
+
     def test_cold_h2_burst_uses_one_connection_at_default_cap(self):
         with tempfile.TemporaryDirectory(prefix='dnsp-cold-h2-') as td:
             cert, key = make_certificate(Path(td))
