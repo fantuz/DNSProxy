@@ -1,9 +1,10 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
+. scripts/release-common.sh
 
 base=$(cat VERSION)
-if ! printf '%s\n' "$base" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+if ! valid_release_version "$base"; then
     echo "VERSION must contain MAJOR.MINOR.PATCH" >&2
     exit 1
 fi
@@ -19,13 +20,17 @@ case "$GITHUB_REF" in
         mode=tag
         ;;
     refs/heads/master)
-        if [ "$GITHUB_EVENT_NAME" = push ] || [ "${PUBLISH_REQUESTED:-false}" = true ]; then
-            refs=$(git ls-remote --tags origin 'refs/tags/v*-modern' 'refs/tags/v*-modern^{}')
-            previous=$(printf '%s\n' "$refs" | sed -nE 's@.*refs/tags/v([0-9]+\.[0-9]+\.[0-9]+)-modern$@\1@p' | sort -V | tail -n 1)
-            target=$(printf '%s\n' "$refs" | awk -v ref="refs/tags/$tag" '
-                $2 == ref { direct=$1 }
-                $2 == ref "^{}" { peeled=$1 }
-                END { print peeled ? peeled : direct }')
+        if [ -n "${REQUESTED_RELEASE_VERSION:-}" ]; then
+            if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || [ "${PUBLISH_REQUESTED:-false}" != true ] ||
+               [ "$base" != "$REQUESTED_RELEASE_VERSION" ] || [ "$commit" != "${PREPARED_RELEASE_COMMIT:-}" ]; then
+                echo 'release_version requires publish and a matching prepared release commit' >&2
+                exit 1
+            fi
+            mode=manual
+        elif [ "$GITHUB_EVENT_NAME" = push ] || [ "${PUBLISH_REQUESTED:-false}" = true ]; then
+            refs=$(release_tags)
+            previous=$(printf '%s\n' "$refs" | latest_release_version)
+            target=$(printf '%s\n' "$refs" | release_ref_commit "refs/tags/$tag")
             if [ -z "$previous" ] || dpkg --compare-versions "$base" gt "$previous" ||
                { [ "$base" = "$previous" ] && [ "$commit" = "$target" ]; }; then
                 mode=master
@@ -35,7 +40,7 @@ case "$GITHUB_REF" in
         fi
         ;;
     *)
-        if [ "${PUBLISH_REQUESTED:-false}" = true ]; then
+        if [ "${PUBLISH_REQUESTED:-false}" = true ] || [ -n "${REQUESTED_RELEASE_VERSION:-}" ]; then
             echo "Manual publication requires master" >&2
             exit 1
         fi
