@@ -11,6 +11,7 @@ import socketserver
 import ssl
 import struct
 import subprocess
+import sys
 import threading
 import time
 import tempfile
@@ -1395,12 +1396,20 @@ class FailoverDoH(DoH):
             self.wfile.write(response)
 
 
+class FailoverHTTP(HTTP):
+    def get_request(self):
+        if self.accept_delay:
+            time.sleep(self.accept_delay)
+        return super().get_request()
+
+
 class FailoverTests(unittest.TestCase):
     @contextmanager
-    def endpoint(self, mode='answer', address=b'\xc0\x00\x02\x01', tls=None):
-        with HTTP(('127.0.0.1', 0), FailoverDoH) as server:
+    def endpoint(self, mode='answer', address=b'\xc0\x00\x02\x01', tls=None, accept_delay=0):
+        with FailoverHTTP(('127.0.0.1', 0), FailoverDoH) as server:
             server.mode = mode
             server.address = address
+            server.accept_delay = accept_delay
             server.received = []
             server.tunnels = []
             server.started = threading.Event()
@@ -1422,11 +1431,11 @@ class FailoverTests(unittest.TestCase):
         return f'http://127.0.0.1:{server.server_port}/dns-query'
 
     @contextmanager
-    def proxy(self, primary, backup, *args, env=None):
+    def proxy(self, primary, backup, *args, env=None, connect_ms=200, total_ms=1600):
         port, metrics = unused_ports()
         command = [str(BINARY), '-p', str(port), '-m', str(metrics), '-s', primary,
-                   '--backup-upstream', backup, '--doh-connect-ms', '200',
-                   '--doh-timeout-ms', '1600', *args]
+                   '--backup-upstream', backup, '--doh-connect-ms', str(connect_ms),
+                   '--doh-timeout-ms', str(total_ms), *args]
         with tempfile.TemporaryFile() as log, subprocess.Popen(command, stderr=log, env=env) as proc:
             try:
                 deadline = time.monotonic() + float(os.environ.get('DNSP_TEST_STARTUP_TIMEOUT', '12'))
@@ -1448,7 +1457,10 @@ class FailoverTests(unittest.TestCase):
                     proc.kill()
                     proc.wait(timeout=3)
                 log.seek(0)
-                self.assertEqual(proc.returncode, 0, log.read())
+                diagnostic = log.read(8192).decode('utf-8', errors='replace')
+                if sys.exc_info()[0] and diagnostic:
+                    print(f'{BINARY} stderr:\n{diagnostic}', file=sys.stderr, end='')
+                self.assertEqual(proc.returncode, 0, diagnostic)
 
     @staticmethod
     def udp(port, packet=QUERY):
@@ -1500,10 +1512,12 @@ class FailoverTests(unittest.TestCase):
                         self.assertEqual(len(backup.received), before)
 
     def test_https_proxy_denial_does_not_fail_over(self):
-        with self.endpoint() as tunnel, self.endpoint() as backup:
+        # A delayed CONNECT response must arrive before the connection deadline.
+        with self.endpoint(accept_delay=.35) as tunnel, self.endpoint() as backup:
             proxy = self.url(tunnel)
             env = dict(os.environ, https_proxy=proxy, HTTPS_PROXY=proxy, no_proxy='', NO_PROXY='')
-            with self.proxy('https://blocked.invalid/dns-query', self.url(backup), env=env) as (port, _):
+            with self.proxy('https://blocked.invalid/dns-query', self.url(backup), env=env,
+                            connect_ms=1500, total_ms=3000) as (port, _):
                 self.assertEqual(self.udp(port)[3] & 15, 2)
                 self.assertEqual(tunnel.tunnels, ['blocked.invalid:443'])
                 self.assertEqual(backup.received, [])
@@ -1581,11 +1595,14 @@ class FailoverTests(unittest.TestCase):
                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             tls.load_cert_chain(cert, key)
-            with self.endpoint('partial') as plain, self.endpoint(tls=tls) as secure:
+            # Delay accept before the server-side TLS handshake.
+            with self.endpoint('partial') as plain, self.endpoint(tls=tls, accept_delay=.35) as secure:
                 secure_url = f'https://resolver.invalid:{secure.server_port}/dns-query'
                 with self.proxy(self.url(plain), secure_url, '--ca-file', cert,
-                                '--backup-bootstrap-address', '127.0.0.1', '--edns-padding') as (port, _):
-                    self.assertTrue(self.udp(port).endswith(secure.address))
+                                '--backup-bootstrap-address', '127.0.0.1', '--edns-padding',
+                                connect_ms=1500, total_ms=3000) as (port, _):
+                    response = self.udp(port)
+                    self.assertTrue(response.endswith(secure.address), response.hex())
                     packet = query(edns=1232)
                     response = self.udp(port, packet)
                     padded = edns_options(packet, padding_option(128 - len(packet)))
@@ -1598,7 +1615,8 @@ class FailoverTests(unittest.TestCase):
                 plain.mode = 'answer'
                 wrong_url = f'https://wrong.invalid:{secure.server_port}/dns-query'
                 with self.proxy(wrong_url, self.url(plain), '--ca-file', cert,
-                                '--bootstrap-address', '127.0.0.1') as (port, _):
+                                '--bootstrap-address', '127.0.0.1',
+                                connect_ms=1500, total_ms=3000) as (port, _):
                     self.assertEqual(self.udp(port)[3] & 15, 2)
                     self.assertEqual(plain.received, [])
 
