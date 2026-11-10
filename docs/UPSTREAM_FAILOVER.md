@@ -26,8 +26,9 @@ no query. If the backup fails, the client receives `SERVFAIL`.
 Retryable failures include inability to resolve or connect to the primary,
 timeouts, connection resets, incomplete transfers, and HTTP/2 stream or HTTP/3
 transport errors. A completed DNS reply ends the query, including `NXDOMAIN`,
-`REFUSED`, or DNS `SERVFAIL`. TLS certificate failures, HTTP status errors, and
-invalid DoH replies also end the query and are logged.
+`REFUSED`, or DNS `SERVFAIL`. TLS certificate failures, HTTP status errors,
+proxy CONNECT denials, and invalid DoH replies also end the query and are
+logged.
 
 Failover applies to a single Internet-class question with either no additional
 records or an option-free EDNS(0) OPT record. Queries carrying DNS Cookies or

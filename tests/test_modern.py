@@ -1215,6 +1215,16 @@ class Tests(unittest.TestCase):
 
 
 class FailoverDoH(DoH):
+    def handle(self):
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # A timed-out or rejected connection can close mid-request.
+
+    def do_CONNECT(self):
+        self.server.tunnels.append(self.path)
+        self.send_error(403)
+
     def do_POST(self):
         data = self.rfile.read(int(self.headers['Content-Length']))
         mode = self.server.mode
@@ -1233,13 +1243,13 @@ class FailoverDoH(DoH):
                     data[8:end] + record + data[end:])
         if mode == 'invalid':
             response = b'invalid'
-        self.send_response_only(200)
+        self.send_response_only(403 if mode == 'partial403' else 200)
         self.send_header('Content-Type', 'application/dns-message')
         if mode == 'nostore':
             self.send_header('Cache-Control', 'no-store')
         self.send_header('Content-Length', str(len(response)))
         self.end_headers()
-        if mode == 'partial':
+        if mode in ('partial', 'partial403'):
             self.wfile.write(response[:7])
             self.close_connection = True
         else:
@@ -1253,6 +1263,7 @@ class FailoverTests(unittest.TestCase):
             server.mode = mode
             server.address = address
             server.received = []
+            server.tunnels = []
             server.started = threading.Event()
             server.release = threading.Event()
             if tls:
@@ -1272,12 +1283,12 @@ class FailoverTests(unittest.TestCase):
         return f'http://127.0.0.1:{server.server_port}/dns-query'
 
     @contextmanager
-    def proxy(self, primary, backup, *args):
+    def proxy(self, primary, backup, *args, env=None):
         port, metrics = unused_ports()
         command = [str(BINARY), '-p', str(port), '-m', str(metrics), '-s', primary,
                    '--backup-upstream', backup, '--doh-connect-ms', '200',
                    '--doh-timeout-ms', '1600', *args]
-        with tempfile.TemporaryFile() as log, subprocess.Popen(command, stderr=log) as proc:
+        with tempfile.TemporaryFile() as log, subprocess.Popen(command, stderr=log, env=env) as proc:
             try:
                 deadline = time.monotonic() + float(os.environ.get('DNSP_TEST_STARTUP_TIMEOUT', '12'))
                 while time.monotonic() < deadline and proc.poll() is None:
@@ -1342,11 +1353,21 @@ class FailoverTests(unittest.TestCase):
         with self.endpoint() as primary, self.endpoint() as backup:
             with self.proxy(self.url(primary), self.url(backup)) as (port, _):
                 for mode, rcode in (('nxdomain', 3), ('refused', 5), ('servfail', 2),
-                                    ('http503', 2), ('invalid', 2)):
+                                    ('http503', 2), ('partial403', 2), ('invalid', 2)):
                     with self.subTest(mode=mode):
+                        before = len(backup.received)
                         primary.mode = mode
                         self.assertEqual(self.udp(port)[3] & 15, rcode)
-                        self.assertEqual(backup.received, [])
+                        self.assertEqual(len(backup.received), before)
+
+    def test_https_proxy_denial_does_not_fail_over(self):
+        with self.endpoint() as tunnel, self.endpoint() as backup:
+            proxy = self.url(tunnel)
+            env = dict(os.environ, https_proxy=proxy, HTTPS_PROXY=proxy, no_proxy='', NO_PROXY='')
+            with self.proxy('https://blocked.invalid/dns-query', self.url(backup), env=env) as (port, _):
+                self.assertEqual(self.udp(port)[3] & 15, 2)
+                self.assertEqual(tunnel.tunnels, ['blocked.invalid:443'])
+                self.assertEqual(backup.received, [])
 
     def test_cookie_query_stays_on_primary(self):
         packet = edns_options(query(edns=1232), struct.pack('!HH', 10, 8) + bytes(8))

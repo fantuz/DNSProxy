@@ -787,8 +787,15 @@ static bool retryable_transport(CURLcode code) {
             return false;
     }
 }
-static bool retry_on_backup(Query *q,CURLcode code) {
-    if(q->upstream!=&primary || !q->failover_deadline_ms || !retryable_transport(code)) return false;
+static bool retry_on_backup(Query *q,CURLcode code,long status) {
+    if(q->upstream!=&primary || !q->failover_deadline_ms || status>=300 || !retryable_transport(code))
+        return false;
+    /* A CONNECT denial or TLS error can also surface as a transport failure. */
+    long proxy_status=0,verify=0,proxy_verify=0;
+    curl_easy_getinfo(q->easy,CURLINFO_HTTP_CONNECTCODE,&proxy_status);
+    curl_easy_getinfo(q->easy,CURLINFO_SSL_VERIFYRESULT,&verify);
+    curl_easy_getinfo(q->easy,CURLINFO_PROXY_SSL_VERIFYRESULT,&proxy_verify);
+    if(proxy_status>=300 || verify || proxy_verify) return false;
     uint64_t now=clock_ms();
     if(now>=q->failover_deadline_ms) return false;
 
@@ -874,7 +881,7 @@ static void complete(Query *q,CURLcode code) {
         if(failure==LOG_TIMEOUT) metrics.upstream_timeouts++;
         if(failure==LOG_CONTENT || failure==LOG_DNS) metrics.invalid_responses++;
         log_failure(failure,q->client!=NULL,code,status);
-        if(retry_on_backup(q,code)) return;
+        if(retry_on_backup(q,code,status)) return;
         send_error(q,q->request,2);
     }
     Client *client=q->client;
