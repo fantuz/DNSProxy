@@ -2,6 +2,25 @@
 #include "../dnsp-modern.c"
 #undef main
 
+static bool udp_dispatch_is_bounded(void) {
+    int fd[2];
+    if(socketpair(AF_UNIX,SOCK_DGRAM,0,fd)<0) return false;
+    /* Three invalid messages fit in the queue. Two cross the byte budget. */
+    static const unsigned char datagram[UDP_BATCH_BYTES/2+1]={[2]=0x80};
+    bool ok=nonblock(fd[1])==0;
+    for(unsigned i=0;ok && i<3;i++)
+        ok=send(fd[0],datagram,sizeof(datagram),MSG_DONTWAIT)==(ssize_t)sizeof(datagram);
+    if(ok) {
+        uint64_t before=metrics.invalid_queries;
+        udp_io(fd[1]);
+        ok=metrics.invalid_queries==before+2;
+        udp_io(fd[1]);
+        ok=ok && metrics.invalid_queries==before+3;
+    }
+    close(fd[0]);close(fd[1]);
+    return ok;
+}
+
 int main(void) {
     Query q={0};
     char body[]="dns";
@@ -45,5 +64,6 @@ int main(void) {
     bool valid=client.out && client.out_len==sizeof(request)+2 && be16(client.out)==sizeof(request) &&
                be16(client.out+2)==0x1234 && (client.out[5]&15)==2;
     free(client.out);
-    return valid?0:11;
+    if(!valid) return 11;
+    return udp_dispatch_is_bounded()?0:12;
 }
