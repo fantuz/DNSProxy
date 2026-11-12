@@ -45,8 +45,14 @@ jobs:
           DNSP_TEST_OPENSSL: ${{ steps.build.outputs.openssl }}
         run: |
           $python = (Get-Command python).Source
-          $env:DNSP_TEST_BINARY = (Resolve-Path dist/windows/dnsp-modern.exe).Path
+          $portable = Join-Path $env:RUNNER_TEMP 'DNSProxy portable bundle'
+          $archive = (Get-ChildItem dist/dnsp-modern-*-windows-amd64-poc.zip).FullName
+          Expand-Archive -Path $archive -DestinationPath $portable
+          Copy-Item dist/platform-probe.exe $portable
+          $env:DNSP_TEST_BINARY = Join-Path $portable 'dnsp-modern.exe'
           $env:Path = "$(Split-Path $python);$env:SystemRoot\System32;$env:SystemRoot"
+          & (Join-Path $portable 'platform-probe.exe')
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           & $env:DNSP_TEST_BINARY --version
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Get-ChildItem packaging/windows/*.ps1 | ForEach-Object {

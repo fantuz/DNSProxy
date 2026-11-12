@@ -11,6 +11,8 @@ gcc -std=c11 -O2 -g -Wall -Wextra -Wpedantic -Werror \
     -DDNSP_VERSION="\"$version\"" -o dist/windows/dnsp-modern.exe \
     dnsp-modern.c dist/windows-manifest.o $(pkg-config --cflags --libs libcurl) -lws2_32
 python scripts/bundle-windows.py --prefix "$MINGW_PREFIX" --directory dist/windows
+gcc -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -o dist/platform-probe.exe \
+    tests/test_platform.c $(pkg-config --cflags --libs libcurl) -lws2_32
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     printf 'openssl=%s\n' "$(cygpath -w "$MINGW_PREFIX/bin/openssl.exe")" >> "$GITHUB_OUTPUT"
 fi

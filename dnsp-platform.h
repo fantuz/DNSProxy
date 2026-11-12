@@ -15,6 +15,9 @@
 #define _WIN32_WINNT 0x0600
 #endif
 #define WIN32_LEAN_AND_MEAN
+#ifndef FD_SETSIZE
+#define FD_SETSIZE 2048
+#endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <mswsock.h>
@@ -38,12 +41,12 @@ typedef struct pollfd dnsp_pollfd;
 #endif
 #include <curl/curl.h>
 #if defined(_WIN32) && LIBCURL_VERSION_NUM < 0x080200
-#error Native Windows builds require libcurl 8.2.0 or newer for native CA support
+#error Native Windows PoC builds require libcurl 8.2.0 or newer
 #endif
 typedef curl_socket_t dnsp_socket_t;
 typedef ptrdiff_t dnsp_ssize_t;
 #define DNSP_BAD_SOCKET CURL_SOCKET_BAD
-typedef struct { uint32_t destination,source; } UdpLocal;
+typedef struct { uint32_t destination,source,interface_index; } UdpLocal;
 
 static inline void dnsp_close(dnsp_socket_t fd) {
 #ifdef _WIN32
@@ -99,9 +102,44 @@ static inline const char *dnsp_socket_message(int error) {
 }
 static inline int dnsp_poll(dnsp_pollfd *fds,size_t count,int timeout) {
 #ifdef _WIN32
-    return WSAPoll(fds,(ULONG)count,timeout);
+    /* Winsock select reports a peer FIN as readable EOF. WSAPoll reports
+     * POLLHUP while data is still queued, unlike Linux poll, and can spin
+     * on half-closed clients whose framing reads are paused. */
+    if(count>FD_SETSIZE) {WSASetLastError(WSAEINVAL);return -1;}
+    fd_set reads,writes,errors;
+    FD_ZERO(&reads);FD_ZERO(&writes);FD_ZERO(&errors);
+    for(size_t i=0;i<count;i++) {
+        fds[i].revents=0;
+        if(fds[i].events&POLLIN) FD_SET(fds[i].fd,&reads);
+        if(fds[i].events&POLLOUT) FD_SET(fds[i].fd,&writes);
+        FD_SET(fds[i].fd,&errors);
+    }
+    struct timeval wait={.tv_sec=timeout/1000,.tv_usec=(timeout%1000)*1000};
+    int result=select(0,&reads,&writes,&errors,timeout<0?NULL:&wait);
+    if(result<=0) return result;
+    int ready=0;
+    for(size_t i=0;i<count;i++) {
+        if(FD_ISSET(fds[i].fd,&reads)) fds[i].revents|=POLLIN;
+        if(FD_ISSET(fds[i].fd,&writes)) fds[i].revents|=POLLOUT;
+        if(FD_ISSET(fds[i].fd,&errors)) fds[i].revents|=POLLERR;
+        if(fds[i].revents) ready++;
+    }
+    return ready;
 #else
     return poll(fds,count,timeout);
+#endif
+}
+static inline bool dnsp_paused_tcp_reset(dnsp_socket_t fd) {
+#ifdef _WIN32
+    /* select has no poll-style error-only subscription. Peek only on a TCP
+     * reader paused at a full frame; do not consume data or mistake FIN for RST. */
+    char byte;
+    if(recv(fd,&byte,1,MSG_PEEK)>=0) return false;
+    int error=WSAGetLastError();
+    return error==WSAECONNRESET || error==WSAECONNABORTED;
+#else
+    (void)fd;
+    return false;
 #endif
 }
 static inline dnsp_ssize_t dnsp_recv(dnsp_socket_t fd,void *data,size_t size) {
@@ -182,7 +220,8 @@ static inline dnsp_ssize_t dnsp_recv_udp(dnsp_socket_t fd,void *data,size_t size
            c->cmsg_len>=WSA_CMSG_LEN(sizeof(IN_PKTINFO))) {
             IN_PKTINFO info;
             memcpy(&info,WSA_CMSG_DATA(c),sizeof(info));
-            *local=(UdpLocal){.destination=info.ipi_addr.s_addr,.source=info.ipi_addr.s_addr};
+            *local=(UdpLocal){.destination=info.ipi_addr.s_addr,.source=info.ipi_addr.s_addr,
+                              .interface_index=info.ipi_ifindex};
             break;
         }
     }
@@ -211,7 +250,8 @@ static inline dnsp_ssize_t dnsp_recv_udp(dnsp_socket_t fd,void *data,size_t size
 }
 static inline dnsp_ssize_t dnsp_send_udp(dnsp_socket_t fd,const struct sockaddr *peer,
                                         dnsp_socklen_t peer_len,const void *prefix,size_t prefix_len,
-                                        const void *body,size_t body_len,uint32_t source) {
+                                        const void *body,size_t body_len,UdpLocal local) {
+    uint32_t source=local.source;
 #ifdef _WIN32
     if(!prefix_len && !source) return sendto(fd,(const char*)body,(int)body_len,0,peer,peer_len);
     WSABUF parts[]={{.len=(ULONG)prefix_len,.buf=(char*)prefix},
@@ -223,7 +263,7 @@ static inline dnsp_ssize_t dnsp_send_udp(dnsp_socket_t fd,const struct sockaddr 
         msg.Control=(WSABUF){.len=sizeof(control.bytes),.buf=control.bytes};
         WSACMSGHDR *c=WSA_CMSG_FIRSTHDR(&msg);
         c->cmsg_level=IPPROTO_IP;c->cmsg_type=IP_PKTINFO;c->cmsg_len=WSA_CMSG_LEN(sizeof(IN_PKTINFO));
-        IN_PKTINFO info={.ipi_addr.s_addr=source};
+        IN_PKTINFO info={.ipi_addr.s_addr=source,.ipi_ifindex=local.interface_index};
         memcpy(WSA_CMSG_DATA(c),&info,sizeof(info));
     }
     DWORD bytes=0;

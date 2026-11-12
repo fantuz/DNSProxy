@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Loopback integration: RFC 8484 framing, EDNS, DNS validation, libcurl loop."""
 from contextlib import ExitStack, contextmanager
+import atexit
 import http.client
 import http.server
 import os
@@ -24,6 +25,28 @@ BINARY = Path(os.environ.get('DNSP_TEST_BINARY', BASE/'dnsp-modern'))
 OPENSSL = os.environ.get('DNSP_TEST_OPENSSL') or shutil.which('openssl')
 QUERY = bytes.fromhex('1234010000010000000000000377777706676f6f676c6503636f6d0000010001')
 ANSWER = bytes.fromhex('c00c000100010000003c0004c0000201')
+
+
+def spawn_proxy(*args, **kwargs):
+    if os.name == 'nt':
+        # CTRL_BREAK must target only this child group, sharing a real console
+        # even when the Windows CI shell itself has no console attached.
+        import ctypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        if not kernel.GetConsoleCP():
+            if not kernel.AllocConsole():
+                raise ctypes.WinError(ctypes.get_last_error())
+            atexit.register(kernel.FreeConsole)
+        kwargs['creationflags'] = kwargs.get('creationflags', 0) | subprocess.CREATE_NEW_PROCESS_GROUP
+    return subprocess.Popen(*args, **kwargs)
+
+
+def terminate_proxy(process):
+    if process.poll() is None:
+        if os.name == 'nt':
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            process.terminate()
 
 
 def query(qtype=1, edns=None, ident=0x1234):
@@ -262,7 +285,7 @@ class Tests(unittest.TestCase):
         # and allows diagnostics even when a sanitizer-instrumented process hangs.
         cls.proxy_log = tempfile.TemporaryFile(mode='w+b')
         cls.addClassCleanup(cls.proxy_log.close)
-        cls.process = subprocess.Popen([
+        cls.process = spawn_proxy([
             str(BINARY), '-p', str(cls.port), '-m', str(cls.metrics_port),
             '-s', f'http://user:fixture-log-secret@127.0.0.1:{cls.server.server_port}/dns-query'
         ], stdout=subprocess.DEVNULL, stderr=cls.proxy_log)
@@ -299,7 +322,7 @@ class Tests(unittest.TestCase):
     @classmethod
     def stop_proxy(cls):
         if cls.process.poll() is None:
-            cls.process.terminate()
+            terminate_proxy(cls.process)
             try:
                 cls.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
@@ -521,7 +544,7 @@ class Tests(unittest.TestCase):
         # A dedicated instance allows shorter client deadlines.
         port, metrics_port = unused_ports()
         with tempfile.TemporaryFile(mode='w+b') as logfile:
-            proc = subprocess.Popen([
+            proc = spawn_proxy([
                 str(BINARY), '-p', str(port), '-m', str(metrics_port),
                 '--tcp-idle-ms', '250', '--tcp-io-ms', '250',
                 '-s', f'http://127.0.0.1:{self.server.server_port}/dns-query'
@@ -560,7 +583,7 @@ class Tests(unittest.TestCase):
                     else:
                         self.fail('partial reads kept the frame assembly deadline alive')
             finally:
-                proc.terminate()
+                terminate_proxy(proc)
                 try:
                     proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
@@ -1114,7 +1137,7 @@ class Tests(unittest.TestCase):
     def isolated_udp(self, upstream, *args, env, packet=QUERY):
         port, _ = unused_ports()
         with tempfile.TemporaryFile() as logfile:
-            proc = subprocess.Popen([str(BINARY), '-p', str(port), '-s', upstream, *args],
+            proc = spawn_proxy([str(BINARY), '-p', str(port), '-s', upstream, *args],
                                     env=env, stderr=logfile)
             try:
                 deadline = time.monotonic() + 5
@@ -1132,7 +1155,7 @@ class Tests(unittest.TestCase):
                     sock.sendto(packet, ('127.0.0.1', port))
                     return sock.recv(4096)
             finally:
-                proc.terminate()
+                terminate_proxy(proc)
                 try:
                     proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
@@ -1221,7 +1244,7 @@ class Tests(unittest.TestCase):
         def ttl(reply):
             return struct.unpack_from('!I', reply, question_end(reply)+6)[0]
 
-        with tempfile.TemporaryFile() as log, subprocess.Popen([
+        with tempfile.TemporaryFile() as log, spawn_proxy([
             str(BINARY), '-p', str(port), '-m', str(metrics_port), '--cache-entries', '1',
             '-s', f'http://127.0.0.1:{upstream.server_port}/dns-query'
         ], stderr=log) as proc:
@@ -1286,7 +1309,7 @@ class Tests(unittest.TestCase):
                     exchange(data)
                     self.assertEqual(counter('upstream_requests'), before+2, data)
             finally:
-                proc.terminate()
+                terminate_proxy(proc)
                 try:
                     proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
@@ -1478,7 +1501,7 @@ class FailoverTests(unittest.TestCase):
         command = [str(BINARY), '-p', str(port), '-m', str(metrics), '-s', primary,
                    '--backup-upstream', backup, '--doh-connect-ms', str(connect_ms),
                    '--doh-timeout-ms', str(total_ms), *args]
-        with tempfile.TemporaryFile() as log, subprocess.Popen(command, stderr=log, env=env) as proc:
+        with tempfile.TemporaryFile() as log, spawn_proxy(command, stderr=log, env=env) as proc:
             try:
                 deadline = time.monotonic() + float(os.environ.get('DNSP_TEST_STARTUP_TIMEOUT', '12'))
                 while time.monotonic() < deadline and proc.poll() is None:
@@ -1492,7 +1515,7 @@ class FailoverTests(unittest.TestCase):
                     self.fail(f'proxy did not start: {log.read()!r}')
                 yield port, metrics
             finally:
-                proc.terminate()
+                terminate_proxy(proc)
                 try:
                     proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
@@ -1658,7 +1681,7 @@ class FailoverTests(unittest.TestCase):
                 with socket.create_connection(('127.0.0.1', port), timeout=4) as sock:
                     sock.sendall(Tests.frame(QUERY))
                     self.assertTrue(backup.started.wait(3))
-                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('HH' if os.name == 'nt' else 'ii', 1, 0))
                 deadline = time.monotonic() + 3
                 while time.monotonic() < deadline:
                     stats = Tests.metrics(self, metrics)

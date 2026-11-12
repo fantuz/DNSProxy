@@ -13,6 +13,8 @@ dnsp-modern: dnsp-modern.c dnsp-platform.h modern.mk VERSION
 modern-check: dnsp-modern
 	@set -e; probe=$$(mktemp); trap 'rm -f "$$probe"' 0; \
 	$(CC) $(CPPFLAGS) -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic $(LDFLAGS) -o "$$probe" tests/test_curl_callbacks.c $(CURL_FLAGS) $(LDLIBS); \
+	"$$probe"; \
+	$(CC) $(CPPFLAGS) -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic $(LDFLAGS) -o "$$probe" tests/test_platform.c $(CURL_FLAGS) $(LDLIBS); \
 	"$$probe"
 	python3 tests/test_modern.py
 

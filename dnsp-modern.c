@@ -473,13 +473,13 @@ static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_qu
         }
     } else {
         dnsp_ssize_t written=dnsp_send_udp(q->udp_fd,(const struct sockaddr*)&q->peer,q->peer_len,
-                                          NULL,0,p,n,q->udp_local.source);
+                                          NULL,0,p,n,q->udp_local);
         if(satisfies_query && written==(dnsp_ssize_t)n) metrics.queries_satisfied++;
         for(size_t i=0;i<q->udp_waiter_count;i++) {
             UdpWaiter *waiter=&q->udp_waiters[i];
             unsigned char id[]={ (unsigned char)(waiter->id>>8),(unsigned char)waiter->id };
             written=dnsp_send_udp(q->udp_fd,(const struct sockaddr*)&waiter->peer,sizeof(waiter->peer),
-                                  id,sizeof(id),p+2,n-2,waiter->local.source);
+                                  id,sizeof(id),p+2,n-2,waiter->local);
             if(satisfies_query && written==(dnsp_ssize_t)n) metrics.queries_satisfied++;
         }
     }
@@ -1403,6 +1403,7 @@ static uint64_t tcp_deadline(const Client *c,uint64_t idle_ms) {
 static void expire_clients(uint64_t now,uint64_t idle_ms) {
     for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) {
         Client *c=&clients[i];
+        if(!tcp_events(c) && dnsp_paused_tcp_reset(c->fd)) {close_client(c);continue;}
         uint64_t deadline=tcp_deadline(c,idle_ms);
         if(!deadline || now<deadline) continue;
         if(c->frame_deadline || c->write_deadline) metrics.tcp_io_timeouts++;

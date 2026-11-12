@@ -116,7 +116,7 @@ install a persistent service or silently change adapters.
 | Socket handles | Pointer-width `curl_socket_t`; `INVALID_SOCKET` checks |
 | UDP reply source and scatter/gather | `WSARecvMsg`/`WSASendMsg`; Linux keeps packet metadata |
 | Socket ownership | Windows `SO_EXCLUSIVEADDRUSE`; Linux `SO_REUSEADDR` |
-| Polling and time | `WSAPoll`, `GetTickCount64`; cache time includes suspend |
+| Polling and time | Winsock `select`, `GetTickCount64`; cache time includes suspend |
 | Shutdown | Console Ctrl+C/Ctrl+Break; atomic stop flag |
 | Statistics | Shared loopback `/metrics`; POSIX `SIGUSR1` remains Linux-only |
 | Upstream transport | Packaged libcurl/OpenSSL with HTTP/2 and HTTP/3 |
@@ -126,8 +126,10 @@ recursive PE DLL imports, licenses, CA certificates, source SHA, build package
 versions, and checksums. It runs the shared DNS integration suite (only the
 POSIX signal test is skipped), local TLS HTTP/2 and HTTP/3 tests, and native
 Windows acceptance on UDP/TCP port 53, `Resolve-DnsName`, exclusive binding,
-and console shutdown. Runtime tests remove MSYS2 from PATH to detect missing
-DLLs. The required **DNSProxy PR checks** status includes Windows when applicable.
+and console shutdown. Runtime tests extract the ZIP into a path with spaces,
+remove MSYS2 from PATH to detect missing DLLs, and check relocated default CA
+discovery with both valid and invalid TLS hostnames. The required
+**DNSProxy PR checks** status includes Windows when applicable.
 The Linux packages and tests also validate changes to the shared core.
 
 The artifact is a Windows **x86-64 PoC**, unsigned, without an MSI/MSIX installer

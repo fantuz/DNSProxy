@@ -1,14 +1,18 @@
 """Native Windows acceptance: system DNS port, native client and console shutdown."""
 from contextlib import contextmanager
 import os
+from pathlib import Path
+import shutil
 import signal
 import socket
+import ssl
 import struct
 import subprocess
 import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import test_modern as fixtures
 from test_modern import BINARY, DoH, HTTP, QUERY, make_response, question_end, rr
@@ -31,25 +35,15 @@ class WindowsDoH(DoH):
 
 @unittest.skipUnless(os.name == 'nt', 'Native Windows acceptance tests')
 class WindowsTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        # A headless CI shell may have no console to deliver control events.
-        import ctypes
-        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-        if not kernel.GetConsoleCP():
-            if not kernel.AllocConsole():
-                raise ctypes.WinError(ctypes.get_last_error())
-            cls.addClassCleanup(kernel.FreeConsole)
-
     @contextmanager
     def proxy(self):
         with HTTP(('127.0.0.1', 0), WindowsDoH) as server, tempfile.TemporaryFile() as log:
             worker = threading.Thread(target=server.serve_forever, daemon=True)
             worker.start()
-            process = subprocess.Popen([
+            process = fixtures.spawn_proxy([
                 str(BINARY), '-l', '127.0.0.1', '-p', '53',
                 '-s', f'http://127.0.0.1:{server.server_port}/dns-query',
-            ], stderr=log, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+            ], stderr=log)
             try:
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline and process.poll() is None:
@@ -68,6 +62,37 @@ class WindowsTests(unittest.TestCase):
                     process.wait(timeout=5)
                 server.shutdown()
                 worker.join(timeout=3)
+
+    def test_relocated_default_ca_and_hostname_verification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)/'DNSProxy portable with spaces'
+            folder.mkdir()
+            for path in BINARY.parent.iterdir():
+                if path.is_file():
+                    shutil.copy2(path, folder/path.name)
+            cert, key = folder/'ca-bundle.crt', Path(tmp)/'localhost.key'
+            subprocess.run([
+                fixtures.OPENSSL, 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+                '-days', '1', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost',
+                '-out', str(cert), '-keyout', str(key),
+            ], check=True, capture_output=True, timeout=10)
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(cert, key)
+            with HTTP(('127.0.0.1', 0), WindowsDoH) as server:
+                server.socket = context.wrap_socket(server.socket, server_side=True)
+                worker = threading.Thread(target=server.serve_forever, daemon=True)
+                worker.start()
+                try:
+                    with patch.object(fixtures, 'BINARY', folder/'dnsp-modern.exe'):
+                        for host, expected in (('localhost', 0), ('wrong.invalid', 2)):
+                            with self.subTest(host=host):
+                                answer = fixtures.Tests().isolated_udp(
+                                    f'https://{host}:{server.server_port}/dns-query',
+                                    '--bootstrap-address', '127.0.0.1', env=os.environ)
+                                self.assertEqual(answer[3] & 15, expected)
+                finally:
+                    server.shutdown()
+                    worker.join(timeout=3)
 
     def test_port_53_udp_tcp_and_native_resolver(self):
         with self.proxy():
