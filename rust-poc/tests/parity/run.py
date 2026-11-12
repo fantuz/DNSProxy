@@ -43,11 +43,16 @@ def cases(seed):
             (dns(question=a), dns(0x8380)), (dns(), dns(0x8180)),
             (dns(question=a, additional=(rr(250, b'\0', ttl=0),)),
              dns(0x8180, a, (positive,), additional=(rr(250, b'\0', ttl=0),)))]
-    for kind in (1, 2, 5, 6, 12, 15, 16, 24, 28, 33, 39, 43, 46, 48, 52, 64, 65, 249, 250, 251, 252, 255, 65400):
+    for kind in (1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 14, 15, 16, 17, 18, 21, 24, 26, 28, 30, 33, 35,
+                 39, 43, 46, 48, 52, 64, 65, 249, 250, 251, 252, 255, 65400):
         for klass in (1, 3, 255):
             question = name + struct.pack('>HH', kind, klass)
-            rdata = {2: name, 5: b'\xc0\x0c', 6: name * 2 + bytes(20), 12: name,
-                     15: u16(10) + name, 28: bytes(16), 33: bytes(6) + b'\xc0\x0c',
+            rdata = {2: name, 3: name, 4: name, 5: b'\xc0\x0c', 6: name * 2 + bytes(20),
+                     7: name, 8: name, 9: name, 12: name, 14: name * 2,
+                     15: u16(10) + name, 17: name * 2, 18: u16(10) + name,
+                     21: u16(10) + name, 24: bytes(18) + name + b'signature',
+                     26: u16(10) + name * 2, 28: bytes(16), 30: name + b'\x01\x40',
+                     33: bytes(6) + b'\xc0\x0c', 35: bytes(4) + b'\x01S\x03SIP\x00' + name,
                      39: name}.get(kind, b'\xc0\x00\x02\x01')
             base.append((dns(question=question), dns(0x8180, question, (rr(kind, rdata, klass=klass),))))
     for size in (0, 1, 511, 512, 1232, 1233, 4096, 65535):
@@ -60,6 +65,12 @@ def cases(seed):
         yield 1232, dns(question=a, additional=(rr(65400, rdata),)), dns(0x8180, a, (rr(65400, rdata),))
     for query, response in base:
         yield 1232, query, response
+
+    for offset, ttl, kind in ((6, 0x01610000, 1), (5, 0x61000000, 1), (6, 0x01610000, 17)):
+        pointer = u16(0xc000 | (12 + len(a) + offset))
+        first = rr(1, b'\xc0\x00\x02\x01', ttl=ttl)
+        second = rr(17, pointer + b'\xc0\x0c') if kind == 17 else rr(1, bytes(4), owner=pointer)
+        yield 1232, dns(question=a), dns(0x8180, a, (first, second))
 
     def mutate(packet):
         out = bytearray(packet)

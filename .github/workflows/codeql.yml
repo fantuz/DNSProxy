@@ -4,9 +4,7 @@ name: CodeQL
   push:
     branches: [master]
     paths: [dnsp-modern.c, modern.mk, .github/workflows/codeql.yml]
-  pull_request:
-    branches: [master]
-    paths: [dnsp-modern.c, modern.mk, .github/workflows/codeql.yml]
+  workflow_call:
   workflow_dispatch:
 
 permissions:

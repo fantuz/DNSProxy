@@ -91,10 +91,19 @@ helpers.
    `vVERSION-modern` tag at the tested commit and publishes a GitHub pre-release
    with eight packages and `SHA256SUMS`. Other commits at the published version
    produce CI artifacts. A failed check prevents publication.
-3. For a manual run, open **Actions → DNSProxy modern - test and package →
-   Run workflow**, choose `master`, and enable **publish**. Pushing an explicit
-   tag such as `v0.2.4-modern` also works when it matches the checked-out
-   `VERSION`.
+3. To release from the Actions page, open **DNSProxy modern - test and package
+   → Run workflow**, choose `master`, and enable **publish**. Enter a
+   `release_version` higher than both the selected commit's `VERSION` and the
+   highest release tag. The workflow stages a commit that changes only
+   `VERSION`. All eight package builds and the sanitizer job check out that
+   commit before the workflow tags it and publishes the packages. A blank
+   field uses the `VERSION` from `master`. Pushing an explicit tag also works
+   when it matches the tagged commit's `VERSION`.
+
+Manual releases with a version input stage the commit on `ci/release-<run-id>`.
+Publication removes that branch after creating the release. Failed runs keep
+it so **Re-run failed jobs** can use the same commit. To abandon a failed run,
+remove its staging branch once the run has finished.
 
 If publication fails after creating the tag, rerun the failed workflow for the
 tagged commit. If an incomplete GitHub release draft exists, inspect it and

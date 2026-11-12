@@ -77,7 +77,26 @@ fn listener(addr: SocketAddrV4, ty: Type, protocol: Protocol) -> io::Result<Sock
 }
 
 pub fn udp_listener(addr: SocketAddrV4) -> io::Result<UdpSocket> {
-    Ok(listener(addr, Type::DGRAM, Protocol::UDP)?.into())
+    use std::os::fd::AsRawFd;
+
+    let socket = listener(addr, Type::DGRAM, Protocol::UDP)?;
+    if addr.ip().is_unspecified() {
+        let enabled: c_int = 1;
+        // SAFETY: The option takes a pointer to an initialized C int.
+        if unsafe {
+            libc::setsockopt(
+                socket.as_raw_fd(),
+                libc::IPPROTO_IP,
+                libc::IP_PKTINFO,
+                (&enabled as *const c_int).cast(),
+                std::mem::size_of_val(&enabled) as libc::socklen_t,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(socket.into())
 }
 
 pub fn tcp_listener(addr: SocketAddrV4) -> io::Result<TcpListener> {
@@ -304,7 +323,16 @@ pub fn dns_content_type<T>(handle: &curl::multi::Easy2Handle<T>) -> bool {
     )
 }
 
-pub fn recv_udp(socket: &UdpSocket, buffer: &mut [u8]) -> io::Result<(usize, SocketAddrV4, bool)> {
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct UdpLocal {
+    pub destination: u32,
+    source: u32,
+}
+
+pub fn recv_udp(
+    socket: &UdpSocket,
+    buffer: &mut [u8],
+) -> io::Result<(usize, SocketAddrV4, UdpLocal, bool)> {
     use std::os::fd::AsRawFd;
 
     // SAFETY: Zero initializes the C address and message. The iovec, address
@@ -316,10 +344,14 @@ pub fn recv_udp(socket: &UdpSocket, buffer: &mut [u8]) -> io::Result<(usize, Soc
             iov_len: buffer.len(),
         };
         let mut message: libc::msghdr = std::mem::zeroed();
+        // usize storage aligns cmsghdr and holds one in_pktinfo on Linux.
+        let mut control = [0usize; 8];
         message.msg_name = (&mut address as *mut libc::sockaddr_in).cast();
         message.msg_namelen = std::mem::size_of_val(&address) as libc::socklen_t;
         message.msg_iov = &mut io;
         message.msg_iovlen = 1;
+        message.msg_control = control.as_mut_ptr().cast();
+        message.msg_controllen = std::mem::size_of_val(&control);
         let len = libc::recvmsg(socket.as_raw_fd(), &mut message, 0);
         if len < 0 {
             return Err(io::Error::last_os_error());
@@ -334,13 +366,34 @@ pub fn recv_udp(socket: &UdpSocket, buffer: &mut [u8]) -> io::Result<(usize, Soc
         }
         let ip = std::net::Ipv4Addr::from(address.sin_addr.s_addr.to_ne_bytes());
         let peer = SocketAddrV4::new(ip, u16::from_be(address.sin_port));
-        Ok((len as usize, peer, message.msg_flags & libc::MSG_TRUNC != 0))
+        let mut local = UdpLocal::default();
+        let truncated = message.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0;
+        if !truncated {
+            let mut header = libc::CMSG_FIRSTHDR(&message);
+            while !header.is_null() {
+                if (*header).cmsg_level == libc::IPPROTO_IP
+                    && (*header).cmsg_type == libc::IP_PKTINFO
+                    && (*header).cmsg_len
+                        >= libc::CMSG_LEN(std::mem::size_of::<libc::in_pktinfo>() as u32) as usize
+                {
+                    let info = ptr::read_unaligned(libc::CMSG_DATA(header).cast::<libc::in_pktinfo>());
+                    local = UdpLocal {
+                        destination: info.ipi_addr.s_addr,
+                        source: info.ipi_spec_dst.s_addr,
+                    };
+                    break;
+                }
+                header = libc::CMSG_NXTHDR(&message, header);
+            }
+        }
+        Ok((len as usize, peer, local, truncated))
     }
 }
 
 pub fn send_udp_with_id(
     socket: &UdpSocket,
     peer: SocketAddrV4,
+    local: UdpLocal,
     id: u16,
     tail: &[u8],
 ) -> io::Result<usize> {
@@ -373,6 +426,20 @@ pub fn send_udp_with_id(
         message.msg_namelen = std::mem::size_of_val(&address) as libc::socklen_t;
         message.msg_iov = parts.as_mut_ptr();
         message.msg_iovlen = parts.len();
+        let mut control = [0usize; 8];
+        if local.source != 0 {
+            message.msg_control = control.as_mut_ptr().cast();
+            message.msg_controllen =
+                libc::CMSG_SPACE(std::mem::size_of::<libc::in_pktinfo>() as u32) as usize;
+            let header = libc::CMSG_FIRSTHDR(&message);
+            (*header).cmsg_level = libc::IPPROTO_IP;
+            (*header).cmsg_type = libc::IP_PKTINFO;
+            (*header).cmsg_len =
+                libc::CMSG_LEN(std::mem::size_of::<libc::in_pktinfo>() as u32) as usize;
+            let mut info: libc::in_pktinfo = std::mem::zeroed();
+            info.ipi_spec_dst.s_addr = local.source;
+            ptr::write_unaligned(libc::CMSG_DATA(header).cast::<libc::in_pktinfo>(), info);
+        }
         libc::sendmsg(socket.as_raw_fd(), &message, libc::MSG_NOSIGNAL)
     };
     if written < 0 {

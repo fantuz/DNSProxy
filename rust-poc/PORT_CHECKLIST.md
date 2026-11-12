@@ -1,11 +1,13 @@
 # dnsp-modern Rust port checklist
 
-Reference source is `fantuz/DNSProxy` at `4417e285f914393bf3019d5eb075d05209f3f69c`. The table groups C functions by responsibility. The Python suites run the original integration fixtures against the Rust executable. The Rust unit checks cover the native behaviors tested directly by the C helper, and the wire oracle compares both implementations on the same inputs.
+Reference source is `fantuz/DNSProxy` at `343323e411488cfa3e608dfbf8496de8d91959b8`. The table groups C functions by responsibility. The Python suites run the current integration fixtures against the Rust executable. The Rust unit checks cover the native behaviors tested directly by the C helper, and the wire oracle compares both implementations on the same inputs.
 
 | Ported behavior | C function or path | Rust implementation | Verification |
 | --- | --- | --- | --- |
 | ✅ DNS message envelope and request/response roles | `dns_parse` | `wire::parse` | Wire oracle and core DNS tests |
 | ✅ DNS name and pointer bounds, canonical question matching | `dns_name`, `dns_rr_names` | `wire::read_name`, `rr_names` | Wire oracle, malformed RDATA and compression-budget tests |
+| ✅ TTL-safe compression and legacy name-bearing records | `DnsNames`, `dns_name`, `dns_rr_names` | `wire::Names`, `read_name`, `rr_names` | Current compression/record fixtures and wire oracle |
+| ✅ Wildcard UDP source addresses on direct, cached and coalesced replies | `UdpLocal`, `udp_io`, `send_udp_parts` | `native::UdpLocal`, `recv_udp`, `send_udp_with_id`, `proxy::Target` | Destination/source and coalescing integration regressions |
 | ✅ EDNS OPT metadata, payload sizes and option bounds | `dns_opt_options`, `dns_parse` | `wire::options_valid`, `parse` | EDNS size, padding and malformed OPT tests |
 | ✅ Local FORMERR, NOTIMP and SERVFAIL, EDNS-aware TC | `send_error`, `append_local_opt`, `send_truncated` | `wire::error_reply`, `append_opt`, `truncated_reply`, `proxy::Proxy::local_error` | UDP limits, transfer rejection, FORMERR pipeline and overload tests |
 | ✅ Binary request forwarding across supported QTYPE/QCLASS values | `submit_until`, `start_upstream`, `complete` | `proxy::Proxy::submit`, `doh::Engine::start`, `proxy::validate` | Record/class tests, unknown RDATA and wire oracle |
@@ -23,6 +25,7 @@ Reference source is `fantuz/DNSProxy` at `4417e285f914393bf3019d5eb075d05209f3f6
 | ✅ DoH Age, HTTP freshness and conservative shared reuse | `collect_doh_header`, `cache_control`, `doh_response_age_ms`, `age_forwarded_ttls` | `doh::Headers`, `wire::age_forwarded`, `proxy::Proxy::complete` | Header unit tests, Age forwarding, cache bypass and coalescing tests |
 | ✅ Optional bounded in-memory positive answer cache | `plain_address_query`, `cache_slot_for`, `cache_ttls`, `cache_store`, `cache_reply` | `wire::{plain_address,cache_index,cache_ttls,age_ttl}`, `cache::Cache` | Cache lifetime and eligibility tests plus wire oracle |
 | ✅ CLI, listener failures, redacted logs, SIGUSR1 and metrics | `usage`, `parse_range`, `listener`, `log_failure`, `report_status`, `metric_response`, `metric_io` | `config::Config`, `native::signals`, `proxy::Proxy`, `metrics::{Metrics,RateLog}`, `client::MetricClient` | CLI error, listener, signal, log and metrics tests |
+| ✅ Version/capability reporting and per-upstream failure diagnostics | `show_version`, `log_failure`, startup report | `main`, `build.rs`, `metrics::RateLog`, `doh::Transfer` | Version fields and redacted upstream/CONNECT log tests |
 | ✅ Transfer phases, cancellations and graceful shutdown | `record_upstream_phases`, `detach_query`, `remove_query`, main cleanup | `doh::Engine::metadata`, `metrics::Metrics::record_transfer`, `proxy::Proxy::{close_tcp,run}` | Fixture process lifecycle, timing counters, cancellation tests and benchmarks |
 
 ## Implementation differences
@@ -31,4 +34,4 @@ Reference source is `fantuz/DNSProxy` at `4417e285f914393bf3019d5eb075d05209f3f6
 - Active queries and clients use ordered maps. Cache entries allocate their key, reply and TTL offsets when filled. Expired entries are released when a lookup visits the slot. The C cache reserves fixed-size slots at startup.
 - Rust rejects an invalid IPv4 bind argument during CLI parsing with exit code 2. The C executable classifies that address as a listener failure with exit code 1. Actual socket bind errors return 1 in both. Prometheus metric names and labels are preserved, with additional type declarations and an HTTP/3 count in the Rust SIGUSR1 line.
 - A detected socket-watch overflow stops the Rust loop after the current libcurl call. The C callback can return a native error directly. The same 1,024-watch bound applies.
-- Validation covers Debian 13 amd64, a pinned libcurl build, and synthetic loopback workloads. Other CPU architectures, other TLS backends, Internet resolver interoperability and long-running memory behavior need separate measurements. The C project’s packaging and service definitions are outside this standalone executable.
+- GitHub CI covers amd64 and arm64, Ubuntu 22.04/24.04, and Debian 13 HTTP/3 fixtures using system libcurl. Internet resolver interoperability, additional TLS backends and long-running memory behavior need separate measurements. C packaging and service definitions build and run the C executable.

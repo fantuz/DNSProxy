@@ -12,9 +12,23 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     curl::init();
     let config = match config::Config::parse(std::env::args_os().skip(1)) {
-        Ok(Some(config)) => config,
-        Ok(None) => {
+        Ok(config::Command::Run(config)) => *config,
+        Ok(config::Command::Help) => {
             println!("{}", config::Config::usage());
+            return ExitCode::SUCCESS;
+        }
+        Ok(config::Command::Version) => {
+            let curl = curl::Version::get();
+            println!(
+                "dnsp-modern {}\nimplementation=rust-poc\nlibcurl_build={}\nlibcurl_runtime={}\ntls_backend={}\nhttp2={}\nhttp3={}\nprefer_h3={}",
+                include_str!("../../VERSION").trim(),
+                env!("DNSP_LIBCURL_BUILD"),
+                curl.version(),
+                curl.ssl_version().unwrap_or("none"),
+                if curl.feature_http2() { "yes" } else { "no" },
+                if curl.feature_http3() { "yes" } else { "no" },
+                if curl.version_num() >= 0x07_58_00 && curl.feature_http3() { "yes" } else { "no" },
+            );
             return ExitCode::SUCCESS;
         }
         Err(error) => {

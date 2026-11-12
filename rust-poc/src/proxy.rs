@@ -21,7 +21,7 @@ use crate::{native, wire};
 
 #[derive(Clone, Copy)]
 enum Target {
-    Udp(SocketAddrV4),
+    Udp(SocketAddrV4, native::UdpLocal),
     Tcp(usize),
 }
 
@@ -33,6 +33,7 @@ impl Target {
 
 struct Waiter {
     peer: SocketAddrV4,
+    local: native::UdpLocal,
     id: u16,
     deadline: Instant,
 }
@@ -141,7 +142,7 @@ impl Proxy {
 
     fn record_query(&mut self, target: Target) {
         match target {
-            Target::Udp(_) => self.metrics.udp_queries += 1,
+            Target::Udp(_, _) => self.metrics.udp_queries += 1,
             Target::Tcp(id) => {
                 if let Some(client) = self.clients.get_mut(&id) {
                     if client.queries > 0 {
@@ -160,16 +161,16 @@ impl Proxy {
                 if let Some(client) = self.clients.get_mut(&id) {
                     if !client.queue(response, satisfies, self.cfg.tcp_io) {
                         self.logs
-                            .warn(Failure::TcpBuffer, true, sys::CURLE_OUT_OF_MEMORY, 0);
+                            .warn(Failure::TcpBuffer, true, sys::CURLE_OUT_OF_MEMORY, 0, None, 0);
                     }
                 }
             }
-            Target::Udp(peer) => {
-                if self.udp.send_to(response, peer).ok() == Some(response.len()) && satisfies {
+            Target::Udp(peer, local) => {
+                if native::send_udp_with_id(&self.udp, peer, local, wire::u16_at(response, 0), &response[2..]).ok() == Some(response.len()) && satisfies {
                     self.metrics.queries_satisfied += 1;
                 }
                 for waiter in waiters {
-                    if native::send_udp_with_id(&self.udp, waiter.peer, waiter.id, &response[2..])
+                    if native::send_udp_with_id(&self.udp, waiter.peer, waiter.local, waiter.id, &response[2..])
                         .ok()
                         == Some(response.len())
                         && satisfies
@@ -197,7 +198,7 @@ impl Proxy {
         );
     }
 
-    fn join(&mut self, peer: SocketAddrV4, request: &[u8]) -> bool {
+    fn join(&mut self, peer: SocketAddrV4, local: native::UdpLocal, request: &[u8]) -> bool {
         let id = wire::u16_at(request, 0);
         let mut available = None;
         for (&token, active) in self.active.iter().rev() {
@@ -205,8 +206,8 @@ impl Proxy {
             if !q.shareable || q.request[2..] != request[2..] {
                 continue;
             }
-            if matches!(q.target, Target::Udp(leader) if leader == peer && wire::u16_at(&q.request, 0) == id)
-                || q.waiters.iter().any(|w| w.peer == peer && w.id == id)
+            if matches!(q.target, Target::Udp(leader, address) if leader == peer && address.destination == local.destination && wire::u16_at(&q.request, 0) == id)
+                || q.waiters.iter().any(|w| w.peer == peer && w.local.destination == local.destination && w.id == id)
             {
                 return true;
             }
@@ -224,6 +225,7 @@ impl Proxy {
             .waiters
             .push(Waiter {
                 peer,
+                local,
                 id,
                 deadline: Instant::now() + self.cfg.timeout,
             });
@@ -254,7 +256,7 @@ impl Proxy {
                 Ok(())
             }
             Err(code) => {
-                self.logs.warn(Failure::Setup, query.target.tcp(), code, 0);
+                self.logs.warn(Failure::Setup, query.target.tcp(), code, 0, Some(query.role), 0);
                 Err(Box::new(query))
             }
         }
@@ -322,8 +324,8 @@ impl Proxy {
             && !target.tcp()
             && wire::u16_at(&request, 10) == 0
             && wire::plain_address(&request, &info);
-        if let Target::Udp(peer) = target {
-            if shareable && self.join(peer, &request) {
+        if let Target::Udp(peer, local) = target {
+            if shareable && self.join(peer, local, &request) {
                 self.metrics.udp_queries_coalesced += 1;
                 self.record_query(target);
                 return true;
@@ -331,7 +333,7 @@ impl Proxy {
         }
         if self.active.len() >= MAX_ACTIVE {
             self.logs
-                .warn(Failure::Capacity, target.tcp(), sys::CURLE_OK, 0);
+                .warn(Failure::Capacity, target.tcp(), sys::CURLE_OK, 0, None, 0);
             self.metrics.overload += 1;
             self.local_error(target, &[], &request, &info, 2);
             return true;
@@ -449,7 +451,7 @@ impl Proxy {
                         request[..2].copy_from_slice(&waiter.id.to_be_bytes());
                         self.submit(
                             Cow::Borrowed(&request),
-                            Target::Udp(waiter.peer),
+                            Target::Udp(waiter.peer, waiter.local),
                             query.role,
                             Some(waiter.deadline),
                         );
@@ -466,7 +468,7 @@ impl Proxy {
                     self.metrics.invalid_responses += 1;
                 }
                 self.logs
-                    .warn(failure, query.target.tcp(), transfer.code, transfer.status);
+                    .warn(failure, query.target.tcp(), transfer.code, transfer.status, Some(query.role), transfer.proxy_status);
 
                 if query.role == Role::Primary && transfer.backup_safe {
                     if let Some(deadline) = query.failover_deadline {
@@ -555,7 +557,7 @@ impl Proxy {
             }
             ReadEvent::NoMemory => {
                 self.logs
-                    .warn(Failure::TcpBuffer, true, sys::CURLE_OUT_OF_MEMORY, 0);
+                    .warn(Failure::TcpBuffer, true, sys::CURLE_OUT_OF_MEMORY, 0, None, 0);
                 self.close_tcp(id)?;
             }
             ReadEvent::Close => self.close_tcp(id)?,
@@ -634,7 +636,7 @@ impl Proxy {
             if bytes >= 65_536 {
                 break;
             }
-            let Ok((len, peer, truncated)) = native::recv_udp(&self.udp, buffer) else {
+            let Ok((len, peer, local, truncated)) = native::recv_udp(&self.udp, buffer) else {
                 break;
             };
             bytes += len;
@@ -643,7 +645,7 @@ impl Proxy {
             } else {
                 self.submit(
                     Cow::Borrowed(&buffer[..len]),
-                    Target::Udp(peer),
+                    Target::Udp(peer, local),
                     Role::Primary,
                     None,
                 );
@@ -799,13 +801,15 @@ impl Proxy {
     pub fn run(mut self) -> Result<(), String> {
         let started = Instant::now();
         eprintln!(
-            "level=info event=listening address={} port={} metrics_port={} upstream_scheme={} http_preference={} backup={}",
+            "level=info event=listening address={} port={} metrics_port={} upstream_scheme={} http_preference={} backup={} libcurl_build={} libcurl_runtime={}",
             self.cfg.listen.ip(),
             self.cfg.listen.port(),
             self.cfg.metrics_port,
             self.cfg.primary.scheme(),
             self.cfg.preference(),
-            enabled(self.cfg.backup.is_some())
+            enabled(self.cfg.backup.is_some()),
+            env!("DNSP_LIBCURL_BUILD"),
+            curl::Version::get().version()
         );
         let result = self.event_loop(started);
         self.clients.clear();
@@ -861,13 +865,16 @@ mod tests {
 
     fn proxy() -> Proxy {
         curl::init();
-        let mut config = Config::parse(
+        let command = Config::parse(
             ["-s", "http://127.0.0.1:1234/dns-query"]
                 .into_iter()
                 .map(Into::into),
         )
-        .unwrap()
         .unwrap();
+        let crate::config::Command::Run(config) = command else {
+            panic!("expected a runnable configuration");
+        };
+        let mut config = *config;
         config.listen.set_port(0);
         Proxy::new(config).unwrap()
     }
@@ -900,7 +907,7 @@ mod tests {
     #[test]
     fn overload_returns_tcp_servfail_without_starting_transfer() {
         let mut proxy = proxy();
-        let udp = Target::Udp(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1234));
+        let udp = Target::Udp(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1234), native::UdpLocal::default());
         // RD clear bypasses coalescing. Transfers remain queued in the multi
         // until it is driven, so the fixture never contacts the upstream.
         let query = [0x12, 0x34, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1];

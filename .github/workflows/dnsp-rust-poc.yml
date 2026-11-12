@@ -1,0 +1,96 @@
+name: DNSProxy Rust POC
+
+"on":
+  push:
+    branches: [rust-poc]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install the pinned formatter
+        run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt
+      - name: Check Rust formatting
+        working-directory: rust-poc
+        run: cargo +1.90.0 fmt --all --check
+
+  core:
+    name: Rust core ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-24.04, ubuntu-24.04-arm]
+    env:
+      RUSTUP_TOOLCHAIN: 1.90.0
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install compiler and fixture dependencies
+        run: |
+          if [ "$(dpkg --print-architecture)" = amd64 ] && [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf '%s\n' 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev python3 openssl
+          rustup toolchain install 1.90.0 --profile minimal --component clippy
+      - name: Run Rust checks and current C integration fixtures
+        working-directory: rust-poc
+        run: |
+          cmp tests/test_modern.py ../tests/test_modern.py
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+          cargo build --release --locked
+          DNSP_TEST_BINARY="$PWD/target/release/dnsp-modern-rust" python3 ../tests/test_modern.py
+
+  protocols:
+    name: Rust HTTP2, HTTP3 and C comparison
+    runs-on: ubuntu-24.04
+    container: docker.io/library/rust:1.90.0-trixie
+    timeout-minutes: 20
+    steps:
+      - name: Install system libcurl and protocol fixtures
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends libcurl4-openssl-dev pkg-config python3-venv openssl ca-certificates
+          rustup component add rustfmt clippy
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Build the pinned C reference
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git worktree add --detach /tmp/dnsp-c-reference "$(cat rust-poc/SOURCE_REVISION)"
+          make -C /tmp/dnsp-c-reference -f modern.mk dnsp-modern CFLAGS='-O2 -g -Werror'
+      - name: Run the full Rust protocol suite
+        working-directory: rust-poc
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -r requirements-bench.txt
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+          cargo build --release --locked
+          stage=$(mktemp -d)
+          trap 'rm -rf "$stage"' EXIT
+          cp -R tests bench "$stage/"
+          ln -s "$PWD/target/release/dnsp-modern-rust" "$stage/dnsp-modern"
+          .venv/bin/python -m unittest discover -s "$stage/tests" -p 'test_*.py' -v
+          .venv/bin/python tests/parity/run.py /tmp/dnsp-c-reference
+      - name: Compare current C and Rust throughput
+        working-directory: rust-poc
+        env:
+          PYTHON: .venv/bin/python
+        run: scripts/bench-compare.sh /tmp/dnsp-c-reference/dnsp-modern dist/benchmark
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: rust-poc-benchmark
+          path: rust-poc/dist/benchmark/
+          if-no-files-found: ignore
+          retention-days: 14

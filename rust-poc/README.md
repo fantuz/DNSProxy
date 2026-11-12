@@ -1,6 +1,10 @@
 # dnsp-modern in Rust
 
-A standalone DNSProxy proof of concept based on the C implementation at revision [4417e285](https://github.com/fantuz/DNSProxy/commit/4417e285f914393bf3019d5eb075d05209f3f69c). The Rust executable accepts classic IPv4 DNS over UDP and TCP, then forwards binary DNS messages to upstream DNS over HTTPS. It uses the same libcurl HTTP/TLS/QUIC engine as the reference C binary.
+A DNSProxy proof of concept aligned with the C implementation at revision [343323e4](https://github.com/fantuz/DNSProxy/commit/343323e411488cfa3e608dfbf8496de8d91959b8). The Rust executable accepts classic IPv4 DNS over UDP and TCP, then forwards binary DNS messages to upstream DNS over HTTPS. It uses the same libcurl HTTP/TLS/QUIC engine as the reference C binary.
+
+[![Rust POC checks](https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-rust-poc.yml/badge.svg?branch=rust-poc)](https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-rust-poc.yml)
+
+The refresh includes compression checks that protect TTL rewriting, validation of legacy DNS name-bearing record formats, and destination-aware UDP replies for wildcard listeners. Coalesced queries and cache hits preserve each client's original destination address. `--version` reports the source version and build/runtime libcurl capabilities, and rate-limited failure logs identify the upstream role and CONNECT status.
 
 ## How the port is organized
 
@@ -85,7 +89,7 @@ Send `kill -USR1 PID` to the proxy process for a one-line status report on stder
    PYTHON=.venv/bin/python scripts/check.sh
    ```
 
-   Use `scripts/check.sh core` for the Rust checks and 67 core integration tests on a system without HTTP/3. The full script stages the 83 inherited Python checks unchanged and adds a TLS probe for both IPv6 bootstrap options. Test upstreams, clients and certificates are local.
+   Use `scripts/check.sh core` for the Rust checks and current C integration tests on a system without HTTP/3. The full script stages the inherited Python checks unchanged and adds a TLS probe for both IPv6 bootstrap options. Test upstreams, clients and certificates are local.
 
 2. Check out and build the pinned C reference in a separate directory.
 
@@ -109,7 +113,15 @@ Send `kill -USR1 PID` to the proxy process for a one-line status report on stder
 
 The delivered measurements come from local Linux loopback. The benchmark uses UDP on the downstream leg and records the HTTP version negotiated upstream. TCP correctness and lifecycle are covered by the tests.
 
-## Validation results
+## GitHub validation
+
+Pushes to `rust-poc` run formatting, Clippy, Rust unit tests and the current C integration suite on Ubuntu 22.04 and 24.04 amd64 and Ubuntu 24.04 arm64. A Debian 13 job runs the full HTTP/2 and HTTP/3 fixtures, compares wire behavior against `SOURCE_REVISION`, and uploads three matched C/Rust benchmark runs as an Actions artifact. The jobs use Rust 1.90.0 and each platform's system libcurl.
+
+The executable's first `--version` line uses the repository's `VERSION`; `implementation=rust-poc` identifies this implementation. The C package release workflow continues to build the C executable.
+
+## Original feasibility measurements
+
+The results below describe the original port against C revision `4417e285f914393bf3019d5eb075d05209f3f69c`. Current comparisons are available in the Rust workflow's benchmark artifacts.
 
 - Release build, formatting and Clippy with warnings treated as errors passed.
 - 9 Rust unit checks, 83 inherited Python checks and the additional IPv6 bootstrap check passed. The IPv6 probe passed against the pinned C binary too.

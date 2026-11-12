@@ -235,6 +235,7 @@ pub struct Engine {
 pub struct Transfer {
     pub code: sys::CURLcode,
     pub status: libc::c_long,
+    pub proxy_status: libc::c_long,
     pub version: libc::c_long,
     pub connects: u64,
     pub content_type_ok: bool,
@@ -420,6 +421,7 @@ impl Engine {
         Transfer {
             code,
             status,
+            proxy_status,
             connects,
             backup_safe,
             phases: [queue, tls, first_byte],

@@ -263,7 +263,7 @@ pub enum Failure {
 }
 
 #[derive(Default)]
-pub struct RateLog([(Option<Instant>, u64); 8]);
+pub struct RateLog([[(Option<Instant>, u64); 3]; 8]);
 
 impl RateLog {
     pub fn warn(
@@ -272,9 +272,16 @@ impl RateLog {
         tcp: bool,
         code: curl_sys::CURLcode,
         status: libc::c_long,
+        role: Option<crate::config::Role>,
+        proxy_status: libc::c_long,
     ) {
         let now = Instant::now();
-        let (next, suppressed) = &mut self.0[failure as usize];
+        let (role_index, upstream) = match role {
+            None => (0, "none"),
+            Some(crate::config::Role::Primary) => (1, "primary"),
+            Some(crate::config::Role::Backup) => (2, "backup"),
+        };
+        let (next, suppressed) = &mut self.0[failure as usize][role_index];
         if next.is_some_and(|deadline| now < deadline) {
             *suppressed += 1;
             return;
@@ -291,7 +298,7 @@ impl RateLog {
         };
         let transport = if tcp { "tcp" } else { "udp" };
         eprintln!(
-            "level=warning event={event} transport={transport} curl_code={code} http_status={status} suppressed={suppressed}"
+            "level=warning event={event} transport={transport} curl_code={code} http_status={status} upstream={upstream} proxy_connect_status={proxy_status} suppressed={suppressed}"
         );
         *next = Some(now + Duration::from_secs(10));
         *suppressed = 0;

@@ -21,6 +21,11 @@ no EDNS the client limit is 512 bytes.
 
 ## Confirm the upstream protocol
 
+Run `dnsp-modern --version` on the executable you deploy. It shows the
+libcurl headers used to build it, the library version loaded at runtime,
+the TLS backend, and HTTP/2 and HTTP/3 capabilities. Compare the two libcurl
+versions if a local installation under `/usr/local` may be taking precedence.
+
 Run a query and compare the HTTP version counters before and after it.
 
 ```sh
@@ -32,7 +37,7 @@ curl -fsS http://127.0.0.1:9153/metrics |
 | --- | --- |
 | `http_preference=h3` in a startup or status log | The process requested HTTP/3. Look for an increase in the response counter with `version="3"` to confirm negotiation. |
 | HTTP/2 responses with `prefer-h3` | The TCP fallback may have won or an existing HTTP/2 connection may be reused. Check UDP reachability to the upstream HTTPS port and whether libcurl is using a forward proxy. |
-| Startup rejects `prefer-h3` | The running binary needs a linked libcurl with HTTP/3 and TCP fallback support. Check the binary's `--help` and startup error. |
+| Startup rejects `prefer-h3` | Check for `prefer_h3=yes` in `--version` and read the startup error. |
 | Queries time out with many active transfers | Compare the upstream timeout and overload counters. On libcurl 8.6 or newer, the queue phase shows how much time transfers spent waiting inside libcurl. |
 | UDP responses show `TC` and TCP replies work | The client advertised a small EDNS buffer or the proxy applied its UDP reply cap. Check the client buffer and `--udp-reply-max`. |
 

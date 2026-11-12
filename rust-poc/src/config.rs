@@ -32,7 +32,14 @@ const USAGE: &str = "Usage: dnsp-modern-rust [options]
   --doh-timeout-ms MS          Total upstream deadline, 100..60000 (default 3000)
   --cache-entries N            In-memory DNS cache slots, 0..1024 (default disabled)
   --udp-reply-max BYTES        UDP reply cap, 512..4096 (default 1232)
+  -V, --version                Show DNSProxy version and libcurl capabilities
   -h, --help                   Show this help";
+
+pub enum Command {
+    Run(Box<Config>),
+    Help,
+    Version,
+}
 
 pub struct Endpoint {
     pub url: String,
@@ -130,7 +137,7 @@ impl Config {
         USAGE
     }
 
-    pub fn parse(args: impl Iterator<Item = OsString>) -> Result<Option<Self>, String> {
+    pub fn parse(args: impl Iterator<Item = OsString>) -> Result<Command, String> {
         let mut args = args;
         let mut ip = Ipv4Addr::LOCALHOST.to_string();
         let mut port = 5300;
@@ -154,7 +161,8 @@ impl Config {
         while let Some(arg) = args.next() {
             let option = arg.to_str().ok_or(USAGE)?;
             match option {
-                "-h" | "--help" => return Ok(None),
+                "-h" | "--help" => return Ok(Command::Help),
+                "-V" | "--version" => return Ok(Command::Version),
                 "--edns-padding" => {
                     padding = true;
                     continue;
@@ -267,7 +275,7 @@ impl Config {
         let address = ip
             .parse::<Ipv4Addr>()
             .map_err(|_| "invalid DNS bind address (expected IPv4)")?;
-        Ok(Some(Self {
+        Ok(Command::Run(Box::new(Self {
             listen: SocketAddrV4::new(address, port),
             metrics_port,
             primary,
@@ -283,6 +291,6 @@ impl Config {
             tcp_io,
             connect,
             timeout,
-        }))
+        })))
     }
 }

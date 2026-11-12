@@ -87,22 +87,44 @@ fn put_u16(p: &mut [u8], at: usize, value: u16) {
     p[at..at + 2].copy_from_slice(&value.to_be_bytes());
 }
 
+struct Names {
+    remaining_pointers: usize,
+    ttl_bytes: Option<Vec<u8>>,
+}
+
+impl Names {
+    fn touches_ttl(&self, start: usize, len: usize) -> bool {
+        self.ttl_bytes.as_ref().is_some_and(|map| {
+            (start..start + len).any(|at| map[at / 8] & (1 << (at % 8)) != 0)
+        })
+    }
+}
+
 // Validate the expanded length even when the caller only needs the wire end.
 fn read_name(
     p: &[u8],
     offset: &mut usize,
     compression: bool,
-    remaining_pointers: &mut usize,
+    names: &mut Names,
     mut output: Option<&mut Name>,
 ) -> Option<()> {
     let mut at = *offset;
     let mut end = None;
     let mut used = 0;
     let mut hops = 0;
+    let mut limit = p.len();
     loop {
+        if at >= limit {
+            return None;
+        }
         let len = *p.get(at)? as usize;
         if len & 0xc0 == 0xc0 {
-            if !compression || hops == MAX_POINTER_HOPS || *remaining_pointers == 0 {
+            if !compression
+                || hops == MAX_POINTER_HOPS
+                || names.remaining_pointers == 0
+                || at + 1 >= limit
+                || (end.is_some() && names.touches_ttl(at, 2))
+            {
                 return None;
             }
             let target = ((len & 0x3f) << 8) | *p.get(at + 1)? as usize;
@@ -110,13 +132,18 @@ fn read_name(
                 return None;
             }
             hops += 1;
-            *remaining_pointers -= 1;
+            names.remaining_pointers -= 1;
             end.get_or_insert(at + 2);
+            limit = at;
             at = target;
             continue;
         }
         let next = at + 1 + len;
-        if len > 63 || used + 1 + len > 255 {
+        if len > 63
+            || next > limit
+            || used + 1 + len > 255
+            || (end.is_some() && names.touches_ttl(at, 1 + len))
+        {
             return None;
         }
         let label = p.get(at + 1..next)?;
@@ -140,18 +167,40 @@ fn read_name(
 
 fn rr_names(
     p: &[u8],
-    start: usize,
+    mut start: usize,
     end: usize,
     kind: u16,
-    remaining_pointers: &mut usize,
+    state: &mut Names,
 ) -> Option<()> {
-    let (prefix, tail, names, compressed) = match kind {
-        2 | 5 | 12 => (0, 0, 1, true), // NS, CNAME, PTR
-        6 => (0, 20, 2, true),         // SOA
-        15 => (2, 0, 1, true),         // MX
-        33 => (6, 0, 1, true),         // SRV compatibility
-        39 => (0, 0, 1, false),        // DNAME
-        _ => return Some(()),          // Opaque RDATA
+    let (prefix, tail, names, compressed, opaque_suffix) = match kind {
+        2 | 3 | 4 | 5 | 7 | 8 | 9 | 12 => (0, 0, 1, true, false),
+        6 => (0, 20, 2, true, false),
+        14 | 17 => (0, 0, 2, true, false),
+        15 | 18 | 21 => (2, 0, 1, true, false),
+        24 => (18, 0, 1, true, true),
+        26 => (2, 0, 2, true, false),
+        30 => (0, 0, 1, true, true),
+        33 => (6, 0, 1, true, false),
+        35 => {
+            if end - start < 4 {
+                return None;
+            }
+            start += 4;
+            for _ in 0..3 {
+                if start == end {
+                    return None;
+                }
+                let len = usize::from(p[start]);
+                start += 1;
+                if len > end - start {
+                    return None;
+                }
+                start += len;
+            }
+            (0, 0, 1, true, false)
+        }
+        39 => (0, 0, 1, false, false),
+        _ => return Some(()),
     };
     if end - start < prefix + tail {
         return None;
@@ -159,9 +208,9 @@ fn rr_names(
     let mut pos = start + prefix;
     let limit = end - tail;
     for _ in 0..names {
-        read_name(&p[..limit], &mut pos, compressed, remaining_pointers, None)?;
+        read_name(&p[..limit], &mut pos, compressed, state, None)?;
     }
-    (pos == limit).then_some(())
+    (opaque_suffix || pos == limit).then_some(())
 }
 
 fn options_valid(mut options: &[u8]) -> bool {
@@ -202,13 +251,16 @@ fn parse_into(p: &[u8], request: Option<&Info>, cap: u16, info: &mut Info) -> St
         return Status::FormErr;
     }
     let mut pos = HEADER;
-    let mut pointer_budget = p.len();
+    let mut names = Names {
+        remaining_pointers: p.len(),
+        ttl_bytes: response.then(|| vec![0; p.len().div_ceil(8)]),
+    };
     if questions != 0 {
         if read_name(
             p,
             &mut pos,
             response,
-            &mut pointer_budget,
+            &mut names,
             Some(&mut info.name),
         )
         .is_none()
@@ -238,7 +290,7 @@ fn parse_into(p: &[u8], request: Option<&Info>, cap: u16, info: &mut Info) -> St
     for (section, count) in counts.into_iter().enumerate() {
         for i in 0..count {
             let owner = pos;
-            if read_name(p, &mut pos, true, &mut pointer_budget, None).is_none()
+            if read_name(p, &mut pos, true, &mut names, None).is_none()
                 || pos + 10 > p.len()
             {
                 return Status::FormErr;
@@ -253,6 +305,13 @@ fn parse_into(p: &[u8], request: Option<&Info>, cap: u16, info: &mut Info) -> St
             let ext = p[pos + 4];
             let version = p[pos + 5];
             let do_bit = p[pos + 6] & 0x80 != 0;
+            if kind != 41 {
+                if let Some(map) = &mut names.ttl_bytes {
+                    for at in pos + 4..pos + 8 {
+                        map[at / 8] |= 1 << (at % 8);
+                    }
+                }
+            }
             pos += 10;
             let end = pos + len;
             if kind == 41 {
@@ -272,7 +331,7 @@ fn parse_into(p: &[u8], request: Option<&Info>, cap: u16, info: &mut Info) -> St
                 if p[owner] != 0 || !p.get(pos..end).is_some_and(options_valid) {
                     return Status::FormErr;
                 }
-            } else if end > p.len() || rr_names(p, pos, end, kind, &mut pointer_budget).is_none() {
+            } else if end > p.len() || rr_names(p, pos, end, kind, &mut names).is_none() {
                 return Status::FormErr;
             }
             pos = end;
@@ -386,10 +445,13 @@ pub fn cache_ttls(p: &[u8], info: &Info) -> Option<(Vec<usize>, u32)> {
     let mut offsets = Vec::with_capacity(answers);
     let mut min_ttl = u32::MAX;
     let mut pos = info.question_end;
-    let mut pointer_budget = p.len();
+    let mut names = Names {
+        remaining_pointers: p.len(),
+        ttl_bytes: None,
+    };
     let mut has_address = false;
     for _ in 0..answers {
-        read_name(p, &mut pos, true, &mut pointer_budget, None)?;
+        read_name(p, &mut pos, true, &mut names, None)?;
         if pos + 10 > p.len() {
             return None;
         }
