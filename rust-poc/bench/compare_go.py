@@ -19,6 +19,7 @@ import selectors
 import socket
 import statistics
 import subprocess
+import sys
 import time
 from urllib.parse import parse_qs
 
@@ -194,7 +195,7 @@ def scenario(args, name, binary, protocol, transport, answers, run, cert, key):
         await_ready(upstream_port, None, 'DoH fixture')
         if server.failure:
             raise RuntimeError(server.failure)
-        url = f'https://127.0.0.1:{upstream_port}/dns-query'
+        url = f'https://localhost:{upstream_port}/dns-query'
         env = os.environ.copy()
         # All benchmark traffic stays on loopback. Ignore ambient proxy settings.
         for variable in list(env):
@@ -210,7 +211,7 @@ def scenario(args, name, binary, protocol, transport, answers, run, cert, key):
         else:
             command = [str(binary), '-l', '127.0.0.1', '-p', str(proxy_port),
                        '-s', url, '--ca-file', str(cert),
-                       '--cache-entries', '0',
+                       '--bootstrap-address', '127.0.0.1', '--cache-entries', '0',
                        '--max-host-connections', '8', '--tcp-max-per-source', '128']
             if protocol == 'h3':
                 command.append('--upstream-http=prefer-h3')
@@ -303,18 +304,29 @@ def main():
     parser.add_argument('--warmup', type=float, default=0.5)
     parser.add_argument('--delay-ms', type=float, default=1)
     parser.add_argument('--clients', default='1,8,32')
+    parser.add_argument('--worker', help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.clients = [int(value) for value in args.clients.split(',')]
     if (not args.clients or min(args.clients) < 1 or max(args.clients) > 128 or
             args.duration <= 0 or args.warmup < 0 or args.delay_ms < 0):
         parser.error('invalid duration, warmup, delay or client count')
     args.output = args.output.resolve()
-    if args.output.exists() and any(args.output.iterdir()):
-        parser.error('output directory must be empty')
-    args.output.mkdir(parents=True, exist_ok=True)
     args.cpu = min(os.sched_getaffinity(0))
     binaries = dict(c=args.c_binary.resolve(), rust=args.rust_binary.resolve(),
                     go=args.go_binary.resolve())
+    if args.worker:
+        fields = args.worker.split(',')
+        if (len(fields) != 5 or fields[0] not in binaries or
+                fields[1] not in ('h2', 'h3') or fields[2] not in ('udp', 'tcp') or
+                fields[3] not in ('1', '64') or fields[4] not in ('1', '2', '3')):
+            parser.error('invalid internal worker selector')
+        name, protocol, transport, answers, run = fields
+        scenario(args, name, binaries[name], protocol, transport, int(answers), int(run),
+                 args.output/'localhost.pem', args.output/'localhost.key')
+        return
+    if args.output.exists() and any(args.output.iterdir()):
+        parser.error('output directory must be empty')
+    args.output.mkdir(parents=True, exist_ok=True)
     versions = {name: subprocess.check_output([str(binary), '--version'],
                 text=True, stderr=subprocess.STDOUT).strip() for name, binary in binaries.items()}
     if GO_VERSION not in versions['go']:
@@ -338,7 +350,18 @@ def main():
         for run in range(1, 4):
             for protocol, transport, answers in itertools.product(('h2', 'h3'), ('udp', 'tcp'), (1, 64)):
                 for name in order:
-                    scenario(args, name, binaries[name], protocol, transport, answers, run, cert, key)
+                    # Isolate the QUIC fixture's native TLS/QPACK objects and
+                    # event-loop lifetime from preceding application scenarios.
+                    subprocess.run([
+                        sys.executable, str(Path(__file__).resolve()),
+                        '--c-binary', str(binaries['c']),
+                        '--rust-binary', str(binaries['rust']),
+                        '--go-binary', str(binaries['go']),
+                        '--output', str(args.output), '--duration', str(args.duration),
+                        '--warmup', str(args.warmup), '--delay-ms', str(args.delay_ms),
+                        '--clients', ','.join(map(str, args.clients)),
+                        '--worker', f'{name},{protocol},{transport},{answers},{run}',
+                    ], check=True)
             order = order[1:]+order[:1]
         summarize(args.output)
     finally:
