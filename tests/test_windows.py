@@ -106,7 +106,8 @@ class WindowsTests(unittest.TestCase):
                 client.sendall(struct.pack('!H', len(QUERY)) + QUERY)
                 self.assertEqual(fixtures.Tests.tcp_frame(client), answer)
             resolved = subprocess.run([
-                'powershell.exe', '-NoProfile', '-Command',
+                str(Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe'),
+                '-NoProfile', '-Command',
                 'Resolve-DnsName www.google.com -Type A -Server 127.0.0.1 -DnsOnly '
                 '| Select-Object -ExpandProperty IPAddress',
             ], capture_output=True, text=True, timeout=15)
