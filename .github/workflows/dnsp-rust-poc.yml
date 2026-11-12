@@ -53,12 +53,12 @@ jobs:
     name: Rust HTTP2, HTTP3 and C comparison
     runs-on: ubuntu-24.04
     container: docker.io/library/rust:1.90.0-trixie
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Install system libcurl and protocol fixtures
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends libcurl4-openssl-dev pkg-config python3-venv openssl ca-certificates
+          apt-get install -y --no-install-recommends libcurl4-openssl-dev pkg-config python3-venv openssl ca-certificates curl util-linux
           rustup component add rustfmt clippy
       - uses: actions/checkout@v5
         with:
@@ -87,6 +87,22 @@ jobs:
         env:
           PYTHON: .venv/bin/python
         run: scripts/bench-compare.sh /tmp/dnsp-c-reference/dnsp-modern dist/benchmark
+      - name: Fetch the pinned Go comparison binary
+        run: |
+          curl -fL --retry 3 --max-time 120 -o /tmp/dnsproxy-go.tar.gz \
+            https://github.com/AdguardTeam/dnsproxy/releases/download/v0.86.0/dnsproxy-linux-amd64-v0.86.0.tar.gz
+          printf '%s\n' '17ac43f76ebfcedf547c663f6f31aa70e68b8eb6fc41d2fc37d3bfe21a2ced66  /tmp/dnsproxy-go.tar.gz' | sha256sum -c -
+          mkdir /tmp/dnsp-go-reference
+          tar -xzf /tmp/dnsproxy-go.tar.gz -C /tmp/dnsp-go-reference
+      - name: Compare Linux C, Rust and Go applications
+        working-directory: rust-poc
+        run: |
+          .venv/bin/python bench/compare_go.py \
+            --c-binary /tmp/dnsp-c-reference/dnsp-modern \
+            --rust-binary target/release/dnsp-modern-rust \
+            --go-binary /tmp/dnsp-go-reference/linux-amd64/dnsproxy \
+            --output dist/benchmark/go-comparison
+          cat dist/benchmark/go-comparison/summary.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v6
         if: always()
         with:

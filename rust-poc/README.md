@@ -117,6 +117,20 @@ The delivered measurements come from local Linux loopback. The benchmark uses UD
 
 Pushes to `rust-poc` run formatting, Clippy, Rust unit tests and the current C integration suite on Ubuntu 22.04 and 24.04 amd64 and Ubuntu 24.04 arm64. A Debian 13 job runs the full HTTP/2 and HTTP/3 fixtures, compares wire behavior against `SOURCE_REVISION`, and uploads three matched C/Rust benchmark runs as an Actions artifact. The jobs use Rust 1.90.0 and each platform's system libcurl.
 
+The same artifact includes a separate Linux application baseline against [AdGuard dnsproxy v0.86.0](https://github.com/AdguardTeam/dnsproxy/releases/tag/v0.86.0), a Go DNS proxy. CI downloads its amd64 release binary and verifies its pinned SHA-256. `bench/compare_go.py` compares C, Rust and Go with HTTP/2 and HTTP/3 upstreams, UDP and persistent TCP clients, 1 or 64 A records per reply, and 1, 8 or 32 concurrent clients. Every question name is unique, caches are disabled, and each proxy is restricted to one CPU. TLS verification stays enabled. Each measurement has 0.5 s warmup, 2 s measurement and a 1 ms synthetic upstream delay. Three runs rotate application order.
+
+`go-comparison/environment.json` records versions and CPU affinity; `measurements.jsonl` and CSV record QPS, p50/p95/p99, CPU time, RSS, peak RSS and observed upstream connections/protocols. `summary.md` reports medians and also appears in the Actions job summary. Every measured answer is checked for ID, question, record count, errors and truncation; observed upstream completions must match client successes. These are application measurements on a shared GitHub runner: Go's DNS/HTTP/QUIC engines and pooling policies differ from libcurl, so the results cannot isolate a programming-language effect. Repeat longer runs on dedicated hardware before making capacity estimates.
+
+To repeat this baseline on Linux, obtain the pinned Go binary from that release, then run:
+
+```sh
+.venv/bin/python bench/compare_go.py \
+  --c-binary ../../dnsp-modern-c/dnsp-modern \
+  --rust-binary target/release/dnsp-modern-rust \
+  --go-binary /path/to/dnsproxy \
+  --duration 10 --output ./local-go-comparison
+```
+
 The executable's first `--version` line uses the repository's `VERSION`; `implementation=rust-poc` identifies this implementation. The C package release workflow continues to build the C executable.
 
 ## Original feasibility measurements
