@@ -21,6 +21,7 @@ from select import select
 
 BASE = Path(__file__).resolve().parent.parent
 BINARY = Path(os.environ.get('DNSP_TEST_BINARY', BASE/'dnsp-modern'))
+OPENSSL = os.environ.get('DNSP_TEST_OPENSSL') or shutil.which('openssl')
 QUERY = bytes.fromhex('1234010000010000000000000377777706676f6f676c6503636f6d0000010001')
 ANSWER = bytes.fromhex('c00c000100010000003c0004c0000201')
 
@@ -481,7 +482,7 @@ class Tests(unittest.TestCase):
             else:
                 self.fail('delayed TCP query never entered the upstream queue')
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
-                            struct.pack('ii', 1, 0))  # abortive close / RST
+                            struct.pack('HH' if os.name == 'nt' else 'ii', 1, 0))  # abortive close / RST
         finally:
             sock.close()
         deadline = time.monotonic() + 2
@@ -1025,6 +1026,7 @@ class Tests(unittest.TestCase):
                 self.assertEqual(response.status, 200)
                 self.assertIn(b'dnsp_queries_inflight', response.read())
 
+    @unittest.skipUnless(hasattr(signal, 'SIGUSR1'), 'SIGUSR1 is a POSIX process interface; Windows uses metrics')
     def test_sigusr1_report(self):
         before = self.metrics()
         for exchange, packet in ((self.udp, query()), (self.tcp, query(65024))):
@@ -1310,11 +1312,11 @@ class Tests(unittest.TestCase):
                 self.assertEqual(proc.returncode, 2, proc.stderr)
                 self.assertIn(b'--upstream-http requires auto or prefer-h3', proc.stderr)
 
-    @unittest.skipUnless(shutil.which('openssl'), 'openssl required to generate a local TLS certificate')
+    @unittest.skipUnless(OPENSSL, 'openssl required to generate a local TLS certificate')
     def test_bootstrap_address_connects_directly_and_verifies_hostname(self):
         with tempfile.TemporaryDirectory() as tmp:
             cert, key = str(Path(tmp)/'cert.pem'), str(Path(tmp)/'key.pem')
-            subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+            subprocess.run([OPENSSL, 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
                             '-days', '1', '-subj', '/CN=dnsp-bootstrap.invalid',
                             '-addext', 'subjectAltName=DNS:dnsp-bootstrap.invalid',
                             '-out', cert, '-keyout', key], check=True, timeout=10,
@@ -1671,11 +1673,11 @@ class FailoverTests(unittest.TestCase):
                     sock.sendall(Tests.frame(QUERY))
                     self.assertTrue(Tests.tcp_frame(sock).endswith(primary.address))
 
-    @unittest.skipUnless(shutil.which('openssl'), 'openssl required to generate a local TLS certificate')
+    @unittest.skipUnless(OPENSSL, 'openssl required to generate a local TLS certificate')
     def test_bootstrapped_backup_uses_hostname_and_primary_cert_failure_stops(self):
         with tempfile.TemporaryDirectory() as tmp:
             cert, key = str(Path(tmp)/'cert.pem'), str(Path(tmp)/'key.pem')
-            subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+            subprocess.run([OPENSSL, 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
                             '-days', '1', '-subj', '/CN=resolver.invalid',
                             '-addext', 'subjectAltName=DNS:resolver.invalid',
                             '-out', cert, '-keyout', key], check=True, timeout=10,

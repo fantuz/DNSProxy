@@ -53,6 +53,7 @@ jobs:
       codeql: ${{ steps.pr.outputs.codeql }}
       fuzz: ${{ steps.pr.outputs.fuzz }}
       protocols: ${{ steps.pr.outputs.protocols }}
+      windows: ${{ steps.pr.outputs.windows }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -83,12 +84,14 @@ jobs:
             esac
           }
 
-          common=(dnsp-modern.c modern.mk VERSION .github/workflows/dnsp-modern.yml)
+          common=(dnsp-modern.c dnsp-platform.h modern.mk VERSION .github/workflows/dnsp-modern.yml)
           check_paths codeql "${common[@]}" .github/workflows/codeql.yml
           check_paths fuzz "${common[@]}" tests/fuzz_dns.c tests/make_fuzz_corpus.py \
             tests/test_modern.py .github/workflows/dnsp-modern-fuzz.yml
           check_paths protocols "${common[@]}" bench/ tests/test_benchmark.py tests/test_http3.py \
             tests/test_modern.py .github/workflows/dnsp-modern-benchmark.yml
+          check_paths windows "${common[@]}" bench/ tests/ packaging/windows/ docs/WINDOWS.md \
+            scripts/build-windows.sh scripts/bundle-windows.py .github/workflows/dnsp-modern-windows.yml
 
   deb:
     needs: plan
@@ -273,10 +276,19 @@ jobs:
       github.event_name == 'pull_request' && needs.plan.outputs.protocols == 'true'
     uses: ./.github/workflows/dnsp-modern-benchmark.yml
 
+  windows:
+    needs: plan
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      (github.event_name != 'pull_request' || needs.plan.outputs.windows == 'true')
+    uses: ./.github/workflows/dnsp-modern-windows.yml
+    with:
+      ref: ${{ needs.plan.outputs.commit }}
+
   pr-checks:
     name: DNSProxy PR checks
     if: ${{ always() && github.event_name == 'pull_request' }}
-    needs: [plan, deb, debian, rpm, sanitizers, codeql, fuzz, protocols]
+    needs: [plan, deb, debian, rpm, sanitizers, codeql, fuzz, protocols, windows]
     runs-on: ubuntu-24.04
     permissions: {}
     steps:
@@ -291,7 +303,7 @@ jobs:
 
           jobs = json.loads(os.environ["JOB_RESULTS"])
           planned = jobs["plan"]["outputs"]
-          optional = {"codeql", "fuzz", "protocols"}
+          optional = {"codeql", "fuzz", "protocols", "windows"}
           failed = []
           for name, job in sorted(jobs.items()):
               expected = "skipped" if name in optional and planned.get(name) == "false" else "success"

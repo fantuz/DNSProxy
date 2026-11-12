@@ -13,6 +13,7 @@ import threading
 import unittest
 
 BASE = Path(__file__).resolve().parent.parent
+BINARY = Path(os.environ.get('DNSP_TEST_BINARY', BASE/'dnsp-modern'))
 sys.path.insert(0, str(BASE/'bench'))
 from bench_modern import await_ready, free_port, make_certificate, metric_snapshot, one_load  # noqa: E402
 from mock_doh import MockServer  # noqa: E402
@@ -49,7 +50,7 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
     @contextmanager
     def proxy(self, upstream_port, cert, mode='prefer-h3', hostname='localhost', env=None, backup_port=None):
         dns_port, metrics_port = free_port(), free_port()
-        command = [str(BASE/'dnsp-modern'), '-p', str(dns_port), '-m', str(metrics_port),
+        command = [str(BINARY), '-p', str(dns_port), '-m', str(metrics_port),
                    '-s', f'https://{hostname}:{upstream_port}/dns-query', '--ca-file', str(cert)]
         if mode is not None:
             command.append(f'--upstream-http={mode}')
@@ -178,7 +179,7 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
                             self.assertEqual(stats['dnsp_queries_inflight'], 0)
 
     def test_rejects_plaintext_upstream(self):
-        proc = subprocess.run([str(BASE/'dnsp-modern'), '--upstream-http', 'prefer-h3',
+        proc = subprocess.run([str(BINARY), '--upstream-http', 'prefer-h3',
                                '-s', 'http://127.0.0.1:9443/dns-query'],
                               capture_output=True, timeout=3)
         self.assertEqual(proc.returncode, 2, proc.stderr)

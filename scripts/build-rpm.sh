@@ -11,7 +11,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 mkdir "$work/SOURCES"
 git archive --format=tar.gz --prefix="dnsp-modern-$version/" HEAD -- \
-    dnsp-modern.c modern.mk VERSION LICENSE tests/test_modern.py tests/test_curl_callbacks.c \
+    dnsp-modern.c dnsp-platform.h modern.mk VERSION LICENSE tests/test_modern.py tests/test_curl_callbacks.c \
     packaging/README-packaging.md packaging/systemd/dnsp-modern.service \
     > "$work/SOURCES/dnsp-modern-$version.tar.gz"
 

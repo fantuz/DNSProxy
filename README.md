@@ -17,6 +17,11 @@ DNSProxy bridges conventional **DNS clients (UDP/TCP)** to upstream
 uses RFC 8484 `application/dns-message` POST requests, libcurl's event-driven
 multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
 
+A [native Windows PoC](docs/WINDOWS.md) builds the same C resolver source,
+with UDP/TCP port 53 launchers, optional Administrator elevation, and Windows
+DNS setup and rollback instructions. Download its portable ZIP from the
+Windows CI artifact; the guide describes validation and remaining work.
+
 This project grew out of DNS transport and privacy experiments dating to roughly
 2009–2010 and work surrounding [RFC 8484](https://www.rfc-editor.org/rfc/rfc8484).
 Historical project notes, experiments, and original CLI examples are preserved

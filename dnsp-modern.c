@@ -1,12 +1,8 @@
 #define _DEFAULT_SOURCE
 #define _POSIX_C_SOURCE 200809L
-#include <arpa/inet.h>
-#include <curl/curl.h>
+#include "dnsp-platform.h"
 #include <errno.h>
-#include <fcntl.h>
 #include <inttypes.h>
-#include <netinet/in.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -14,12 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <sys/uio.h>
 #include <time.h>
-#include <unistd.h>
 
 #ifndef DNSP_VERSION
 #define DNSP_VERSION "dev"
@@ -38,7 +29,7 @@ enum { DNS_HEADER=12, UDP_RX_MAX=65507, UDP_REPLY_MAX=4096, UDP_REPLY_DEFAULT=12
        CACHE_MAX_REPLY=4096, CACHE_MAX_ANSWERS=128, CACHE_MAX_TTL=3600 };
 enum { MAX_IDLE_EASIES=16 };
 static unsigned udp_reply_max=UDP_REPLY_DEFAULT;
-static volatile sig_atomic_t stopping;
+static atomic_bool stopping;
 /* A process signal can be delivered to a libcurl resolver thread. */
 _Static_assert(ATOMIC_BOOL_LOCK_FREE==2,"SIGUSR1 requires a lock-free atomic flag");
 static atomic_bool report_requested;
@@ -47,15 +38,9 @@ static void request_report(int sig) {
     (void)sig;
     atomic_store_explicit(&report_requested,true,memory_order_relaxed);
 }
-static int nonblock(int fd) { int f=fcntl(fd,F_GETFL,0); return f<0?-1:fcntl(fd,F_SETFL,f|O_NONBLOCK); }
 static uint16_t be16(const unsigned char *p) { return (uint16_t)(((unsigned)p[0]<<8)|p[1]); }
 static uint32_t be32(const unsigned char *p) { return ((uint32_t)be16(p)<<16)|be16(p+2); }
-static uint64_t read_clock_ms(clockid_t clock_id) {
-    struct timespec t;
-    if(clock_gettime(clock_id,&t)!=0) return 0;
-    return (uint64_t)t.tv_sec*1000u+(uint64_t)t.tv_nsec/1000000u;
-}
-static uint64_t clock_ms(void) { return read_clock_ms(CLOCK_MONOTONIC); }
+static uint64_t clock_ms(void) { return dnsp_clock_ms(false); }
 
 typedef struct {
     size_t remaining_pointers;
@@ -230,11 +215,6 @@ static DnsResult dns_parse(const unsigned char *p,size_t n,const DnsInfo *reques
 
 typedef struct Client Client;
 typedef struct Query Query;
-typedef struct {in_addr_t destination,source;} UdpLocal;
-typedef union {
-    struct cmsghdr align;
-    unsigned char bytes[CMSG_SPACE(sizeof(struct in_pktinfo))];
-} UdpControl;
 typedef struct {struct sockaddr_in peer;UdpLocal local;uint16_t id;uint64_t deadline_ms;} UdpWaiter;
 typedef struct {
     size_t count;
@@ -260,8 +240,8 @@ typedef struct {
     uint64_t requests,replies,failures;
 } Upstream;
 struct Client {
-    int fd;size_t have,need,sent,out_len;
-    in_addr_t source;
+    dnsp_socket_t fd;size_t have,need,sent,out_len;
+    uint32_t source;
     unsigned char length[2];
     unsigned char *in,*out;
     bool busy,read_eof,out_satisfies_query;uint64_t generation,queries_started;
@@ -274,9 +254,9 @@ struct Query {
     Upstream *upstream;
     uint64_t failover_deadline_ms;
     DnsInfo info;
-    struct sockaddr_storage peer;socklen_t peer_len;
+    struct sockaddr_storage peer;dnsp_socklen_t peer_len;
     UdpLocal udp_local;
-    Client *client;uint64_t generation;int udp_fd;
+    Client *client;uint64_t generation;dnsp_socket_t udp_fd;
     bool shareable_udp,added_padding;
     size_t udp_waiter_count;
     UdpWaiter udp_waiters[MAX_UDP_WAITERS];
@@ -321,7 +301,7 @@ static CacheEntry *answer_cache;
 static size_t cache_entries;
 
 typedef struct {
-    int fd;uint64_t generation,last_ms;
+    dnsp_socket_t fd;uint64_t generation,last_ms;
     char request[512];size_t have;
     char reply[4608];size_t reply_len,sent;
 } MetricClient;
@@ -471,31 +451,16 @@ static void close_client(Client *c) {
         }
         q=next;
     }
-    if(c->fd>=0) {close(c->fd);metrics.tcp_closed++;}
+    if(c->fd!=DNSP_BAD_SOCKET) {dnsp_close(c->fd);metrics.tcp_closed++;}
     free(c->in);free(c->out);c->in=c->out=NULL;
-    c->fd=-1;c->have=c->need=c->sent=c->out_len=0;
+    c->fd=DNSP_BAD_SOCKET;c->have=c->need=c->sent=c->out_len=0;
     c->busy=c->read_eof=c->out_satisfies_query=false;c->generation++;c->queries_started=0;
     c->frame_deadline=c->write_deadline=0;
-}
-static ssize_t send_udp_reply(int fd,struct msghdr msg,in_addr_t source) {
-    UdpControl control={0};
-    if(source) {
-        msg.msg_control=control.bytes;
-        msg.msg_controllen=sizeof(control.bytes);
-        struct cmsghdr *cmsg=CMSG_FIRSTHDR(&msg);
-        cmsg->cmsg_level=IPPROTO_IP;
-        cmsg->cmsg_type=IP_PKTINFO;
-        cmsg->cmsg_len=CMSG_LEN(sizeof(struct in_pktinfo));
-        /* Leave ifindex zero so routing keeps the selected local address. */
-        struct in_pktinfo info={.ipi_spec_dst.s_addr=source};
-        memcpy(CMSG_DATA(cmsg),&info,sizeof(info));
-    }
-    return sendmsg(fd,&msg,0);
 }
 static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_query) {
     if(q->client) {
         Client *c=q->client;
-        if(c->fd>=0 && c->generation==q->generation) {
+        if(c->fd!=DNSP_BAD_SOCKET && c->generation==q->generation) {
             c->out=malloc(n+2);
             if(!c->out) {
                 log_failure(LOG_TCP_BUFFER,true,CURLE_OUT_OF_MEMORY,0,NULL,0);
@@ -507,23 +472,15 @@ static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_qu
             c->write_deadline=clock_ms()+tcp_io_ms;
         }
     } else {
-        ssize_t written;
-        if(q->udp_local.source) {
-            struct iovec part={.iov_base=(void*)p,.iov_len=n};
-            struct msghdr message={.msg_name=&q->peer,.msg_namelen=q->peer_len,
-                                   .msg_iov=&part,.msg_iovlen=1};
-            written=send_udp_reply(q->udp_fd,message,q->udp_local.source);
-        } else written=sendto(q->udp_fd,p,n,0,(struct sockaddr*)&q->peer,q->peer_len);
-        if(satisfies_query && written==(ssize_t)n) metrics.queries_satisfied++;
+        dnsp_ssize_t written=dnsp_send_udp(q->udp_fd,(const struct sockaddr*)&q->peer,q->peer_len,
+                                          NULL,0,p,n,q->udp_local.source);
+        if(satisfies_query && written==(dnsp_ssize_t)n) metrics.queries_satisfied++;
         for(size_t i=0;i<q->udp_waiter_count;i++) {
             UdpWaiter *waiter=&q->udp_waiters[i];
             unsigned char id[]={ (unsigned char)(waiter->id>>8),(unsigned char)waiter->id };
-            struct iovec parts[]={ {.iov_base=id,.iov_len=sizeof(id)},
-                                   {.iov_base=(void*)(p+2),.iov_len=n-2} };
-            struct msghdr message={.msg_name=&waiter->peer,.msg_namelen=sizeof(waiter->peer),
-                                   .msg_iov=parts,.msg_iovlen=2};
-            written=send_udp_reply(q->udp_fd,message,waiter->local.source);
-            if(satisfies_query && written==(ssize_t)n) metrics.queries_satisfied++;
+            written=dnsp_send_udp(q->udp_fd,(const struct sockaddr*)&waiter->peer,sizeof(waiter->peer),
+                                  id,sizeof(id),p+2,n-2,waiter->local.source);
+            if(satisfies_query && written==(dnsp_ssize_t)n) metrics.queries_satisfied++;
         }
     }
 }
@@ -719,7 +676,7 @@ static void cache_store(Query *q,const DnsInfo *info,uint64_t age_ms) {
     uint32_t limit=ttls.min_ttl<CACHE_MAX_TTL?ttls.min_ttl:CACHE_MAX_TTL;
     if(headers->max_age<limit) limit=headers->max_age;
     uint64_t lifetime=(uint64_t)limit*1000u;
-    uint64_t now=read_clock_ms(CLOCK_BOOTTIME);
+    uint64_t now=dnsp_clock_ms(true);
     if(now && age_ms<lifetime) {
         CacheEntry *entry=q->cache_slot;
         entry->key_len=q->req_len-2;
@@ -737,7 +694,7 @@ static bool cache_reply(Query *q,const unsigned char *request) {
     if(!entry || entry->key_len!=q->req_len-2 ||
        memcmp(entry->key,request+2,entry->key_len)!=0 ||
        (!q->client && entry->reply_len>q->info.udp_limit)) return false;
-    uint64_t now=read_clock_ms(CLOCK_BOOTTIME);
+    uint64_t now=dnsp_clock_ms(true);
     if(now<entry->received_ms || now>=entry->expires_ms) return false;
     unsigned char reply[CACHE_MAX_REPLY];
     memcpy(reply,entry->reply,entry->reply_len);
@@ -817,8 +774,8 @@ static bool join_udp_query(const Query *pending,const unsigned char *data) {
     available->udp_waiters[available->udp_waiter_count++]=incoming;
     return true;
 }
-static bool submit_until(const unsigned char *data,size_t len,Client *client,int udp_fd,
-                         const struct sockaddr_storage *peer,socklen_t peer_len,UdpLocal local,
+static bool submit_until(const unsigned char *data,size_t len,Client *client,dnsp_socket_t udp_fd,
+                         const struct sockaddr_storage *peer,dnsp_socklen_t peer_len,UdpLocal local,
                          uint64_t deadline_ms,Upstream *endpoint);
 static void retry_udp_waiters(const Query *q,size_t count) {
     /* Coalescing accepts only plain, single-question address queries. */
@@ -864,6 +821,13 @@ static bool start_upstream(Query *q,long timeout_ms) {
     OPT(CURLOPT_SSL_VERIFYPEER,1L);
     OPT(CURLOPT_SSL_VERIFYHOST,2L);
     if(ca_file) OPT(CURLOPT_CAINFO,ca_file);
+#ifdef _WIN32
+    else {
+        const char *bundled_ca=dnsp_bundled_ca();
+        if(bundled_ca) OPT(CURLOPT_CAINFO,bundled_ca);
+        OPT(CURLOPT_SSL_OPTIONS,(long)CURLSSLOPT_NATIVE_CA);
+    }
+#endif
     OPT(CURLOPT_FOLLOWLOCATION,0L);
     OPT(CURLOPT_NOSIGNAL,1L);
 #undef OPT
@@ -1016,7 +980,7 @@ static void complete(Query *q,CURLcode code) {
         send_error(q,q->request,2);
     }
     Client *client=q->client;
-    bool attached=client && client->fd>=0 && client->generation==q->generation;
+    bool attached=client && client->fd!=DNSP_BAD_SOCKET && client->generation==q->generation;
     if(attached) client->busy=false;
     detach_query(q);
     if(attached && !client->out_len) close_client(client);
@@ -1029,8 +993,8 @@ static bool failover_eligible(const unsigned char *data,const DnsInfo *info) {
     unsigned additional=be16(data+10);
     return !additional || (additional==1 && info->final_opt_rdlen && !be16(data+info->final_opt_rdlen));
 }
-static bool submit_until(const unsigned char *data,size_t len,Client *client,int udp_fd,
-                         const struct sockaddr_storage *peer,socklen_t peer_len,UdpLocal local,
+static bool submit_until(const unsigned char *data,size_t len,Client *client,dnsp_socket_t udp_fd,
+                         const struct sockaddr_storage *peer,dnsp_socklen_t peer_len,UdpLocal local,
                          uint64_t deadline_ms,Upstream *endpoint) {
     DnsInfo info;
     DnsResult result=dns_parse(data,len,NULL,&info);
@@ -1097,28 +1061,27 @@ reject:
     send_error(&pending,data,2);
     return true; /* A local reply is queued for a valid TCP query. */
 }
-static bool submit(const unsigned char *data,size_t len,Client *client,int udp_fd,
-                   const struct sockaddr_storage *peer,socklen_t peer_len,UdpLocal local) {
+static bool submit(const unsigned char *data,size_t len,Client *client,dnsp_socket_t udp_fd,
+                   const struct sockaddr_storage *peer,dnsp_socklen_t peer_len,UdpLocal local) {
     return submit_until(data,len,client,udp_fd,peer,peer_len,local,0,&primary);
 }
-static int listener(const char *role,int type,const char *bindip,int port) {
+static dnsp_socket_t listener(const char *role,int type,const char *bindip,int port) {
     struct sockaddr_in a={.sin_family=AF_INET,.sin_port=htons((uint16_t)port)};
     if(inet_pton(AF_INET,bindip,&a.sin_addr)!=1) {
         fprintf(stderr,"level=error event=listener_address role=%s port=%d\n",role,port);
         return -1;
     }
-    int fd=socket(AF_INET,type,0),yes=1;
-    if(fd>=0) {
-        setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes));
-        bool pktinfo=type!=SOCK_DGRAM || a.sin_addr.s_addr!=htonl(INADDR_ANY) ||
-                     setsockopt(fd,IPPROTO_IP,IP_PKTINFO,&yes,sizeof(yes))==0;
-        if(pktinfo && nonblock(fd)==0 && bind(fd,(struct sockaddr*)&a,sizeof(a))==0 &&
+    dnsp_socket_t fd=socket(AF_INET,type,0);
+    if(fd!=DNSP_BAD_SOCKET) {
+        bool options=dnsp_listener_options(fd) &&
+                     (type!=SOCK_DGRAM || dnsp_udp_prepare(fd,a.sin_addr.s_addr==htonl(INADDR_ANY)));
+        if(options && nonblock(fd)==0 && bind(fd,(struct sockaddr*)&a,sizeof(a))==0 &&
            (type!=SOCK_STREAM || listen(fd,128)==0)) return fd;
     }
-    int error=errno;
-    if(fd>=0) close(fd);
+    int error=dnsp_socket_error();
+    if(fd!=DNSP_BAD_SOCKET) dnsp_close(fd);
     fprintf(stderr,"level=error event=listener_failed role=%s port=%d errno=%d message=%s\n",
-            role,port,error,strerror(error));
+            role,port,error,dnsp_socket_message(error));
     return -1;
 }
 /* At most one in-flight query and one fully buffered successor per TCP
@@ -1126,7 +1089,7 @@ static int listener(const char *role,int type,const char *bindip,int port) {
  * pipelined messages stay in the kernel receive buffer (backpressure).
  * Responses are emitted in request order. */
 static bool start_tcp_query(Client *c) {
-    if(c->fd<0 || c->busy || c->out_len || !c->need || c->have!=c->need) return true;
+    if(c->fd==DNSP_BAD_SOCKET || c->busy || c->out_len || !c->need || c->have!=c->need) return true;
     if(!submit(c->in,c->need,c,-1,NULL,0,(UdpLocal){0}) || (!c->busy && !c->out_len)) {
         close_client(c);
         return false;
@@ -1143,11 +1106,11 @@ static short tcp_events(const Client *c) {
     return ev;
 }
 static void tcp_io(Client *c,short events) {
-    if(c->fd<0) return;
+    if(c->fd==DNSP_BAD_SOCKET) return;
     if(c->out_len && (events&POLLOUT)) {
-        ssize_t n=send(c->fd,c->out+c->sent,c->out_len-c->sent,MSG_NOSIGNAL);
+        dnsp_ssize_t n=dnsp_send(c->fd,c->out+c->sent,c->out_len-c->sent);
         if(n>0) c->sent+=(size_t)n;
-        else if(n<0 && (errno==EAGAIN || errno==EINTR)) return;
+        else if(n<0 && dnsp_socket_retry()) return;
         else {close_client(c);return;}
         if(c->sent==c->out_len) {
             if(c->out_satisfies_query) metrics.queries_satisfied++;
@@ -1160,11 +1123,11 @@ static void tcp_io(Client *c,short events) {
             if(c->read_eof && !c->busy && !c->out_len) close_client(c);
         }
     }
-    if(c->fd<0 || c->read_eof ||
+    if(c->fd==DNSP_BAD_SOCKET || c->read_eof ||
        (c->need && c->have==c->need) || !(events&POLLIN)) return;
     unsigned char *frame=c->need?c->in:c->length;
     size_t target=c->need?c->need:sizeof(c->length);
-    ssize_t n=recv(c->fd,frame+c->have,target-c->have,0);
+    dnsp_ssize_t n=dnsp_recv(c->fd,frame+c->have,target-c->have);
     if(n==0) {
         c->read_eof=true;
         metrics.tcp_half_closes++;
@@ -1173,7 +1136,7 @@ static void tcp_io(Client *c,short events) {
         if(!c->busy && !c->out_len) close_client(c);
         return;
     }
-    if(n<0) {if(errno!=EAGAIN && errno!=EINTR) close_client(c);return;}
+    if(n<0) {if(!dnsp_socket_retry()) close_client(c);return;}
     if(!c->have && !c->need) c->frame_deadline=clock_ms()+tcp_io_ms;
     c->have+=(size_t)n;
     if(!c->need && c->have==sizeof(c->length)) {
@@ -1193,30 +1156,19 @@ static void tcp_io(Client *c,short events) {
         else (void)start_tcp_query(c);
     }
 }
-static void udp_io(int fd) {
+static void udp_io(dnsp_socket_t fd) {
     static unsigned char buf[UDP_RX_MAX]; /* maximum IPv4 UDP payload */
     size_t received=0;
     for(int i=0;i<UDP_BATCH_PACKETS && received<UDP_BATCH_BYTES;i++) {
         struct sockaddr_storage peer={0};
-        struct iovec iov={.iov_base=buf,.iov_len=sizeof(buf)};
-        UdpControl control;
-        struct msghdr msg={.msg_name=&peer,.msg_namelen=sizeof(peer),.msg_iov=&iov,.msg_iovlen=1,
-                           .msg_control=control.bytes,.msg_controllen=sizeof(control.bytes)};
-        ssize_t n=recvmsg(fd,&msg,0);
+        dnsp_socklen_t peer_len=sizeof(peer);
+        UdpLocal local={0};
+        bool truncated=false;
+        dnsp_ssize_t n=dnsp_recv_udp(fd,buf,sizeof(buf),&peer,&peer_len,&local,&truncated);
         if(n<0) break;
         received+=(size_t)n;
-        if(msg.msg_flags&(MSG_TRUNC|MSG_CTRUNC)) {metrics.invalid_queries++;continue;}
-        UdpLocal local={0};
-        for(struct cmsghdr *cmsg=CMSG_FIRSTHDR(&msg);cmsg;cmsg=CMSG_NXTHDR(&msg,cmsg)) {
-            if(cmsg->cmsg_level==IPPROTO_IP && cmsg->cmsg_type==IP_PKTINFO &&
-               cmsg->cmsg_len>=CMSG_LEN(sizeof(struct in_pktinfo))) {
-                struct in_pktinfo info;
-                memcpy(&info,CMSG_DATA(cmsg),sizeof(info));
-                local=(UdpLocal){.destination=info.ipi_addr.s_addr,.source=info.ipi_spec_dst.s_addr};
-                break;
-            }
-        }
-        (void)submit(buf,(size_t)n,NULL,fd,&peer,msg.msg_namelen,local);
+        if(truncated) {metrics.invalid_queries++;continue;}
+        (void)submit(buf,(size_t)n,NULL,fd,&peer,peer_len,local);
     }
 }
 static void drain_completions(void) {
@@ -1241,11 +1193,11 @@ static bool drive_curl(curl_socket_t fd,int events) {
     return true;
 }
 static void close_metric(MetricClient *c) {
-    if(c->fd>=0) close(c->fd);
-    c->fd=-1;c->have=c->reply_len=c->sent=0;c->generation++;
+    if(c->fd!=DNSP_BAD_SOCKET) dnsp_close(c->fd);
+    c->fd=DNSP_BAD_SOCKET;c->have=c->reply_len=c->sent=0;c->generation++;
 }
 static size_t tcp_open_count(void) {
-    size_t n=0;for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd>=0) n++;
+    size_t n=0;for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) n++;
     return n;
 }
 static void report_status(uint64_t uptime_ms,const char *bindip,int port,int metrics_port,
@@ -1386,10 +1338,10 @@ static void metric_response(MetricClient *c) {
 #undef METRIC
 }
 static void metric_io(MetricClient *c,short events) {
-    if(c->fd<0) return;
+    if(c->fd==DNSP_BAD_SOCKET) return;
     if(!c->reply_len && (events&POLLIN)) {
-        ssize_t n=recv(c->fd,c->request+c->have,sizeof(c->request)-c->have,0);
-        if(n<=0) {if(n==0 || (errno!=EAGAIN && errno!=EINTR)) close_metric(c);return;}
+        dnsp_ssize_t n=dnsp_recv(c->fd,c->request+c->have,sizeof(c->request)-c->have);
+        if(n<=0) {if(n==0 || (!dnsp_socket_retry())) close_metric(c);return;}
         c->have+=(size_t)n;c->last_ms=clock_ms();
         if(c->have>=sizeof(c->request)) {close_metric(c);return;}
         c->request[c->have]=0;
@@ -1398,39 +1350,39 @@ static void metric_io(MetricClient *c,short events) {
             else close_metric(c); /* loopback-only diagnostic endpoint */
         }
     }
-    if(c->fd>=0 && c->reply_len && (events&POLLOUT)) {
-        ssize_t n=send(c->fd,c->reply+c->sent,c->reply_len-c->sent,MSG_NOSIGNAL);
+    if(c->fd!=DNSP_BAD_SOCKET && c->reply_len && (events&POLLOUT)) {
+        dnsp_ssize_t n=dnsp_send(c->fd,c->reply+c->sent,c->reply_len-c->sent);
         if(n>0) {c->sent+=(size_t)n;c->last_ms=clock_ms();}
-        else if(n<0 && (errno==EAGAIN || errno==EINTR)) return;
+        else if(n<0 && dnsp_socket_retry()) return;
         else {close_metric(c);return;}
         if(c->sent==c->reply_len) close_metric(c);
     }
 }
-static void accept_tcp(int server,bool is_metrics) {
+static void accept_tcp(dnsp_socket_t server,bool is_metrics) {
     for(int i=0;i<16;i++) {
         struct sockaddr_in peer={0};
-        socklen_t peer_len=sizeof(peer);
-        int fd=accept(server,(struct sockaddr*)&peer,&peer_len);
-        if(fd<0) break;
-        if(nonblock(fd)<0) {close(fd);continue;}
+        dnsp_socklen_t peer_len=sizeof(peer);
+        dnsp_socket_t fd=accept(server,(struct sockaddr*)&peer,&peer_len);
+        if(fd==DNSP_BAD_SOCKET) break;
+        if(nonblock(fd)<0) {dnsp_close(fd);continue;}
         if(is_metrics) {
-            size_t j=0;while(j<MAX_METRICS_CLIENTS && metric_clients[j].fd>=0) j++;
-            if(j==MAX_METRICS_CLIENTS) close(fd);
+            size_t j=0;while(j<MAX_METRICS_CLIENTS && metric_clients[j].fd!=DNSP_BAD_SOCKET) j++;
+            if(j==MAX_METRICS_CLIENTS) dnsp_close(fd);
             else {uint64_t g=metric_clients[j].generation+1;
                   metric_clients[j]=(MetricClient){.fd=fd,.generation=g,.last_ms=clock_ms()};}
         } else {
             size_t slot=MAX_CLIENTS,from_source=0;
             for(size_t j=0;j<MAX_CLIENTS;j++) {
-                if(clients[j].fd<0) {
+                if(clients[j].fd==DNSP_BAD_SOCKET) {
                     if(slot==MAX_CLIENTS) slot=j;
                 } else if(clients[j].source==peer.sin_addr.s_addr) from_source++;
             }
             if(from_source>=tcp_max_per_source) {
                 metrics.tcp_rejected_source++;
-                close(fd);
+                dnsp_close(fd);
             } else if(slot==MAX_CLIENTS) {
                 metrics.tcp_rejected_capacity++;
-                close(fd);
+                dnsp_close(fd);
             } else {
                 uint64_t g=clients[slot].generation+1;
                 clients[slot]=(Client){.fd=fd,.source=peer.sin_addr.s_addr,.generation=g,.idle_since_ms=clock_ms()};
@@ -1449,7 +1401,7 @@ static uint64_t tcp_deadline(const Client *c,uint64_t idle_ms) {
     return c->idle_since_ms+idle_ms;
 }
 static void expire_clients(uint64_t now,uint64_t idle_ms) {
-    for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd>=0) {
+    for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) {
         Client *c=&clients[i];
         uint64_t deadline=tcp_deadline(c,idle_ms);
         if(!deadline || now<deadline) continue;
@@ -1457,7 +1409,7 @@ static void expire_clients(uint64_t now,uint64_t idle_ms) {
         else metrics.tcp_idle_timeouts++;
         close_client(c);
     }
-    for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) if(metric_clients[i].fd>=0 &&
+    for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) if(metric_clients[i].fd!=DNSP_BAD_SOCKET &&
        now-metric_clients[i].last_ms>METRICS_IDLE_MS) close_metric(&metric_clients[i]);
 }
 static bool configure_bootstrap(Upstream *endpoint,const char *address) {
@@ -1630,10 +1582,8 @@ int main(int argc,char **argv) {
     if(backup_address && !backup.url) {
         fprintf(stderr,"--backup-bootstrap-address requires --backup-upstream\n");return 2;
     }
-    struct sigaction report_action={.sa_handler=request_report,.sa_flags=SA_RESTART};
-    sigemptyset(&report_action.sa_mask);
-    if(sigaction(SIGUSR1,&report_action,NULL)<0) {
-        perror("sigaction SIGUSR1");return 1;
+    if(!dnsp_install_handlers(stop_now,request_report)) {
+        fprintf(stderr,"level=error event=control_handler\n");return 1;
     }
     if(!init_curl()) return 1;
     const curl_version_info_data *curl_info=curl_version_info(CURLVERSION_NOW);
@@ -1647,9 +1597,8 @@ int main(int argc,char **argv) {
         free_upstreams();
         curl_global_cleanup();return 2;
     }
-    signal(SIGINT,stop_now);signal(SIGTERM,stop_now);signal(SIGPIPE,SIG_IGN);
-    for(size_t i=0;i<MAX_CLIENTS;i++) clients[i].fd=-1;
-    for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) metric_clients[i].fd=-1;
+    for(size_t i=0;i<MAX_CLIENTS;i++) clients[i].fd=DNSP_BAD_SOCKET;
+    for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) metric_clients[i].fd=DNSP_BAD_SOCKET;
     multi=curl_multi_init();
     if(!multi) {
         fprintf(stderr,"level=error event=curl_multi_init\n");
@@ -1657,9 +1606,10 @@ int main(int argc,char **argv) {
         curl_global_cleanup();
         return 1;
     }
-    int udp=-1,tcp=-1,mfd=-1,exitcode=1;
+    dnsp_socket_t udp=DNSP_BAD_SOCKET,tcp=DNSP_BAD_SOCKET,mfd=DNSP_BAD_SOCKET;
+    int exitcode=1;
     PollItem *items=NULL;
-    struct pollfd *pfds=NULL;
+    dnsp_pollfd *pfds=NULL;
     doh_headers=curl_slist_append(NULL,"Content-Type: application/dns-message");
     struct curl_slist *headers=doh_headers?curl_slist_append(doh_headers,"Accept: application/dns-message"):NULL;
     if(!headers) {
@@ -1686,12 +1636,12 @@ int main(int argc,char **argv) {
     MULTI_OPT(CURLMOPT_TIMERFUNCTION,curl_timer_callback);
 #undef MULTI_OPT
     udp=listener("dns_udp",SOCK_DGRAM,bindip,port);
-    if(udp<0) goto cleanup;
+    if(udp==DNSP_BAD_SOCKET) goto cleanup;
     tcp=listener("dns_tcp",SOCK_STREAM,bindip,port);
-    if(tcp<0) goto cleanup;
+    if(tcp==DNSP_BAD_SOCKET) goto cleanup;
     if(metrics_port) {
         mfd=listener("metrics",SOCK_STREAM,"127.0.0.1",metrics_port);
-        if(mfd<0) goto cleanup;
+        if(mfd==DNSP_BAD_SOCKET) goto cleanup;
     }
     const size_t cap=3+MAX_CLIENTS+MAX_METRICS_CLIENTS+MAX_CURL_SOCKETS;
     items=calloc(cap,sizeof(*items));
@@ -1720,18 +1670,18 @@ int main(int argc,char **argv) {
         }
         size_t n=0,tcp_count=0;
 #define ADD(kind_,fd_,events_,idx_,gen_) do { \
-    pfds[n]=(struct pollfd){.fd=(fd_),.events=(events_)}; \
+    pfds[n]=(dnsp_pollfd){.fd=(fd_),.events=(events_)}; \
     items[n++]=(PollItem){.kind=(kind_),.idx=(idx_),.generation=(gen_)}; \
 } while(0)
         ADD(P_UDP,udp,POLLIN,0,0);
         ADD(P_TCP_LISTEN,tcp,POLLIN,0,0);
-        if(mfd>=0) ADD(P_METRIC_LISTEN,mfd,POLLIN,0,0);
-        for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd>=0) {
+        if(mfd!=DNSP_BAD_SOCKET) ADD(P_METRIC_LISTEN,mfd,POLLIN,0,0);
+        for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) {
             /* Even events=0 reports resets/errors while reads are paused. */
             ADD(P_TCP_CLIENT,clients[i].fd,tcp_events(&clients[i]),i,clients[i].generation);
             tcp_count++;
         }
-        for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) if(metric_clients[i].fd>=0)
+        for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) if(metric_clients[i].fd!=DNSP_BAD_SOCKET)
             ADD(P_METRIC_CLIENT,metric_clients[i].fd,metric_clients[i].reply_len?POLLOUT:POLLIN,i,metric_clients[i].generation);
         for(size_t i=0;i<curl_socket_count;i++) {
             short ev=0;
@@ -1748,20 +1698,23 @@ int main(int argc,char **argv) {
         }
         uint64_t idle_ms=tcp_idle_ms;
         if(tcp_count>=TCP_PRESSURE_CLIENTS && idle_ms>TCP_PRESSURE_IDLE_MS) idle_ms=TCP_PRESSURE_IDLE_MS;
-        for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd>=0) {
+        for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) {
             uint64_t deadline=tcp_deadline(&clients[i],idle_ms);
             if(!deadline) continue;
             uint64_t left=now>=deadline?0:deadline-now;
             if(left<(uint64_t)timeout) timeout=(int)left;
         }
-        int result=poll(pfds,n,timeout);
-        if(result<0 && errno!=EINTR) {perror("poll");exitcode=1;break;}
+        int result=dnsp_poll(pfds,n,timeout);
+        if(result<0 && !dnsp_socket_retry()) {
+            fprintf(stderr,"level=error event=poll message=%s\n",dnsp_socket_message(dnsp_socket_error()));
+            exitcode=1;break;
+        }
         expire_clients(clock_ms(),idle_ms);
         for(size_t i=0;i<n && result>0;i++) {
             short re=pfds[i].revents;
             if(!re) continue;
             result--;
-            int fd=pfds[i].fd;
+            dnsp_socket_t fd=pfds[i].fd;
             switch(items[i].kind) {
                 case P_UDP:if(re&POLLIN) udp_io(udp);break;
                 case P_TCP_LISTEN:if(re&POLLIN) accept_tcp(tcp,false);break;
@@ -1800,9 +1753,9 @@ cleanup:
     while(active) remove_query(active);
     while(idle_easy_count) curl_easy_cleanup(idle_easies[--idle_easy_count]);
     free(answer_cache);
-    if(udp>=0) close(udp);
-    if(tcp>=0) close(tcp);
-    if(mfd>=0) close(mfd);
+    if(udp!=DNSP_BAD_SOCKET) dnsp_close(udp);
+    if(tcp!=DNSP_BAD_SOCKET) dnsp_close(tcp);
+    if(mfd!=DNSP_BAD_SOCKET) dnsp_close(mfd);
     curl_multi_cleanup(multi);
     curl_slist_free_all(doh_headers);
     free_upstreams();

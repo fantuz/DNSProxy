@@ -3,7 +3,7 @@ name: CodeQL
 "on":
   push:
     branches: [master]
-    paths: [dnsp-modern.c, modern.mk, .github/workflows/codeql.yml]
+    paths: [dnsp-modern.c, dnsp-platform.h, modern.mk, .github/workflows/codeql.yml]
   workflow_call:
   workflow_dispatch:
 

@@ -47,7 +47,7 @@ def free_port():
 def make_certificate(directory):
     cert = directory/'localhost.pem'
     key = directory/'localhost.key'
-    subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+    subprocess.run([os.environ.get('DNSP_TEST_OPENSSL', 'openssl'), 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
                     '-days', '1', '-keyout', str(key), '-out', str(cert),
                     '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost'],
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -381,7 +381,7 @@ def run_suite(args, protocol, tmpdir):
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=lambda s: Path(s).resolve(), default=ROOT/'dnsp-modern')
+    parser.add_argument('--binary', type=lambda s: Path(s).resolve(), default=Path(os.environ.get('DNSP_TEST_BINARY', ROOT/'dnsp-modern')))
     parser.add_argument('--protocol', choices=('h2', 'h1', 'both', 'h3', 'h2-h3'), default='both',
                         help='Use both for HTTP/2 and HTTP/1.1, or h2-h3 for a matched QUIC comparison')
     parser.add_argument('--concurrency', default='1,8,32,64',

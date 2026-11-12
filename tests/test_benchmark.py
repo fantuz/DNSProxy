@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for benchmark report logic and actual loopback TLS/HTTP2 multiplexing."""
 import json
+import os
 from pathlib import Path
 import socket
 import struct
@@ -10,6 +11,7 @@ import tempfile
 import unittest
 
 BASE = Path(__file__).resolve().parent.parent
+BINARY = Path(os.environ.get('DNSP_TEST_BINARY', BASE/'dnsp-modern'))
 sys.path.insert(0, str(BASE/'bench'))
 from bench_modern import (DNS_QUESTION, EDNS_OPT, await_quiescent, await_ready,  # noqa: E402
                           free_port, make_certificate, metric_snapshot, percentile, proxy_cpu_rss)
@@ -72,7 +74,7 @@ class BenchmarkIntegrationTests(unittest.TestCase):
             try:
                 await_ready(upstream_port, None, 'DoH mock')
                 with tempfile.TemporaryFile() as log, subprocess.Popen([
-                    str(BASE/'dnsp-modern'), '-p', str(proxy_port), '-m', str(metrics_port),
+                    str(BINARY), '-p', str(proxy_port), '-m', str(metrics_port),
                     '-s', f'https://localhost:{upstream_port}/dns-query', '--ca-file', str(cert),
                     '--bootstrap-address', '127.0.0.1',
                 ], stderr=log) as proxy:
@@ -111,7 +113,7 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='dnsp-bench-ci-') as td:
             dest = Path(td)/'results.json'
             cmd = [sys.executable, str(BASE/'bench/bench_modern.py'),
-                   '--binary', str(BASE/'dnsp-modern'),
+                   '--binary', str(BINARY),
                    '--protocol', 'both', '--concurrency', '1,8',
                    '--duration', '0.7', '--warmup', '0.2',
                    '--max-host-connections', '1', '--assert-h2-multiplex',
