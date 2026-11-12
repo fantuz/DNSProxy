@@ -106,7 +106,7 @@ jobs:
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: rust-poc-benchmark
+          name: rust-poc-benchmark-${{ github.run_attempt }}
           path: rust-poc/dist/benchmark/
           if-no-files-found: ignore
           retention-days: 14

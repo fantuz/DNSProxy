@@ -247,7 +247,9 @@ def scenario(args, name, binary, protocol, transport, answers, run, cert, key):
                       f'clients={clients:2} run={run} qps={row["qps"]:.0f} '
                       f'p99={row["p99_ms"]:.3f}ms peak={peak/1048576:.1f}MiB', flush=True)
     except BaseException:
-        if proxy and proxy.poll() is not None:
+        print(f'Failed scenario: {name}, {protocol}, {transport}, answers={answers}, run={run}', flush=True)
+        print(f'Upstream state: {server.app.snapshot()}, failure={server.failure}', flush=True)
+        if log.exists():
             print(log.read_text(errors='replace')[-8000:], flush=True)
         raise
     finally:
