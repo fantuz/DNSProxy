@@ -67,11 +67,11 @@ jobs:
           }
           & $python tests/test_modern.py -v
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & $python tests/test_windows.py -v
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           & $python -m unittest discover -s tests -p test_benchmark.py -v
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           & $python tests/test_http3.py -v
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          & $python tests/test_windows.py -v
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v6
         with:

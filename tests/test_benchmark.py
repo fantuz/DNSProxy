@@ -118,6 +118,7 @@ class BenchmarkIntegrationTests(unittest.TestCase):
                    '--duration', '0.7', '--warmup', '0.2',
                    '--max-host-connections', '1', '--assert-h2-multiplex',
                    '--h2-max-streams', '4', '--h2-idle-timeout', '0.25',
+                   '--verbose',
                    '--output', str(dest)]
             out = subprocess.run(cmd, text=True, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, timeout=60)
@@ -133,7 +134,10 @@ class BenchmarkIntegrationTests(unittest.TestCase):
             self.assertEqual(h1['curl_metric_delta']['dnsp_upstream_http_responses_total{version="2"}'], 0)
             self.assertGreater(h2['successful_queries'], 0)
             self.assertGreater(h1['successful_queries'], 0)
-            self.assertGreater(h2['proxy_rss_peak_bytes'], 0)
+            if sys.platform.startswith('linux'):
+                self.assertGreater(h2['proxy_rss_peak_bytes'], 0)
+            else:
+                self.assertIsNone(h2['proxy_rss_peak_bytes'])  # /proc metrics are optional.
             phases = h2['upstream_phases']
             self.assertEqual(phases['first_byte']['samples'], h2['successful_queries'])
             self.assertGreater(phases['first_byte']['mean_ms'], 0)
