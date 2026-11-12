@@ -82,6 +82,19 @@ jobs:
           ln -s "$PWD/target/release/dnsp-modern-rust" "$stage/dnsp-modern"
           .venv/bin/python -m unittest discover -s "$stage/tests" -p 'test_*.py' -v
           .venv/bin/python tests/parity/run.py /tmp/dnsp-c-reference
+      - name: Preserve the validated Linux comparison binaries
+        working-directory: rust-poc
+        run: |
+          mkdir -p dist/binaries
+          cp target/release/dnsp-modern-rust /tmp/dnsp-c-reference/dnsp-modern dist/binaries/
+          printf 'C=%s\nRust=%s\n' "$(cat SOURCE_REVISION)" "$GITHUB_SHA" > dist/binaries/revisions.txt
+          sha256sum dist/binaries/dnsp-modern dist/binaries/dnsp-modern-rust > dist/binaries/SHA256SUMS
+      - uses: actions/upload-artifact@v6
+        with:
+          name: rust-poc-comparison-binaries-${{ github.run_attempt }}
+          path: rust-poc/dist/binaries/
+          if-no-files-found: error
+          retention-days: 14
       - name: Compare current C and Rust throughput
         working-directory: rust-poc
         env:
