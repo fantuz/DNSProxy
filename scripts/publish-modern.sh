@@ -97,7 +97,7 @@ else
     (
         cd "$assets"
         gh release create "$tag" "${packages[@]}" SHA256SUMS --verify-tag \
-            --title "DNSProxy Modern $version" --prerelease --generate-notes
+            --title "DNSProxy Modern $version" --prerelease=false --generate-notes
     )
 fi
 

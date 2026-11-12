@@ -88,7 +88,7 @@ helpers.
 1. Set the next release number in the top-level `VERSION` file and merge to
    `master`.
 2. The first successful build for the new version creates the matching
-   `vVERSION-modern` tag at the tested commit and publishes a GitHub pre-release
+   `vVERSION-modern` tag at the tested commit and publishes a regular GitHub release
    with eight packages and `SHA256SUMS`. Other commits at the published version
    produce CI artifacts. A failed check prevents publication.
 3. To release from the Actions page, open **DNSProxy modern - test and package
@@ -104,6 +104,12 @@ Manual releases with a version input stage the commit on `ci/release-<run-id>`.
 Publication removes that branch after creating the release. Failed runs keep
 it so **Re-run failed jobs** can use the same commit. To abandon a failed run,
 remove its staging branch once the run has finished.
+
+The prepared release commit does not update `master`, so its `VERSION` can lag
+behind the latest release. To synchronize it, merge a change setting `VERSION`
+to the published version. CI builds snapshot artifacts for that merge and
+leaves the existing release tag and packages untouched. For a new release,
+choose a version higher than the latest release tag.
 
 If publication fails after creating the tag, rerun the failed workflow for the
 tagged commit. If an incomplete GitHub release draft exists, inspect it and
