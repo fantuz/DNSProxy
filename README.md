@@ -25,6 +25,41 @@ in [docs/README-legacy.md](docs/README-legacy.md).
 The upstream resolver handles recursion and DNSSEC validation. DNS privacy
 also depends on how clients route their DNS traffic and which upstream they use.
 
+## Rust feasibility port
+
+We have experimentally ported `dnsp-modern` to Rust to assess feasibility,
+protocol compatibility and performance. The code and port checklist live on
+the separate [rust-poc branch](https://github.com/fantuz/DNSProxy/tree/rust-poc/rust-poc).
+The refreshed port passes the C integration fixtures on Linux amd64 and arm64,
+the HTTP/2 and HTTP/3 fixtures, and 24,226 DNS wire comparison cases.
+
+The [Linux performance comparison](docs/benchmarks/rust-poc-2026-11-12/README.md)
+includes the method, latency, CPU/memory measurements and raw results. Below
+are median queries per second from three short loopback runs with a local TLS
+DoH upstream, a 1 ms upstream delay, UDP clients and the answer cache disabled.
+
+| Upstream | Concurrent clients | C QPS | Rust QPS |
+| --- | ---: | ---: | ---: |
+| HTTP/2 | 1 | 683 | 693 |
+| HTTP/2 | 8 | 2,755 | 2,871 |
+| HTTP/2 | 32 | 4,285 | 4,412 |
+| HTTP/3 | 1 | 659 | 673 |
+| HTTP/3 | 8 | 3,570 | 3,450 |
+| HTTP/3 | 32 | 3,451 | 3,387 |
+
+A separate [C/Rust/Go application baseline](docs/benchmarks/linux-c-rust-go-2026-11-12/README.md)
+covers UDP and persistent TCP, larger replies and one CPU per proxy, using
+AdGuard dnsproxy as the Go reference.
+
+**We are staying with C for now.** These measurements show similar performance
+and slightly higher Rust memory use; they do not establish a consistent
+performance advantage or predict Internet throughput. C already has the
+maintained release, DEB/RPM packaging and systemd deployment path. Keeping one
+supported implementation also avoids maintaining two copies of protocol and
+lifecycle fixes. Rust offers safer ownership and memory handling in the ported
+code, while both implementations still depend on native libcurl for HTTP/TLS/QUIC.
+The Rust branch remains available for further evaluation.
+
 ## Supported executable
 
 `make` builds `dnsp-modern`, the executable shipped in DNSProxy releases.

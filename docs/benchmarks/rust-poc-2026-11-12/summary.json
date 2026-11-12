@@ -1,0 +1,132 @@
+{
+  "c_revision": "343323e411488cfa3e608dfbf8496de8d91959b8",
+  "rust_revision": "93b3a1ec077d5c3d8ee7eec985f32d3d96f1ca07",
+  "workflow_run": "https://github.com/fantuz/DNSProxy/actions/runs/43245557198",
+  "total_successful_queries": {
+    "c": 92674,
+    "rust": 93326
+  },
+  "failed_responses": 0,
+  "timeouts": 0,
+  "truncated_responses": 0,
+  "corpus_cases": 24226,
+  "corpus_sha256": "608768d6bd8bb415efb74aa5e8f5293aca663e5cdf20670662b0975795b17865",
+  "raw_sha256": {
+    "c-1.json": "79c7ac2b66816d73eb94fbef31c33ec685c5ff0156ee28ea743d18a82b992a5e",
+    "c-2.json": "fdc3be39df64408d3f77057389e88eeebcc978c180d4f9921de08036b5048402",
+    "c-3.json": "16d3028b95fc2284a3cb639c35fc1196e0155cc0793991d33c15dd270a23556c",
+    "rust-1.json": "79ba66567fa4fa558fd8758ccb11f5db4b1ede18488a48ccfbdaa10932cb3396",
+    "rust-2.json": "6e8fd418982a51fc9c60441657e48e11f7c9ee0925ddf5c1010d4e19e5c17e21",
+    "rust-3.json": "9a13285cf72473be4bb0c08bad04b464bfcccc5194c4a29c715f2fb7e99ac7b8"
+  },
+  "medians": [
+    {
+      "protocol": "h2",
+      "clients": 1,
+      "implementation": "c",
+      "qps": 683.25,
+      "p99_ms": 1.712,
+      "cpu_percent": 7.5,
+      "peak_rss_mib": 14.02734375
+    },
+    {
+      "protocol": "h2",
+      "clients": 1,
+      "implementation": "rust",
+      "qps": 693.29,
+      "p99_ms": 1.731,
+      "cpu_percent": 6.5,
+      "peak_rss_mib": 14.5390625
+    },
+    {
+      "protocol": "h2",
+      "clients": 8,
+      "implementation": "c",
+      "qps": 2755.16,
+      "p99_ms": 3.911,
+      "cpu_percent": 25.99,
+      "peak_rss_mib": 14.4765625
+    },
+    {
+      "protocol": "h2",
+      "clients": 8,
+      "implementation": "rust",
+      "qps": 2870.87,
+      "p99_ms": 5.279,
+      "cpu_percent": 26.46,
+      "peak_rss_mib": 15.0234375
+    },
+    {
+      "protocol": "h2",
+      "clients": 32,
+      "implementation": "c",
+      "qps": 4284.97,
+      "p99_ms": 13.023,
+      "cpu_percent": 49.88,
+      "peak_rss_mib": 16.14453125
+    },
+    {
+      "protocol": "h2",
+      "clients": 32,
+      "implementation": "rust",
+      "qps": 4411.52,
+      "p99_ms": 10.66,
+      "cpu_percent": 50.87,
+      "peak_rss_mib": 16.61328125
+    },
+    {
+      "protocol": "h3",
+      "clients": 1,
+      "implementation": "c",
+      "qps": 658.98,
+      "p99_ms": 2.327,
+      "cpu_percent": 13.49,
+      "peak_rss_mib": 14.80859375
+    },
+    {
+      "protocol": "h3",
+      "clients": 1,
+      "implementation": "rust",
+      "qps": 672.66,
+      "p99_ms": 1.629,
+      "cpu_percent": 12.99,
+      "peak_rss_mib": 15.41015625
+    },
+    {
+      "protocol": "h3",
+      "clients": 8,
+      "implementation": "c",
+      "qps": 3569.75,
+      "p99_ms": 3.16,
+      "cpu_percent": 89.91,
+      "peak_rss_mib": 18.1171875
+    },
+    {
+      "protocol": "h3",
+      "clients": 8,
+      "implementation": "rust",
+      "qps": 3450.29,
+      "p99_ms": 3.177,
+      "cpu_percent": 90.36,
+      "peak_rss_mib": 18.734375
+    },
+    {
+      "protocol": "h3",
+      "clients": 32,
+      "implementation": "c",
+      "qps": 3450.69,
+      "p99_ms": 16.306,
+      "cpu_percent": 98.61,
+      "peak_rss_mib": 22.625
+    },
+    {
+      "protocol": "h3",
+      "clients": 32,
+      "implementation": "rust",
+      "qps": 3387.06,
+      "p99_ms": 15.973,
+      "cpu_percent": 99.15,
+      "peak_rss_mib": 23.296875
+    }
+  ]
+}

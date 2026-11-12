@@ -1,0 +1,23 @@
+{
+  "platform": "Linux-7.0.0-1017-azure-x86_64-with-glibc2.41",
+  "python": "3.13.5",
+  "machine": "x86_64",
+  "proxy_cpu": 0,
+  "available_cpus": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "versions": {
+    "c": "dnsp-modern 0.3.6\nlibcurl_build=8.14.1\nlibcurl_runtime=8.14.1\ntls_backend=OpenSSL/3.5.7\nhttp2=yes\nhttp3=yes\nprefer_h3=yes",
+    "rust": "dnsp-modern 0.3.6\nimplementation=rust-poc\nlibcurl_build=8.14.1\nlibcurl_runtime=8.14.1\ntls_backend=OpenSSL/3.5.7\nhttp2=yes\nhttp3=yes\nprefer_h3=yes",
+    "go": "dnsproxy version v0.86.0"
+  },
+  "rust_revision": "7c844c19d4e40a306a6381dbdaa010f0053fb758",
+  "c_revision": "343323e411488cfa3e608dfbf8496de8d91959b8",
+  "upstream_delay_ms": 1,
+  "measurement_seconds": 2,
+  "warmup_seconds": 0.5,
+  "go_source": "AdguardTeam/dnsproxy@v0.86.0"
+}
