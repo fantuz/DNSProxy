@@ -82,7 +82,10 @@ class ReleaseTests(unittest.TestCase):
         gh.write_text('''#!/bin/sh
 case "$2" in
     view) test -f "$TEST_RELEASE" && printf 'false\\n' ;;
-    create) test "$FAIL_PUBLICATION" = false && sha256sum -c SHA256SUMS && touch "$TEST_RELEASE" ;;
+    create)
+        printf '%s\\n' "$@" >> "$TEST_CREATE_ARGS"
+        test "$FAIL_PUBLICATION" = false && sha256sum -c SHA256SUMS && touch "$TEST_RELEASE"
+        ;;
     *) exit 2 ;;
 esac
 ''')
@@ -95,10 +98,12 @@ esac
         for arch in ("x86_64", "aarch64"):
             (assets / f"dnsp-modern-0.3.8-1.el9.{arch}.rpm").write_text(arch)
         release = self.root / "published"
+        create_args = self.root / "create-args"
         publish = {
             "PATH": f"{self.root}:{os.environ['PATH']}",
             "RELEASE_MODE": "manual", "RELEASE_TAG": "v0.3.8-modern", "RELEASE_COMMIT": prepared,
             "TEST_RELEASE": str(release),
+            "TEST_CREATE_ARGS": str(create_args),
         }
         self.script("publish-modern.sh", assets, succeeds=False, FAIL_PUBLICATION="true", **publish)
         self.assertEqual(self.ref(self.tag), prepared)
@@ -111,7 +116,33 @@ esac
         self.assertTrue(release.exists())
         self.assertEqual(self.ref(self.tag), prepared)
         self.assertIsNone(self.ref(self.stage))
+        attempts = create_args.read_text()
+        arguments = attempts.splitlines()
+        self.assertEqual(arguments.count("create"), 2)
+        self.assertEqual(arguments.count("--prerelease=false"), 2)
+        self.assertNotIn("--prerelease", arguments)
+        self.assertNotIn("--prerelease=true", arguments)
         self.script("publish-modern.sh", assets, FAIL_PUBLICATION="true", **publish)
+        self.assertEqual(create_args.read_text(), attempts)
+
+    def test_sync_master_to_published_version_keeps_existing_tag(self):
+        prepared = self.script("prepare-release.sh")["commit"]
+        self.git("push", "-q", "origin", f"{prepared}:{self.tag}")
+        self.git("checkout", "-q", "master")
+        (self.repo / "VERSION").write_text("0.3.8\n")
+        self.git("commit", "-qm", "Sync published version", "--", "VERSION")
+        synced = self.git("rev-parse", "HEAD")
+        self.assertNotEqual(synced, prepared)
+        self.git("push", "-q", "origin", "master")
+
+        plan = self.script("ci-release-plan.sh", GITHUB_EVENT_NAME="push",
+                           REQUESTED_RELEASE_VERSION="", PUBLISH_REQUESTED="false")
+        self.assertEqual(plan, {
+            "version": "0.3.8~pre42.ci", "tag": "v0.3.8-modern",
+            "mode": "snapshot", "commit": synced,
+        })
+        self.assertEqual(self.ref(self.tag), prepared)
+        self.assertEqual(self.ref("refs/heads/master"), synced)
 
     def test_invalid_or_used_versions_never_stage(self):
         for version in ("0.3.07", "0.3.8\nmode=manual", "0.3.6", "0.3.7"):

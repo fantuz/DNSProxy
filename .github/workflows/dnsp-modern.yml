@@ -198,7 +198,8 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
-          dnf install -y gcc make git rpm-build redhat-rpm-config libcurl-devel openssl python3 systemd-rpm-macros
+          # Allow a compatible package set while Rocky mirrors synchronize updates.
+          dnf install -y --nobest gcc make git rpm-build redhat-rpm-config libcurl-devel openssl python3 systemd-rpm-macros
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.plan.outputs.commit }}
