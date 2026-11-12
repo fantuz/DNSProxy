@@ -140,6 +140,11 @@ supported Windows release. Client DNS listeners remain IPv4, as on Linux;
 AAAA records and IPv6 upstream addresses work, but `::1` is not a listener.
 Do not configure Windows DNS to `::1` yet.
 
+Windows wildcard UDP replies require an assigned source address. Unassigned
+loopback aliases such as `127.0.0.2` are not supported for wildcard replies via
+`IP_PKTINFO`. CI tests source preservation using `127.0.0.1` and an actual
+adapter address (`DNSP_TEST_SECOND_ADDRESS`), without changing adapter settings.
+
 Next decisions: persistent service and least-privilege account, reversible
 adapter configuration, native IPv6 listeners, signed installer, ARM64 builds,
 and Windows assets in normal releases. The PoC ZIP is a CI artifact; the Linux

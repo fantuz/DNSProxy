@@ -263,7 +263,8 @@ static inline dnsp_ssize_t dnsp_send_udp(dnsp_socket_t fd,const struct sockaddr 
         msg.Control=(WSABUF){.len=sizeof(control.bytes),.buf=control.bytes};
         WSACMSGHDR *c=WSA_CMSG_FIRSTHDR(&msg);
         c->cmsg_level=IPPROTO_IP;c->cmsg_type=IP_PKTINFO;c->cmsg_len=WSA_CMSG_LEN(sizeof(IN_PKTINFO));
-        IN_PKTINFO info={.ipi_addr.s_addr=source,.ipi_ifindex=local.interface_index};
+        /* Pin the local address and let routing select the outgoing interface. */
+        IN_PKTINFO info={.ipi_addr.s_addr=source};
         memcpy(WSA_CMSG_DATA(c),&info,sizeof(info));
     }
     DWORD bytes=0;

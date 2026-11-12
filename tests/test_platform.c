@@ -3,13 +3,16 @@
 #include "../dnsp-platform.h"
 #include <inttypes.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static bool exchange(const char *address,bool truncate) {
     dnsp_socket_t server=socket(AF_INET,SOCK_DGRAM,0),client=socket(AF_INET,SOCK_DGRAM,0);
     bool ok=false;
     if(server==DNSP_BAD_SOCKET || client==DNSP_BAD_SOCKET) goto cleanup;
     struct sockaddr_in target={.sin_family=AF_INET},origin={.sin_family=AF_INET};
+#ifndef _WIN32
     inet_pton(AF_INET,"127.0.0.1",&origin.sin_addr);
+#endif
     if(bind(server,(struct sockaddr*)&target,sizeof(target))!=0 ||
        bind(client,(struct sockaddr*)&origin,sizeof(origin))!=0 ||
        nonblock(server)!=0 || nonblock(client)!=0 || !dnsp_udp_prepare(server,true)) goto cleanup;
@@ -47,7 +50,9 @@ cleanup:
 
 int main(void) {
     if(curl_global_init(CURL_GLOBAL_DEFAULT)!=CURLE_OK) return 1;
-    bool ok=exchange("127.0.0.1",true) && exchange("127.0.0.1",false) && exchange("127.0.0.2",false);
+    const char *second=getenv("DNSP_TEST_SECOND_ADDRESS");
+    if(!second || !*second) second="127.0.0.2";
+    bool ok=exchange("127.0.0.1",true) && exchange("127.0.0.1",false) && exchange(second,false);
     curl_global_cleanup();
     return ok?0:1;
 }

@@ -23,6 +23,7 @@ from select import select
 BASE = Path(__file__).resolve().parent.parent
 BINARY = Path(os.environ.get('DNSP_TEST_BINARY', BASE/'dnsp-modern'))
 OPENSSL = os.environ.get('DNSP_TEST_OPENSSL') or shutil.which('openssl')
+SECOND_ADDRESS = os.environ.get('DNSP_TEST_SECOND_ADDRESS', '127.0.0.2')
 QUERY = bytes.fromhex('1234010000010000000000000377777706676f6f676c6503636f6d0000010001')
 ANSWER = bytes.fromhex('c00c000100010000003c0004c0000201')
 
@@ -1633,9 +1634,9 @@ class FailoverTests(unittest.TestCase):
             with self.proxy(self.url(primary), self.url(backup), '-l', '0.0.0.0',
                             '--cache-entries', '16') as (port, metrics), \
                  socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-                sock.bind(('127.0.0.1', 0))
+                sock.bind(('0.0.0.0' if os.name == 'nt' else '127.0.0.1', 0))
                 sock.settimeout(3)
-                target = ('127.0.0.2', port)
+                target = (SECOND_ADDRESS, port)
                 sock.connect(target)
                 malformed = QUERY[:3] + b'\x01' + QUERY[4:]
                 for packet, rcode in ((QUERY, 0), (query(ident=42), 0), (malformed, 1)):
@@ -1654,9 +1655,9 @@ class FailoverTests(unittest.TestCase):
                 with self.proxy(self.url(primary), self.url(backup), '-l', '0.0.0.0',
                                 connect_ms=1500, total_ms=3000) as (port, metrics), \
                      socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-                    sock.bind(('127.0.0.1', 0))
+                    sock.bind(('0.0.0.0' if os.name == 'nt' else '127.0.0.1', 0))
                     sock.settimeout(4)
-                    first, second = ('127.0.0.1', port), ('127.0.0.2', port)
+                    first, second = ('127.0.0.1', port), (SECOND_ADDRESS, port)
                     sock.sendto(QUERY, first)
                     self.assertTrue(primary.started.wait(3))
                     sock.sendto(QUERY, second)

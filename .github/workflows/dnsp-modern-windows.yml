@@ -45,6 +45,11 @@ jobs:
           DNSP_TEST_OPENSSL: ${{ steps.build.outputs.openssl }}
         run: |
           $python = (Get-Command python).Source
+          $address = Get-NetIPAddress -AddressFamily IPv4 | Where-Object {
+            $_.AddressState -eq 'Preferred' -and $_.IPAddress -notmatch '^(127\.|169\.254\.)'
+          } | Select-Object -First 1
+          if (-not $address) { throw 'An assigned secondary IPv4 address is required for wildcard tests' }
+          $env:DNSP_TEST_SECOND_ADDRESS = $address.IPAddress
           $portable = Join-Path $env:RUNNER_TEMP 'DNSProxy portable bundle'
           $archive = (Get-ChildItem dist/dnsp-modern-*-windows-amd64-poc.zip).FullName
           Expand-Archive -Path $archive -DestinationPath $portable
