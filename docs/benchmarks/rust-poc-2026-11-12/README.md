@@ -73,10 +73,11 @@ higher for HTTP/3. HTTP/3 approached one proxy CPU core in both implementations.
 
 These short shared-runner measurements do not establish a consistent
 performance winner. They measure a synthetic local workload, and repeated
-questions can also benefit from in-flight coalescing. Dedicated-host tests,
-longer durations, unique questions, persistent TCP clients, larger replies,
-cache workloads and network delay/loss profiles are useful follow-ups before
-estimating production capacity.
+questions can also benefit from in-flight coalescing. The separate
+[C/Rust/Go application baseline](../linux-c-rust-go-2026-11-12/README.md) adds
+unique questions, persistent TCP clients, larger replies and one CPU per proxy.
+Dedicated-host tests, longer durations, cache workloads and network delay/loss
+profiles remain useful before estimating production capacity.
 
 ## Why the maintained implementation remains C
 

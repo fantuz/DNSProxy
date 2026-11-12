@@ -47,6 +47,10 @@ DoH upstream, a 1 ms upstream delay, UDP clients and the answer cache disabled.
 | HTTP/3 | 8 | 3,570 | 3,450 |
 | HTTP/3 | 32 | 3,451 | 3,387 |
 
+A separate [C/Rust/Go application baseline](docs/benchmarks/linux-c-rust-go-2026-11-12/README.md)
+covers UDP and persistent TCP, larger replies and one CPU per proxy, using
+AdGuard dnsproxy as the Go reference.
+
 **We are staying with C for now.** These measurements show similar performance
 and slightly higher Rust memory use; they do not establish a consistent
 performance advantage or predict Internet throughput. C already has the

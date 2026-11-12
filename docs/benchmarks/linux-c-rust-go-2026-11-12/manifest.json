@@ -1,0 +1,25 @@
+{
+  "workflow_run": "https://github.com/fantuz/DNSProxy/actions/runs/43254052353",
+  "artifact_sha256": "654a556009d287628b25ad0ffbe1a0654c731a5d13ea9fbed279cc791f0baa46",
+  "c_revision": "343323e411488cfa3e608dfbf8496de8d91959b8",
+  "rust_revision": "7c844c19d4e40a306a6381dbdaa010f0053fb758",
+  "go_source": "AdguardTeam/dnsproxy@v0.86.0",
+  "go_release_sha256": "17ac43f76ebfcedf547c663f6f31aa70e68b8eb6fc41d2fc37d3bfe21a2ced66",
+  "measurements": 216,
+  "groups": 72,
+  "repetitions": 3,
+  "total_successful_queries": {
+    "c": 190458,
+    "rust": 193104,
+    "go": 257160
+  },
+  "failed_responses": 0,
+  "timeouts": 0,
+  "truncated_responses": 0,
+  "files_sha256": {
+    "environment.json": "f05ca7c601bc8096c70d4c04d2781b117a002437128f855a873a381a82167cfa",
+    "measurements.csv": "239da1d7b9f6a933ebb48dbdd89be4322c2710aed153db4b2a46e3cb24b037b1",
+    "measurements.jsonl": "27612c7efc6d9a7cccff0fefa95be80fcc887d5d69c4e88f9d4af5a3e39418d5",
+    "summary.md": "dc8d4c428665a871d54859fcc93e32d82353794fa1c9a35851b421e9b5ad88f5"
+  }
+}
