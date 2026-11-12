@@ -7,6 +7,8 @@ This compares complete applications, not language runtimes in isolation.
 """
 import argparse
 from array import array
+import base64
+from collections import Counter
 import csv
 import itertools
 import json
@@ -18,12 +20,51 @@ import socket
 import statistics
 import subprocess
 import time
+from urllib.parse import parse_qs
 
 from bench_modern import await_ready, free_port, percentile, proxy_cpu_rss
-from mock_doh import MockServer
+from mock_doh import DohApp, MockServer
 
 GO_VERSION = 'v0.86.0'
 SEQUENCE = itertools.count()
+
+
+class GetPostDohApp(DohApp):
+    """Accept RFC 8484 GET as used by Go, alongside the C/Rust POST path."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.methods = Counter()
+
+    def reset(self):
+        super().reset()
+        with self.lock:
+            self.methods.clear()
+
+    def snapshot(self):
+        result = super().snapshot()
+        with self.lock:
+            result['upstream_http_methods'] = dict(self.methods)
+        return result
+
+    def record_method(self, method):
+        with self.lock:
+            self.methods[method] += 1
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] == 'http':
+            self.record_method(scope['method'])
+        if scope['type'] == 'http' and scope['method'] == 'GET' and scope['path'] == '/dns-query':
+            query = parse_qs(scope.get('query_string', b'').decode('ascii'))
+            value, = query['dns']
+            body = base64.urlsafe_b64decode(value + '=' * (-len(value) % 4))
+
+            async def receive_body():
+                return {'type': 'http.request', 'body': body, 'more_body': False}
+
+            scope = {**scope, 'method': 'POST'}
+            receive = receive_body
+        await super().__call__(scope, receive, send)
 
 
 def load(port, transport, clients, seconds, answers):
@@ -145,6 +186,7 @@ def scenario(args, name, binary, protocol, transport, answers, run, cert, key):
         upstream_port = free_port()
     server = MockServer(upstream_port, cert, key, protocol=protocol,
                         delay_ms=args.delay_ms, answers=answers)
+    server.app = GetPostDohApp(delay_ms=args.delay_ms, answers=answers)
     log = args.output / f'{name}-{protocol}-{transport}-{answers}-{run}.log'
     proxy = None
     server.start()
@@ -236,6 +278,7 @@ def summarize(output):
             'Medians of three runs. Each proxy uses one CPU; the client and local TLS',
             'upstream share the host. Cache is disabled and every question is unique.',
             'Connection pooling and protocol engines differ between applications.', '',
+            'C and Rust use RFC 8484 POST; AdGuard dnsproxy uses GET.', '',
             '| Application | DoH | Client | A records | Clients | QPS | p95 ms | p99 ms | CPU % | Peak MiB |',
             '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |']
     for group, values in sorted(groups.items()):
