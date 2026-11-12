@@ -104,7 +104,7 @@ pub fn tcp_listener(addr: SocketAddrV4) -> io::Result<TcpListener> {
     Ok(socket.into())
 }
 
-// URL API added in libcurl 7.62. The project uses native libcurl 7.88+.
+// URL API added in libcurl 7.62.
 #[repr(C)]
 struct CurlUrl {
     _private: [u8; 0],
