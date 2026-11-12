@@ -31,6 +31,16 @@ class WindowsDoH(DoH):
 
 @unittest.skipUnless(os.name == 'nt', 'Native Windows acceptance tests')
 class WindowsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # A headless CI shell may have no console to deliver control events.
+        import ctypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        if not kernel.GetConsoleCP():
+            if not kernel.AllocConsole():
+                raise ctypes.WinError(ctypes.get_last_error())
+            cls.addClassCleanup(kernel.FreeConsole)
+
     @contextmanager
     def proxy(self):
         with HTTP(('127.0.0.1', 0), WindowsDoH) as server, tempfile.TemporaryFile() as log:

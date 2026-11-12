@@ -27,6 +27,7 @@ jobs:
           msystem: UCRT64
           update: true
           install: >-
+            git
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-curl
             mingw-w64-ucrt-x86_64-pkgconf
@@ -48,6 +49,11 @@ jobs:
           $env:Path = "$(Split-Path $python);$env:SystemRoot\System32;$env:SystemRoot"
           & $env:DNSP_TEST_BINARY --version
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-ChildItem packaging/windows/*.ps1 | ForEach-Object {
+            $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors)
+            if ($errors) { throw $errors }
+          }
           & $python tests/test_modern.py -v
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           & $python -m unittest discover -s tests -p test_benchmark.py -v

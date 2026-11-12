@@ -149,7 +149,7 @@ Install MSYS2 and open a **UCRT64** shell:
 
 ```sh
 pacman -Syu
-pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-curl \
+pacman -S --needed git mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-curl \
   mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-python
 bash scripts/build-windows.sh
 ```

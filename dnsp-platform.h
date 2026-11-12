@@ -131,6 +131,10 @@ static inline uint64_t dnsp_clock_ms(bool include_suspend) {
 }
 #ifdef _WIN32
 static inline const char *dnsp_bundled_ca(void) {
+    static char utf8[MAX_PATH*3];
+    static bool located;
+    if(located) return utf8[0]?utf8:NULL;
+    located=true; /* Resolve the installation path once, not on every query. */
     WCHAR path[MAX_PATH];
     DWORD size=GetModuleFileNameW(NULL,path,MAX_PATH);
     if(!size || size>=MAX_PATH) return NULL;
@@ -138,8 +142,8 @@ static inline const char *dnsp_bundled_ca(void) {
     if(!slash || (size_t)(slash-path)+sizeof(L"\\ca-bundle.crt")/sizeof(WCHAR)>MAX_PATH) return NULL;
     wcscpy(slash,L"\\ca-bundle.crt");
     if(GetFileAttributesW(path)==INVALID_FILE_ATTRIBUTES) return NULL;
-    static char utf8[MAX_PATH*3];
-    return WideCharToMultiByte(CP_UTF8,0,path,-1,utf8,sizeof(utf8),NULL,NULL)?utf8:NULL;
+    if(!WideCharToMultiByte(CP_UTF8,0,path,-1,utf8,sizeof(utf8),NULL,NULL)) utf8[0]=0;
+    return utf8[0]?utf8:NULL;
 }
 #endif
 
@@ -172,6 +176,7 @@ static inline dnsp_ssize_t dnsp_recv_udp(dnsp_socket_t fd,void *data,size_t size
     if(result!=0 && WSAGetLastError()!=WSAEMSGSIZE) return -1;
     *truncated=result!=0 || (msg.dwFlags&(MSG_TRUNC|MSG_CTRUNC));
     *peer_len=msg.namelen;
+    if(*truncated) return (dnsp_ssize_t)bytes;
     for(WSACMSGHDR *c=WSA_CMSG_FIRSTHDR(&msg);c;c=WSA_CMSG_NXTHDR(&msg,c)) {
         if(c->cmsg_level==IPPROTO_IP && c->cmsg_type==IP_PKTINFO &&
            c->cmsg_len>=WSA_CMSG_LEN(sizeof(IN_PKTINFO))) {
@@ -191,6 +196,7 @@ static inline dnsp_ssize_t dnsp_recv_udp(dnsp_socket_t fd,void *data,size_t size
     if(bytes<0) return -1;
     *truncated=(msg.msg_flags&(MSG_TRUNC|MSG_CTRUNC))!=0;
     *peer_len=msg.msg_namelen;
+    if(*truncated) return bytes;
     for(struct cmsghdr *c=CMSG_FIRSTHDR(&msg);c;c=CMSG_NXTHDR(&msg,c)) {
         if(c->cmsg_level==IPPROTO_IP && c->cmsg_type==IP_PKTINFO &&
            c->cmsg_len>=CMSG_LEN(sizeof(struct in_pktinfo))) {
