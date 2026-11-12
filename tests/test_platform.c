@@ -26,7 +26,7 @@ static bool exchange(const char *address,bool truncate) {
     UdpLocal local={0};bool cut=false;
     dnsp_ssize_t received=dnsp_recv_udp(server,data,truncate?4:sizeof(data),&peer,&peer_len,&local,&cut);
     printf("destination=%s received=%td truncated=%d local=%08" PRIx32 " interface=%" PRIu32 "\n",
-           address,received,cut,ntohl(local.source),local.interface_index);
+           address,received,cut,(uint32_t)ntohl(local.source),local.interface_index);
     if(received<0 || cut!=truncate) goto cleanup;
     if(truncate) {ok=true;goto cleanup;}
     if(local.source!=target.sin_addr.s_addr || received!=7 || memcmp(data,"request",7)) goto cleanup;
