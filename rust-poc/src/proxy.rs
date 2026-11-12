@@ -160,18 +160,40 @@ impl Proxy {
             Target::Tcp(id) => {
                 if let Some(client) = self.clients.get_mut(&id) {
                     if !client.queue(response, satisfies, self.cfg.tcp_io) {
-                        self.logs
-                            .warn(Failure::TcpBuffer, true, sys::CURLE_OUT_OF_MEMORY, 0, None, 0);
+                        self.logs.warn(
+                            Failure::TcpBuffer,
+                            true,
+                            sys::CURLE_OUT_OF_MEMORY,
+                            0,
+                            None,
+                            0,
+                        );
                     }
                 }
             }
             Target::Udp(peer, local) => {
-                if native::send_udp_with_id(&self.udp, peer, local, wire::u16_at(response, 0), &response[2..]).ok() == Some(response.len()) && satisfies {
+                if native::send_udp_with_id(
+                    &self.udp,
+                    peer,
+                    local,
+                    wire::u16_at(response, 0),
+                    &response[2..],
+                )
+                .ok()
+                    == Some(response.len())
+                    && satisfies
+                {
                     self.metrics.queries_satisfied += 1;
                 }
                 for waiter in waiters {
-                    if native::send_udp_with_id(&self.udp, waiter.peer, waiter.local, waiter.id, &response[2..])
-                        .ok()
+                    if native::send_udp_with_id(
+                        &self.udp,
+                        waiter.peer,
+                        waiter.local,
+                        waiter.id,
+                        &response[2..],
+                    )
+                    .ok()
                         == Some(response.len())
                         && satisfies
                     {
@@ -207,7 +229,9 @@ impl Proxy {
                 continue;
             }
             if matches!(q.target, Target::Udp(leader, address) if leader == peer && address.destination == local.destination && wire::u16_at(&q.request, 0) == id)
-                || q.waiters.iter().any(|w| w.peer == peer && w.local.destination == local.destination && w.id == id)
+                || q.waiters.iter().any(|w| {
+                    w.peer == peer && w.local.destination == local.destination && w.id == id
+                })
             {
                 return true;
             }
@@ -256,7 +280,14 @@ impl Proxy {
                 Ok(())
             }
             Err(code) => {
-                self.logs.warn(Failure::Setup, query.target.tcp(), code, 0, Some(query.role), 0);
+                self.logs.warn(
+                    Failure::Setup,
+                    query.target.tcp(),
+                    code,
+                    0,
+                    Some(query.role),
+                    0,
+                );
                 Err(Box::new(query))
             }
         }
@@ -467,8 +498,14 @@ impl Proxy {
                 if matches!(failure, Failure::Content | Failure::Dns) {
                     self.metrics.invalid_responses += 1;
                 }
-                self.logs
-                    .warn(failure, query.target.tcp(), transfer.code, transfer.status, Some(query.role), transfer.proxy_status);
+                self.logs.warn(
+                    failure,
+                    query.target.tcp(),
+                    transfer.code,
+                    transfer.status,
+                    Some(query.role),
+                    transfer.proxy_status,
+                );
 
                 if query.role == Role::Primary && transfer.backup_safe {
                     if let Some(deadline) = query.failover_deadline {
@@ -556,8 +593,14 @@ impl Proxy {
                 }
             }
             ReadEvent::NoMemory => {
-                self.logs
-                    .warn(Failure::TcpBuffer, true, sys::CURLE_OUT_OF_MEMORY, 0, None, 0);
+                self.logs.warn(
+                    Failure::TcpBuffer,
+                    true,
+                    sys::CURLE_OUT_OF_MEMORY,
+                    0,
+                    None,
+                    0,
+                );
                 self.close_tcp(id)?;
             }
             ReadEvent::Close => self.close_tcp(id)?,
@@ -907,7 +950,10 @@ mod tests {
     #[test]
     fn overload_returns_tcp_servfail_without_starting_transfer() {
         let mut proxy = proxy();
-        let udp = Target::Udp(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1234), native::UdpLocal::default());
+        let udp = Target::Udp(
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1234),
+            native::UdpLocal::default(),
+        );
         // RD clear bypasses coalescing. Transfers remain queued in the multi
         // until it is driven, so the fixture never contacts the upstream.
         let query = [0x12, 0x34, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1];

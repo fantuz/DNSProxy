@@ -69,18 +69,12 @@ fn clock_millis(clock: libc::clockid_t) -> Option<u64> {
 }
 
 fn listener(addr: SocketAddrV4, ty: Type, protocol: Protocol) -> io::Result<Socket> {
+    use std::os::fd::AsRawFd;
+
     let socket = Socket::new(Domain::IPV4, ty, Some(protocol))?;
     socket.set_reuse_address(true)?;
     socket.set_nonblocking(true)?;
-    socket.bind(&addr.into())?;
-    Ok(socket)
-}
-
-pub fn udp_listener(addr: SocketAddrV4) -> io::Result<UdpSocket> {
-    use std::os::fd::AsRawFd;
-
-    let socket = listener(addr, Type::DGRAM, Protocol::UDP)?;
-    if addr.ip().is_unspecified() {
+    if ty == Type::DGRAM && addr.ip().is_unspecified() {
         let enabled: c_int = 1;
         // SAFETY: The option takes a pointer to an initialized C int.
         if unsafe {
@@ -96,7 +90,12 @@ pub fn udp_listener(addr: SocketAddrV4) -> io::Result<UdpSocket> {
             return Err(io::Error::last_os_error());
         }
     }
-    Ok(socket.into())
+    socket.bind(&addr.into())?;
+    Ok(socket)
+}
+
+pub fn udp_listener(addr: SocketAddrV4) -> io::Result<UdpSocket> {
+    Ok(listener(addr, Type::DGRAM, Protocol::UDP)?.into())
 }
 
 pub fn tcp_listener(addr: SocketAddrV4) -> io::Result<TcpListener> {
@@ -376,7 +375,8 @@ pub fn recv_udp(
                     && (*header).cmsg_len
                         >= libc::CMSG_LEN(std::mem::size_of::<libc::in_pktinfo>() as u32) as usize
                 {
-                    let info = ptr::read_unaligned(libc::CMSG_DATA(header).cast::<libc::in_pktinfo>());
+                    let info =
+                        ptr::read_unaligned(libc::CMSG_DATA(header).cast::<libc::in_pktinfo>());
                     local = UdpLocal {
                         destination: info.ipi_addr.s_addr,
                         source: info.ipi_spec_dst.s_addr,

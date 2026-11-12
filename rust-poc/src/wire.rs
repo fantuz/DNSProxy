@@ -94,9 +94,9 @@ struct Names {
 
 impl Names {
     fn touches_ttl(&self, start: usize, len: usize) -> bool {
-        self.ttl_bytes.as_ref().is_some_and(|map| {
-            (start..start + len).any(|at| map[at / 8] & (1 << (at % 8)) != 0)
-        })
+        self.ttl_bytes
+            .as_ref()
+            .is_some_and(|map| (start..start + len).any(|at| map[at / 8] & (1 << (at % 8)) != 0))
     }
 }
 
@@ -165,13 +165,7 @@ fn read_name(
     }
 }
 
-fn rr_names(
-    p: &[u8],
-    mut start: usize,
-    end: usize,
-    kind: u16,
-    state: &mut Names,
-) -> Option<()> {
+fn rr_names(p: &[u8], mut start: usize, end: usize, kind: u16, state: &mut Names) -> Option<()> {
     let (prefix, tail, names, compressed, opaque_suffix) = match kind {
         2 | 3 | 4 | 5 | 7 | 8 | 9 | 12 => (0, 0, 1, true, false),
         6 => (0, 20, 2, true, false),
@@ -256,14 +250,7 @@ fn parse_into(p: &[u8], request: Option<&Info>, cap: u16, info: &mut Info) -> St
         ttl_bytes: response.then(|| vec![0; p.len().div_ceil(8)]),
     };
     if questions != 0 {
-        if read_name(
-            p,
-            &mut pos,
-            response,
-            &mut names,
-            Some(&mut info.name),
-        )
-        .is_none()
+        if read_name(p, &mut pos, response, &mut names, Some(&mut info.name)).is_none()
             || pos + 4 > p.len()
         {
             return Status::FormErr;
@@ -290,9 +277,7 @@ fn parse_into(p: &[u8], request: Option<&Info>, cap: u16, info: &mut Info) -> St
     for (section, count) in counts.into_iter().enumerate() {
         for i in 0..count {
             let owner = pos;
-            if read_name(p, &mut pos, true, &mut names, None).is_none()
-                || pos + 10 > p.len()
-            {
+            if read_name(p, &mut pos, true, &mut names, None).is_none() || pos + 10 > p.len() {
                 return Status::FormErr;
             }
             let kind = u16_at(p, pos);

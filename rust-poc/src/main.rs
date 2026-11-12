@@ -27,7 +27,11 @@ fn main() -> ExitCode {
                 curl.ssl_version().unwrap_or("none"),
                 if curl.feature_http2() { "yes" } else { "no" },
                 if curl.feature_http3() { "yes" } else { "no" },
-                if curl.version_num() >= 0x07_58_00 && curl.feature_http3() { "yes" } else { "no" },
+                if curl.version_num() >= 0x07_58_00 && curl.feature_http3() {
+                    "yes"
+                } else {
+                    "no"
+                },
             );
             return ExitCode::SUCCESS;
         }
