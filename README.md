@@ -19,8 +19,10 @@ multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
 
 A [native Windows PoC](docs/WINDOWS.md) builds the same C resolver source,
 with UDP/TCP port 53 launchers, optional Administrator elevation, and Windows
-DNS setup and rollback instructions. Download its portable ZIP from the
-Windows CI artifact; the guide describes validation and remaining work.
+DNS setup and rollback instructions. From v4.0.3 onward, download its portable
+`windows-amd64-poc.zip` from [GitHub Releases](https://github.com/fantuz/DNSProxy/releases).
+The Windows CI artifact also provides builds for testing; the guide describes
+validation and remaining work.
 
 This project grew out of DNS transport and privacy experiments dating to roughly
 2009–2010 and work surrounding [RFC 8484](https://www.rfc-editor.org/rfc/rfc8484).
@@ -439,15 +441,19 @@ Change settings with `sudo systemctl edit dnsp-modern`, clearing `ExecStart=`
 before supplying a replacement. See
 [packaging/README-packaging.md](packaging/README-packaging.md) for details.
 
-## Linux packages and releases
+## Packages and releases
 
 GitHub Actions builds DEBs for Debian 13 and Ubuntu 22.04/24.04, and RPMs for
 Rocky Linux 9. Each distribution has native x86-64 and ARM64 builds. Download
 the matching package and `SHA256SUMS` from
 [GitHub Releases](https://github.com/fantuz/DNSProxy/releases).
+From v4.0.3 onward, releases also include the native Windows x86-64 PoC ZIP;
+see the [Windows guide](docs/WINDOWS.md) for launch and DNS setup instructions.
 
 Set the next version in `VERSION` and merge to `master` to publish once the
-package matrix and sanitizer job pass. See the
+Linux package matrix, sanitizer job, and native Windows build and tests pass.
+The release requires all eight Linux packages and the Windows ZIP, covered by
+`SHA256SUMS`. See the
 [packaging guide](packaging/README-packaging.md) for installation, local
 builds, and manual release recovery.
 

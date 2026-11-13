@@ -7,10 +7,23 @@ or protocol rewrite. `dnsp-platform.h` adapts the OS interfaces.
 
 ## Download and start
 
-Open the PR's **DNSProxy modern - test and package** Actions run and download
-the **dnsp-modern-windows-amd64-poc** artifact. It contains a ZIP and SHA-256
-checksum. Extract the ZIP into a folder, keeping the EXE, DLLs and CA bundle
+From v4.0.3 onward, open [GitHub Releases](https://github.com/fantuz/DNSProxy/releases)
+and download **dnsp-modern-VERSION-windows-amd64-poc.zip** and **SHA256SUMS**
+from the same release. Check the ZIP's hash against its entry in `SHA256SUMS`:
+
+```powershell
+Get-FileHash .\dnsp-modern-4.0.3-windows-amd64-poc.zip -Algorithm SHA256
+```
+
+For an unreleased build, open a successful **DNSProxy modern - test and package**
+Actions run and download the **dnsp-modern-windows-amd64-poc** artifact. It
+contains the portable ZIP and its `.zip.sha256` checksum file. Release v4.0.2
+published only Linux packages; its Windows ZIP was uploaded to the corresponding
+Actions run. CI artifacts are retained for 14 days.
+
+Extract the portable ZIP into a folder, keeping the EXE, DLLs and CA bundle
 together. MSYS2, Python, and development tools are only build/test dependencies.
+`BUILD-INFO.txt` inside the ZIP identifies the version and exact source commit.
 
 Double-click **Start-DNSProxy.cmd**. It listens on **127.0.0.1:53**, using UDP
 and TCP, and forwards to Cloudflare over HTTPS. It enables 256 cache slots and
@@ -148,8 +161,11 @@ adapter address (`DNSP_TEST_SECOND_ADDRESS`), without changing adapter settings.
 
 Next decisions: persistent service and least-privilege account, reversible
 adapter configuration, native IPv6 listeners, signed installer, ARM64 builds,
-and Windows assets in normal releases. The PoC ZIP is a CI artifact; the Linux
-release publisher continues to handle its existing eight packages.
+and broader desktop acceptance. Releases include the PoC ZIP alongside the
+eight Linux packages. Publication waits for the native Windows build, portable
+bundle tests, Linux package builds, and sanitizer suite; all nine downloads
+are included in the release's `SHA256SUMS`. Distribution in a regular release
+does not change the Windows PoC support status described above.
 
 ## Build from source
 
