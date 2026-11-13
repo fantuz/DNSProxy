@@ -19,6 +19,41 @@ from mock_doh import MockServer, make_response  # noqa: E402
 
 
 class BenchmarkUnitTests(unittest.TestCase):
+    def test_h2_initial_stream_limit_waits_for_settings_ack(self):
+        from h2.config import H2Configuration
+        from h2.connection import H2Connection
+        from h2.events import RequestReceived
+        from h2.exceptions import TooManyStreamsError
+        from h2.settings import SettingCodes, Settings
+        from mock_h2 import NegotiatedH2Connection
+
+        server = NegotiatedH2Connection(config=H2Configuration(client_side=False))
+        server.local_settings = Settings(client=False, initial_values={
+            SettingCodes.MAX_CONCURRENT_STREAMS: 4,
+        })
+        server.initiate_connection()
+        advertised = server.data_to_send()
+        client = H2Connection()
+        client.initiate_connection()
+        headers = [(':method', 'POST'), (':scheme', 'https'),
+                   (':authority', 'localhost'), (':path', '/dns-query')]
+        # Requests already on the wire cannot know the server's new limit.
+        for stream_id in range(1, 16, 2):
+            client.send_headers(stream_id, headers, end_stream=True)
+        events = server.receive_data(client.data_to_send())
+        self.assertEqual(sum(isinstance(e, RequestReceived) for e in events), 8)
+
+        client.receive_data(advertised)
+        self.assertEqual(client.remote_settings.max_concurrent_streams, 4)
+        server.receive_data(client.data_to_send())
+        self.assertEqual(server.local_settings.max_concurrent_streams, 4)
+        # Exercise the server's enforcement with a deliberately noncompliant
+        # peer, independently of the client's own stream-limit enforcement.
+        client.remote_settings = Settings(client=False)
+        client.send_headers(17, headers, end_stream=True)
+        with self.assertRaises(TooManyStreamsError):
+            server.receive_data(client.data_to_send())
+
     def test_percentiles_interpolated(self):
         self.assertEqual(percentile([1., 2., 3., 4., 5.], 50), 3)
         self.assertEqual(percentile([1., 2., 3., 4., 5.], 95), 4.8)

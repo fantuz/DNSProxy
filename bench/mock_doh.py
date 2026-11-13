@@ -215,6 +215,8 @@ class MockServer:
             return
         from hypercorn.asyncio import serve
         from hypercorn.config import Config
+        from mock_h2 import install_settings_synchronization
+        install_settings_synchronization()
         config = Config()
         config.bind = [f'127.0.0.1:{self.port}']
         config.certfile = str(self.cert)
