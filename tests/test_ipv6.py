@@ -1,7 +1,8 @@
 """Exercise the shared DNS core over native IPv4 and IPv6 sockets."""
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import os
 import socket
+import random
 import struct
 import tempfile
 import threading
@@ -9,7 +10,7 @@ import time
 import unittest
 
 import test_modern as fixtures
-from test_modern import (BINARY, HTTP, CacheDoH, DoH, query, unused_ports,
+from test_modern import (BINARY, HTTP, CacheDoH, DoH, query,
                          spawn_proxy, terminate_proxy, sized_query)
 
 
@@ -19,6 +20,30 @@ class CountingDoH(CacheDoH):
         self.server.started.set()
         self.server.gate.wait(5)
         super().do_POST()
+
+
+def listener_ports():
+    # Stay below the host ephemeral range: readiness/upstream connections must
+    # not steal the port between reservation and the child binding its listeners.
+    with ExitStack() as held:
+        ports = []
+        for port in random.sample(range(18000, 28000), 100):
+            try:
+                reservations = []
+                for family, host in ((socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1')):
+                    for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+                        sock = held.enter_context(socket.socket(family, kind))
+                        if family == socket.AF_INET6:
+                            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                        sock.bind((host, port))
+                        reservations.append(sock)
+                ports.append(port)
+                if len(ports) == 2:
+                    return ports
+            except OSError:
+                for sock in reservations:
+                    sock.close()
+        raise RuntimeError('Cannot reserve dual-family test ports')
 
 
 class IPv6Tests(unittest.TestCase):
@@ -34,7 +59,7 @@ class IPv6Tests(unittest.TestCase):
 
     @contextmanager
     def proxy(self, *args, addresses=('127.0.0.1', '::1'), handler=CountingDoH):
-        port, metrics = unused_ports()
+        port, metrics = listener_ports()
         with HTTP(('127.0.0.1', 0), handler) as server, tempfile.TemporaryFile() as log:
             server.requests = 0
             server.started = threading.Event()
@@ -167,7 +192,7 @@ class IPv6Tests(unittest.TestCase):
     def test_explicit_failed_listener_releases_all_ports(self):
         for address in ('not-an-ip', '2001:db8::dead', 'fe80::1%invalid-interface'):
             with self.subTest(address=address):
-                port, _ = unused_ports()
+                port, _ = listener_ports()
                 with tempfile.TemporaryFile() as log:
                     process = spawn_proxy([str(BINARY), '-l', '127.0.0.1', '-l', address,
                                            '-p', str(port)], stderr=log)
