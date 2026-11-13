@@ -64,6 +64,16 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(result.returncode == 0, succeeds, result.stdout + result.stderr)
         return dict(line.split("=", 1) for line in self.output.read_text().splitlines())
 
+    def packages(self, directory):
+        directory.mkdir()
+        for distro in ("ubuntu22.04", "ubuntu24.04", "debian13"):
+            for arch in ("amd64", "arm64"):
+                (directory / f"dnsp-modern_0.3.8+{distro}_{arch}.deb").write_text(arch)
+        for arch in ("x86_64", "aarch64"):
+            (directory / f"dnsp-modern-0.3.8-1.el9.{arch}.rpm").write_text(arch)
+        (directory / "dnsp-modern-0.3.8-windows-amd64-poc.zip").write_text("Windows bundle")
+        return directory
+
     def test_prepare_plan_and_publish_retry(self):
         prepared = self.script("prepare-release.sh")["commit"]
         self.assertEqual(self.git("rev-parse", "HEAD^"), self.base)
@@ -90,13 +100,10 @@ case "$2" in
 esac
 ''')
         gh.chmod(0o755)
-        assets = self.root / "packages"
-        assets.mkdir()
-        for distro in ("ubuntu22.04", "ubuntu24.04", "debian13"):
-            for arch in ("amd64", "arm64"):
-                (assets / f"dnsp-modern_0.3.8+{distro}_{arch}.deb").write_text(arch)
-        for arch in ("x86_64", "aarch64"):
-            (assets / f"dnsp-modern-0.3.8-1.el9.{arch}.rpm").write_text(arch)
+        assets = self.packages(self.root / "packages")
+        expected_packages = sorted(path.name for path in assets.iterdir())
+        # CI also supplies a per-ZIP checksum; the release uses its aggregate manifest.
+        (assets / "dnsp-modern-0.3.8-windows-amd64-poc.zip.sha256").write_text("CI sidecar")
         release = self.root / "published"
         create_args = self.root / "create-args"
         publish = {
@@ -122,8 +129,41 @@ esac
         self.assertEqual(arguments.count("--prerelease=false"), 2)
         self.assertNotIn("--prerelease", arguments)
         self.assertNotIn("--prerelease=true", arguments)
+        for package in expected_packages:
+            self.assertEqual(arguments.count(package), 2)
+        checksums = (assets / "SHA256SUMS").read_text().splitlines()
+        self.assertEqual(len(checksums), 9)
+        self.assertEqual(sorted(line.split("  ", 1)[1] for line in checksums), expected_packages)
         self.script("publish-modern.sh", assets, FAIL_PUBLICATION="true", **publish)
         self.assertEqual(create_args.read_text(), attempts)
+
+    def test_incomplete_package_sets_never_tag_or_publish(self):
+        prepared = self.script("prepare-release.sh")["commit"]
+        gh_calls = self.root / "gh-calls"
+        gh = self.root / "gh"
+        gh.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$TEST_GH_CALLS"\nexit 1\n')
+        gh.chmod(0o755)
+        for case in ("missing-windows", "empty-windows", "wrong-version", "extra-zip", "missing-linux"):
+            with self.subTest(case=case):
+                assets = self.packages(self.root / case)
+                windows = assets / "dnsp-modern-0.3.8-windows-amd64-poc.zip"
+                if case == "missing-windows":
+                    windows.unlink()
+                elif case == "empty-windows":
+                    windows.write_bytes(b"")
+                elif case == "wrong-version":
+                    windows.rename(assets / "dnsp-modern-0.3.7-windows-amd64-poc.zip")
+                elif case == "extra-zip":
+                    (assets / "stale-build.zip").write_text("old build")
+                else:
+                    (assets / "dnsp-modern_0.3.8+debian13_arm64.deb").unlink()
+                self.script("publish-modern.sh", assets, succeeds=False,
+                            PATH=f"{self.root}:{os.environ['PATH']}",
+                            RELEASE_MODE="manual", RELEASE_TAG="v0.3.8-modern",
+                            RELEASE_COMMIT=prepared, TEST_GH_CALLS=str(gh_calls))
+                self.assertIsNone(self.ref(self.tag))
+                self.assertEqual(self.ref(self.stage), prepared)
+                self.assertFalse(gh_calls.exists())
 
     def test_sync_master_to_published_version_keeps_existing_tag(self):
         prepared = self.script("prepare-release.sh")["commit"]

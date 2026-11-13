@@ -41,8 +41,9 @@ done
 for arch in x86_64 aarch64; do
     packages+=("dnsp-modern-${version}-1.el9.${arch}.rpm")
 done
+packages+=("dnsp-modern-${version}-windows-amd64-poc.zip")
 shopt -s nullglob
-present=(*.deb *.rpm)
+present=(*.deb *.rpm *.zip)
 if (( ${#present[@]} != ${#packages[@]} )); then
     echo "Expected ${#packages[@]} packages, found ${#present[@]}" >&2
     exit 1

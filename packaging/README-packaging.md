@@ -89,14 +89,17 @@ helpers.
    `master`.
 2. The first successful build for the new version creates the matching
    `vVERSION-modern` tag at the tested commit and publishes a regular GitHub release
-   with eight packages and `SHA256SUMS`. Other commits at the published version
+   with eight Linux packages, the Windows x86-64 PoC ZIP, and `SHA256SUMS`.
+   Publication waits for the native Windows build and portable bundle tests
+   as well as Linux packaging and sanitizers. Other commits at the published version
    produce CI artifacts. A failed check prevents publication.
 3. To release from the Actions page, open **DNSProxy modern - test and package
    → Run workflow**, choose `master`, and enable **publish**. Enter a
    `release_version` higher than both the selected commit's `VERSION` and the
    highest release tag. The workflow stages a commit that changes only
-   `VERSION`. All eight package builds and the sanitizer job check out that
-   commit before the workflow tags it and publishes the packages. A blank
+   `VERSION`. All eight Linux package builds, the Windows build/tests, and the
+   sanitizer job check out that commit before the workflow tags it and publishes
+   the complete set. A blank
    field uses the `VERSION` from `master`. Pushing an explicit tag also works
    when it matches the tagged commit's `VERSION`.
 
@@ -124,6 +127,12 @@ Release assets are direct downloads with SHA-256 checksums. Download the
 matching package and `SHA256SUMS` to the same directory and run
 `sha256sum --ignore-missing -c SHA256SUMS`. Use the GitHub release page as the
 source for both files.
+
+Windows downloads are available from v4.0.3 onward as
+`dnsp-modern-VERSION-windows-amd64-poc.zip`, also covered by `SHA256SUMS`.
+See the [Windows guide](../docs/WINDOWS.md) for PowerShell verification and setup.
+The publisher rejects missing, empty, extra, or wrong-version packages, including
+the Windows ZIP, before creating a release tag. Earlier releases remain unchanged.
 
 ## Protocol and performance limitations
 

@@ -321,9 +321,9 @@ jobs:
       !cancelled() && github.event_name != 'pull_request' &&
       needs.plan.result == 'success' && needs.deb.result == 'success' &&
       needs.debian.result == 'success' && needs.rpm.result == 'success' &&
-      needs.sanitizers.result == 'success' &&
+      needs.sanitizers.result == 'success' && needs.windows.result == 'success' &&
       (needs.plan.outputs.mode == 'master' || needs.plan.outputs.mode == 'tag' || needs.plan.outputs.mode == 'manual')
-    needs: [plan, deb, debian, rpm, sanitizers]
+    needs: [plan, deb, debian, rpm, sanitizers, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -339,7 +339,7 @@ jobs:
           pattern: dnsp-modern-*
           merge-multiple: true
           path: release-assets
-      - name: Publish DEBs, RPMs, and checksums
+      - name: Publish DEBs, RPMs, Windows ZIP, and checksums
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
