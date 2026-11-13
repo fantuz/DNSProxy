@@ -37,8 +37,11 @@ multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
   <a href="https://github.com/fantuz/DNSProxy/releases/latest#downloads"><img src="https://img.shields.io/badge/Download%20for%20macOS-Intel%20x86--64-555555?style=for-the-badge" alt="Download for macOS — Intel x86-64" height="28"></a>
 </p>
 
-**[Linux DEB / RPM downloads](https://github.com/fantuz/DNSProxy/releases/latest#downloads)**
-· [Windows setup guide](docs/WINDOWS.md)
+<p align="center">
+  <a href="https://github.com/fantuz/DNSProxy/releases/latest#downloads"><img src="https://img.shields.io/badge/Download%20for%20Linux-DEB%20%2F%20RPM-2e7d32?style=for-the-badge" alt="Download for Linux — DEB and RPM packages" height="28"></a>
+</p>
+
+[Windows setup guide](docs/WINDOWS.md)
 · [macOS setup guide](docs/MACOS.md)
 · [Linux installation guide](packaging/README-packaging.md)
 
