@@ -47,7 +47,7 @@ def free_port():
 def make_certificate(directory):
     cert = directory/'localhost.pem'
     key = directory/'localhost.key'
-    subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+    subprocess.run([os.environ.get('DNSP_TEST_OPENSSL', 'openssl'), 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
                     '-days', '1', '-keyout', str(key), '-out', str(cert),
                     '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost'],
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -304,16 +304,6 @@ def run_suite(args, protocol, tmpdir):
                 warm_clients = 1
             one_load(proxy_port, warm_clients, args.warmup)
             await_quiescent(metrics_port, upstream_server)
-            idle_probe = None
-            if protocol == 'h2' and args.h2_idle_timeout:
-                before_idle = metric_snapshot(metrics_port)
-                time.sleep(args.h2_idle_timeout + 0.2)
-                # Zero seconds still issues the initial single query.
-                idle_probe = one_load(proxy_port, 1, 0)
-                await_quiescent(metrics_port, upstream_server)
-                after_idle = metric_snapshot(metrics_port)
-                idle_probe['curl_metric_delta'] = metrics_delta(before_idle, after_idle)
-                idle_probe['upstream_phases'] = phase_timings(before_idle, after_idle)
             if upstream_server:
                 upstream_server.app.reset()
             before = metric_snapshot(metrics_port)
@@ -322,6 +312,19 @@ def run_suite(args, protocol, tmpdir):
             cpu_after, rss_after, rss_peak = proxy_cpu_rss(proxy.pid)
             await_quiescent(metrics_port, upstream_server)
             after = metric_snapshot(metrics_port)
+            observed = upstream_server.app.snapshot() if upstream_server else None
+            idle_probe = None
+            if protocol == 'h2' and args.h2_idle_timeout:
+                # Measure the warmed connection first. Probing idle recovery
+                # before the load can leave another cold connection whose
+                # legal initial burst has not learned the advertised limit.
+                time.sleep(args.h2_idle_timeout + 0.2)
+                # Zero seconds still issues the initial single query.
+                idle_probe = one_load(proxy_port, 1, 0)
+                await_quiescent(metrics_port, upstream_server)
+                after_idle = metric_snapshot(metrics_port)
+                idle_probe['curl_metric_delta'] = metrics_delta(after, after_idle)
+                idle_probe['upstream_phases'] = phase_timings(after, after_idle)
             result.update({
                 'protocol_requested': protocol if upstream_server else 'external',
                 'concurrency': concurrency, 'max_host_connections': args.max_host_connections,
@@ -335,7 +338,7 @@ def run_suite(args, protocol, tmpdir):
                 'curl_metric_delta': metrics_delta(before, after),
                 'upstream_phases': phase_timings(before, after),
                 'h2_idle_probe': idle_probe,
-                'upstream_observed': upstream_server.app.snapshot() if upstream_server else None,
+                'upstream_observed': observed,
             })
             if args.assert_h2_multiplex and upstream_server and protocol=='h2' and concurrency>=8:
                 obs = result['upstream_observed']
@@ -381,7 +384,7 @@ def run_suite(args, protocol, tmpdir):
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=lambda s: Path(s).resolve(), default=ROOT/'dnsp-modern')
+    parser.add_argument('--binary', type=lambda s: Path(s).resolve(), default=Path(os.environ.get('DNSP_TEST_BINARY', ROOT/'dnsp-modern')))
     parser.add_argument('--protocol', choices=('h2', 'h1', 'both', 'h3', 'h2-h3'), default='both',
                         help='Use both for HTTP/2 and HTTP/1.1, or h2-h3 for a matched QUIC comparison')
     parser.add_argument('--concurrency', default='1,8,32,64',

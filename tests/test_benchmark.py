@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for benchmark report logic and actual loopback TLS/HTTP2 multiplexing."""
 import json
+import os
 from pathlib import Path
 import socket
 import struct
@@ -10,6 +11,7 @@ import tempfile
 import unittest
 
 BASE = Path(__file__).resolve().parent.parent
+BINARY = Path(os.environ.get('DNSP_TEST_BINARY', BASE/'dnsp-modern'))
 sys.path.insert(0, str(BASE/'bench'))
 from bench_modern import (DNS_QUESTION, EDNS_OPT, await_quiescent, await_ready,  # noqa: E402
                           free_port, make_certificate, metric_snapshot, percentile, proxy_cpu_rss)
@@ -17,6 +19,41 @@ from mock_doh import MockServer, make_response  # noqa: E402
 
 
 class BenchmarkUnitTests(unittest.TestCase):
+    def test_h2_initial_stream_limit_waits_for_settings_ack(self):
+        from h2.config import H2Configuration
+        from h2.connection import H2Connection
+        from h2.events import RequestReceived
+        from h2.exceptions import TooManyStreamsError
+        from h2.settings import SettingCodes, Settings
+        from mock_h2 import NegotiatedH2Connection
+
+        server = NegotiatedH2Connection(config=H2Configuration(client_side=False))
+        server.local_settings = Settings(client=False, initial_values={
+            SettingCodes.MAX_CONCURRENT_STREAMS: 4,
+        })
+        server.initiate_connection()
+        advertised = server.data_to_send()
+        client = H2Connection()
+        client.initiate_connection()
+        headers = [(':method', 'POST'), (':scheme', 'https'),
+                   (':authority', 'localhost'), (':path', '/dns-query')]
+        # Requests already on the wire cannot know the server's new limit.
+        for stream_id in range(1, 16, 2):
+            client.send_headers(stream_id, headers, end_stream=True)
+        events = server.receive_data(client.data_to_send())
+        self.assertEqual(sum(isinstance(e, RequestReceived) for e in events), 8)
+
+        client.receive_data(advertised)
+        self.assertEqual(client.remote_settings.max_concurrent_streams, 4)
+        server.receive_data(client.data_to_send())
+        self.assertEqual(server.local_settings.max_concurrent_streams, 4)
+        # Exercise the server's enforcement with a deliberately noncompliant
+        # peer, independently of the client's own stream-limit enforcement.
+        client.remote_settings = Settings(client=False)
+        client.send_headers(17, headers, end_stream=True)
+        with self.assertRaises(TooManyStreamsError):
+            server.receive_data(client.data_to_send())
+
     def test_percentiles_interpolated(self):
         self.assertEqual(percentile([1., 2., 3., 4., 5.], 50), 3)
         self.assertEqual(percentile([1., 2., 3., 4., 5.], 95), 4.8)
@@ -72,7 +109,7 @@ class BenchmarkIntegrationTests(unittest.TestCase):
             try:
                 await_ready(upstream_port, None, 'DoH mock')
                 with tempfile.TemporaryFile() as log, subprocess.Popen([
-                    str(BASE/'dnsp-modern'), '-p', str(proxy_port), '-m', str(metrics_port),
+                    str(BINARY), '-p', str(proxy_port), '-m', str(metrics_port),
                     '-s', f'https://localhost:{upstream_port}/dns-query', '--ca-file', str(cert),
                     '--bootstrap-address', '127.0.0.1',
                 ], stderr=log) as proxy:
@@ -111,11 +148,12 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='dnsp-bench-ci-') as td:
             dest = Path(td)/'results.json'
             cmd = [sys.executable, str(BASE/'bench/bench_modern.py'),
-                   '--binary', str(BASE/'dnsp-modern'),
+                   '--binary', str(BINARY),
                    '--protocol', 'both', '--concurrency', '1,8',
                    '--duration', '0.7', '--warmup', '0.2',
                    '--max-host-connections', '1', '--assert-h2-multiplex',
                    '--h2-max-streams', '4', '--h2-idle-timeout', '0.25',
+                   '--verbose',
                    '--output', str(dest)]
             out = subprocess.run(cmd, text=True, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, timeout=60)
@@ -125,19 +163,24 @@ class BenchmarkIntegrationTests(unittest.TestCase):
             h2 = next(r for r in results if r['protocol_requested']=='h2' and r['concurrency']==8)
             h1 = next(r for r in results if r['protocol_requested']=='h1' and r['concurrency']==8)
             self.assertGreaterEqual(h2['upstream_observed']['upstream_max_simultaneous_per_connection'], 2)
-            self.assertLessEqual(h2['upstream_observed']['upstream_max_simultaneous_per_connection'], 4)
+            self.assertLessEqual(h2['upstream_observed']['upstream_max_simultaneous_per_connection'], 4, h2)
             self.assertEqual(h1['upstream_observed']['upstream_max_simultaneous_per_connection'], 1)
             self.assertGreater(h2['curl_metric_delta']['dnsp_upstream_http_responses_total{version="2"}'], 0)
             self.assertEqual(h1['curl_metric_delta']['dnsp_upstream_http_responses_total{version="2"}'], 0)
             self.assertGreater(h2['successful_queries'], 0)
             self.assertGreater(h1['successful_queries'], 0)
-            self.assertGreater(h2['proxy_rss_peak_bytes'], 0)
+            self.assertEqual(h2['failed_responses'] + h2['timeouts'], 0, h2)
+            self.assertEqual(h1['failed_responses'] + h1['timeouts'], 0, h1)
+            if sys.platform.startswith('linux'):
+                self.assertGreater(h2['proxy_rss_peak_bytes'], 0)
+            else:
+                self.assertIsNone(h2['proxy_rss_peak_bytes'])  # /proc metrics are optional.
             phases = h2['upstream_phases']
             self.assertEqual(phases['first_byte']['samples'], h2['successful_queries'])
             self.assertGreater(phases['first_byte']['mean_ms'], 0)
             self.assertEqual(phases['tls'], {'samples': 0, 'mean_ms': None})
             idle = h2['h2_idle_probe']
-            self.assertEqual(idle['successful_queries'], 1)
+            self.assertEqual(idle['successful_queries'], 1, f'{h2}\n{out.stderr}')
             self.assertEqual(idle['curl_metric_delta']['dnsp_upstream_new_connections_total'], 1)
             self.assertEqual(idle['upstream_phases']['tls']['samples'], 1)
             self.assertIsNone(h1['h2_idle_probe'])
