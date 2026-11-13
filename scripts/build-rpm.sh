@@ -11,9 +11,9 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 mkdir "$work/SOURCES"
 git archive --format=tar.gz --prefix="dnsp-modern-$version/" HEAD -- \
-    dnsp-modern.c dnsp-platform.h modern.mk VERSION LICENSE tests/test_modern.py tests/test_curl_callbacks.c \
-    tests/test_platform.c tests/test_ipv6.py \
-    packaging/README-packaging.md packaging/systemd/dnsp-modern.service \
+    dnsp-modern.c dnsp-platform.h dnsp-service.h modern.mk VERSION LICENSE tests/test_modern.py tests/test_curl_callbacks.c \
+    tests/test_platform.c tests/test_ipv6.py tests/test_linux_dns.py \
+    packaging/README-packaging.md packaging/systemd/ packaging/linux/dnsp-configure-dns \
     > "$work/SOURCES/dnsp-modern-$version.tar.gz"
 
 rpmbuild -bb --define "_topdir $work" --define "dnsp_version $version" packaging/rpm/dnsp-modern.spec

@@ -61,7 +61,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           & $env:DNSP_TEST_BINARY --version
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          Get-ChildItem packaging/windows/*.ps1 | ForEach-Object {
+          Get-ChildItem packaging/windows/* -Include *.ps1,*.psm1 | ForEach-Object {
             $errors = $null
             $null = [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors)
             if ($errors) { throw $errors }
@@ -72,6 +72,13 @@ jobs:
           & $python tests/test_ipv6.py -v
           if ($LASTEXITCODE) { $failed = $true }
           & $python tests/test_windows.py -v
+          if ($LASTEXITCODE) { $failed = $true }
+          $savedModulePath = $env:PSModulePath
+          Remove-Item Env:PSModulePath -ErrorAction SilentlyContinue
+          & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tests/test_windows_dns.ps1
+          if ($LASTEXITCODE) { $failed = $true }
+          $env:PSModulePath = $savedModulePath
+          & $python tests/test_windows_service.py -v
           if ($LASTEXITCODE) { $failed = $true }
           & $python -m unittest discover -s tests -p test_benchmark.py -v
           if ($LASTEXITCODE) { $failed = $true }

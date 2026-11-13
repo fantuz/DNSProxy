@@ -18,6 +18,8 @@ cleanup() {
         journalctl -u "$unit" --no-pager -n 80 >&2 || :
     fi
     systemctl stop "$unit" >/dev/null 2>&1 || :
+    rm -f /var/lib/dnsp-modern-integration/state.json
+    rmdir /var/lib/dnsp-modern-integration 2>/dev/null || :
     dpkg --purge dnsp-modern >/dev/null 2>&1 || :
     if [ -n "$fixture" ]; then kill "$fixture" 2>/dev/null || :; fi
     if [ -f "$dropin/ci-lifecycle.conf" ]; then
@@ -106,6 +108,19 @@ systemctl is-enabled --quiet "$unit"
 cmp "$dropin/ci-lifecycle.conf" "$work/ci-lifecycle.conf"
 probe
 
+# Removal must not strand the host with DNS pointing at an uninstalled resolver.
+state=/var/lib/dnsp-modern-integration
+mkdir -m 0700 "$state"
+printf '%s\n' '{"version":1,"phase":"active"}' > "$state/state.json"
+if dpkg --remove dnsp-modern; then
+    echo 'Removal unexpectedly ignored DNS integration state' >&2
+    exit 1
+fi
+systemctl is-active --quiet "$unit"
+test -x /usr/sbin/dnsp-configure-dns
+rm "$state/state.json"
+rmdir "$state"
+systemd-analyze verify dnsp-modern-dns-recovery.service dnsp-modern-dns-recovery.timer
 apt-get remove -y dnsp-modern
 if systemctl is-active --quiet "$unit"; then exit 1; fi
 test ! -e /usr/bin/dnsp-modern
