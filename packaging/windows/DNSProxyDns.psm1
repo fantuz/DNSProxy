@@ -14,7 +14,9 @@ function Write-DnsState([string]$Path, $State) {
     $file = [IO.FileStream]::new($temporary, [IO.FileMode]::Create,
         [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
     try { $file.Write($bytes, 0, $bytes.Length); $file.Flush($true) } finally { $file.Dispose() }
-    if ([IO.File]::Exists($Path)) { [IO.File]::Replace($temporary, $Path, $null) }
+    # PowerShell 5.1 converts $null to an empty string for a string parameter;
+    # File.Replace requires a true null when no backup filename is requested.
+    if ([IO.File]::Exists($Path)) { [IO.File]::Replace($temporary, $Path, [NullString]::Value) }
     else { [IO.File]::Move($temporary, $Path) }
 }
 
