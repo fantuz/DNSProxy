@@ -73,6 +73,8 @@ jobs:
           if ($LASTEXITCODE) { $failed = $true }
           & $python tests/test_windows.py -v
           if ($LASTEXITCODE) { $failed = $true }
+          & $python tests/test_windows_service.py -v
+          if ($LASTEXITCODE) { $failed = $true }
           & $python -m unittest discover -s tests -p test_benchmark.py -v
           if ($LASTEXITCODE) { $failed = $true }
           & $python tests/test_http3.py -v

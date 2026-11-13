@@ -21,6 +21,7 @@ install -m 0644 packaging/systemd/dnsp-modern.service "$STAGE/lib/systemd/system
 for script in postinst prerm postrm; do
     install -m 0755 "packaging/debian/$script" "$STAGE/DEBIAN/$script"
 done
+install -m 0644 packaging/systemd/port-53.conf "$STAGE/usr/share/doc/dnsp-modern/port-53.conf"
 install -m 0644 packaging/README-packaging.md "$STAGE/usr/share/doc/dnsp-modern/README.packaging"
 {
     printf 'Upstream source: https://github.com/fantuz/DNSProxy\n\n'
