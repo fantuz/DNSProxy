@@ -21,6 +21,56 @@ static bool udp_dispatch_is_bounded(void) {
     return ok;
 }
 
+static bool stale_retry_preserves_budget_and_replay_policy(void) {
+    static const unsigned char request[]={
+        0x12,0x34,1,0,0,1,0,0,0,0,0,0,0,0,1,0,1
+    };
+    if(!init_curl()) return false;
+    multi=curl_multi_init();
+    Query *q=calloc(1,sizeof(*q));
+    bool ok=multi && q;
+    if(ok) {
+        q->request=malloc(sizeof(request));
+        q->easy=curl_easy_init();
+        ok=q->request && q->easy;
+    }
+    if(ok) {
+        memcpy(q->request,request,sizeof(request));
+        q->req_len=sizeof(request);
+        ok=dns_parse(request,sizeof(request),NULL,&q->info)==DNS_OK &&
+           curl_multi_add_handle(multi,q->easy)==CURLM_OK;
+    }
+    if(ok) {
+        primary=(Upstream){.url="http://127.0.0.1:1/dns-query",.loopback_http=true};
+        q->upstream=&primary;
+        active=q;active_count=1;
+        uint64_t deadline=clock_ms()+1000;
+        q->attempt_deadline_ms=deadline;
+        ok=!retry_stale_connection(q,CURLE_PEER_FAILED_VERIFICATION,0,0,0) &&
+           !retry_stale_connection(q,CURLE_GOT_NOTHING,200,0,0) &&
+           !retry_stale_connection(q,CURLE_GOT_NOTHING,0,403,0) &&
+           !retry_stale_connection(q,CURLE_GOT_NOTHING,0,0,1);
+        q->info.qtype=250;
+        ok=ok && !retry_stale_connection(q,CURLE_GOT_NOTHING,0,0,0);
+        q->info.qtype=1;
+        q->resp_len=1;
+        ok=ok && !retry_stale_connection(q,CURLE_GOT_NOTHING,0,0,0);
+        q->resp_len=0;
+        q->attempt_deadline_ms=clock_ms();
+        ok=ok && !retry_stale_connection(q,CURLE_GOT_NOTHING,0,0,0);
+        q->attempt_deadline_ms=deadline;
+        ok=ok && retry_stale_connection(q,CURLE_GOT_NOTHING,0,0,0) &&
+           q->retried_stale && q->attempt_deadline_ms<=deadline && active==q && active_count==1 &&
+           !retry_stale_connection(q,CURLE_GOT_NOTHING,0,0,0);
+    }
+    if(q) remove_query(q);
+    while(idle_easy_count) curl_easy_cleanup(idle_easies[--idle_easy_count]);
+    if(multi) curl_multi_cleanup(multi);
+    multi=NULL;primary=(Upstream){0};
+    curl_global_cleanup();
+    return ok;
+}
+
 static bool tcp_write_resumes_under_backpressure(void) {
     int fd[2];
     if(socketpair(AF_UNIX,SOCK_STREAM,0,fd)<0) return false;
@@ -108,5 +158,6 @@ int main(void) {
     free(client.out);
     if(!valid) return 11;
     if(!udp_dispatch_is_bounded()) return 12;
-    return tcp_write_resumes_under_backpressure()?0:13;
+    if(!tcp_write_resumes_under_backpressure()) return 13;
+    return stale_retry_preserves_budget_and_replay_policy()?0:14;
 }

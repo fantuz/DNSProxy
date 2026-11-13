@@ -180,7 +180,7 @@ class BenchmarkIntegrationTests(unittest.TestCase):
             self.assertGreater(phases['first_byte']['mean_ms'], 0)
             self.assertEqual(phases['tls'], {'samples': 0, 'mean_ms': None})
             idle = h2['h2_idle_probe']
-            self.assertEqual(idle['successful_queries'], 1)
+            self.assertEqual(idle['successful_queries'], 1, f'{h2}\n{out.stderr}')
             self.assertEqual(idle['curl_metric_delta']['dnsp_upstream_new_connections_total'], 1)
             self.assertEqual(idle['upstream_phases']['tls']['samples'], 1)
             self.assertIsNone(h1['h2_idle_probe'])

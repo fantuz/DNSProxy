@@ -118,6 +118,7 @@ install a persistent service or silently change adapters.
 | Socket ownership | Windows `SO_EXCLUSIVEADDRUSE`; Linux `SO_REUSEADDR` |
 | Polling and time | Winsock `select`, `GetTickCount64`; cache time includes suspend |
 | Shutdown | Console Ctrl+C/Ctrl+Break; atomic stop flag |
+| Expired upstream connection | One fresh retry within the existing attempt deadline for replay-safe queries |
 | Statistics | Shared loopback `/metrics`; POSIX `SIGUSR1` remains Linux-only |
 | Upstream transport | Packaged libcurl/OpenSSL with HTTP/2 and HTTP/3 |
 

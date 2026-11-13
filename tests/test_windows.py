@@ -107,10 +107,11 @@ class WindowsTests(unittest.TestCase):
                 self.assertEqual(fixtures.Tests.tcp_frame(client), answer)
             resolved = subprocess.run([
                 str(Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe'),
-                '-NoProfile', '-Command',
-                'Resolve-DnsName www.google.com -Type A -Server 127.0.0.1 -DnsOnly '
+                '-NoProfile', '-NonInteractive', '-Command',
+                f'Resolve-DnsName windows-poc-{os.getpid()}.invalid. '
+                '-Type A -Server 127.0.0.1 -DnsOnly -NoHostsFile -QuickTimeout '
                 '| Select-Object -ExpandProperty IPAddress',
-            ], capture_output=True, text=True, timeout=15)
+            ], capture_output=True, text=True, timeout=45)
             self.assertEqual(resolved.returncode, 0, resolved.stderr)
             self.assertIn('192.0.2.1', resolved.stdout)
 

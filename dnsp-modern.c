@@ -252,12 +252,12 @@ struct Query {
     unsigned char *request,*response;
     size_t req_len,resp_len,resp_cap,padded_len;
     Upstream *upstream;
-    uint64_t failover_deadline_ms;
+    uint64_t failover_deadline_ms,attempt_deadline_ms;
     DnsInfo info;
     struct sockaddr_storage peer;dnsp_socklen_t peer_len;
     UdpLocal udp_local;
     Client *client;uint64_t generation;dnsp_socket_t udp_fd;
-    bool shareable_udp,added_padding;
+    bool shareable_udp,added_padding,retried_stale;
     size_t udp_waiter_count;
     UdpWaiter udp_waiters[MAX_UDP_WAITERS];
     CacheEntry *cache_slot;
@@ -798,6 +798,7 @@ static bool start_upstream(Query *q,long timeout_ms) {
     const unsigned char *post=q->added_padding?q->request+q->req_len:q->request;
     size_t post_len=q->added_padding?q->padded_len:q->req_len;
     q->cache_headers=(CacheHeaders){.max_age=UINT32_MAX};
+    q->attempt_deadline_ms=clock_ms()+(uint64_t)timeout_ms;
     CURLcode setup_code=CURLE_OUT_OF_MEMORY;
     q->easy=acquire_easy();
     if(!q->easy) goto fail;
@@ -809,6 +810,7 @@ static bool start_upstream(Query *q,long timeout_ms) {
     OPT(CURLOPT_POSTFIELDS,post);
     OPT(CURLOPT_POSTFIELDSIZE_LARGE,(curl_off_t)post_len);
     OPT(CURLOPT_HTTP_VERSION,version);
+    if(q->retried_stale) OPT(CURLOPT_FRESH_CONNECT,1L);
     if(version!=CURL_HTTP_VERSION_1_1) OPT(CURLOPT_PIPEWAIT,1L);
     OPT(CURLOPT_TCP_KEEPALIVE,1L);
     OPT(CURLOPT_WRITEFUNCTION,collect);
@@ -866,12 +868,13 @@ static bool retryable_transport(CURLcode code) {
 static bool h3_verification_pending(CURL *easy,CURLcode code) {
 #if LIBCURL_VERSION_NUM >= 0x074200
     if(upstream_http_version!=CURL_HTTP_VERSION_3 ||
-       (code!=CURLE_COULDNT_CONNECT && code!=CURLE_OPERATION_TIMEDOUT)) return false;
+       (code!=CURLE_COULDNT_CONNECT && code!=CURLE_OPERATION_TIMEDOUT && code!=CURLE_RECV_ERROR)) return false;
     const curl_version_info_data *info=curl_version_info(CURLVERSION_NOW);
     if(!info || !info->ssl_version || strncmp(info->ssl_version,"OpenSSL/",sizeof("OpenSSL/")-1)) return false;
     /* libcurl's OpenSSL backend initializes the verify result to 1. QUIC can
      * do this before either transport connects. Check both timings since
-     * libcurl may race QUIC with a TCP/TLS attempt to the same origin. */
+     * libcurl may race QUIC with a TCP/TLS attempt to the same origin.
+     * Winsock can report an ICMP port refusal as CURLE_RECV_ERROR. */
     curl_off_t connected=0,handshake=0;
     return curl_easy_getinfo(easy,CURLINFO_CONNECT_TIME_T,&connected)==CURLE_OK && !connected &&
            curl_easy_getinfo(easy,CURLINFO_APPCONNECT_TIME_T,&handshake)==CURLE_OK && !handshake;
@@ -879,6 +882,34 @@ static bool h3_verification_pending(CURL *easy,CURLcode code) {
     (void)easy;(void)code;
     return false;
 #endif
+}
+/* Replay only a standard IN question with no server-specific options or keys. */
+static bool failover_eligible(const unsigned char *data,const DnsInfo *info) {
+    if(be16(data+4)!=1 || info->qclass!=1 || info->qtype==249 || info->qtype==250) return false;
+    unsigned additional=be16(data+10);
+    return !additional || (additional==1 && info->final_opt_rdlen && !be16(data+info->final_opt_rdlen));
+}
+static bool retry_stale_connection(Query *q,CURLcode code,long status,long proxy_status,long connects) {
+    if(q->retried_stale || connects || status || q->resp_len ||
+       (code!=CURLE_SEND_ERROR && code!=CURLE_RECV_ERROR && code!=CURLE_GOT_NOTHING) ||
+       !failover_eligible(q->request,&q->info)) return false;
+    long verify=0,proxy_verify=0;
+    if(curl_easy_getinfo(q->easy,CURLINFO_SSL_VERIFYRESULT,&verify)!=CURLE_OK || verify ||
+       curl_easy_getinfo(q->easy,CURLINFO_PROXY_SSL_VERIFYRESULT,&proxy_verify)!=CURLE_OK ||
+       proxy_verify || proxy_status>=300) return false;
+    uint64_t now=clock_ms();
+    if(now>=q->attempt_deadline_ms) return false;
+    uint64_t deadline=q->attempt_deadline_ms;
+    q->retried_stale=true;
+    detach_query(q);
+    now=clock_ms();
+    if(now>=deadline) return false;
+    /* A plain DNS lookup can be replayed once when a pooled connection dies
+     * before a response. Keep the original attempt budget and force a fresh
+     * connection, including when libcurl cannot detect an idle TLS closure. */
+    bool started=start_upstream(q,(long)(deadline-now));
+    q->attempt_deadline_ms=deadline;
+    return started;
 }
 static bool retry_on_backup(Query *q,CURLcode code,long status,long proxy_status) {
     if(q->upstream!=&primary || !q->failover_deadline_ms || status>=300 || !retryable_transport(code))
@@ -976,6 +1007,7 @@ static void complete(Query *q,CURLcode code) {
         long proxy_status=0;
         curl_easy_getinfo(q->easy,CURLINFO_HTTP_CONNECTCODE,&proxy_status);
         log_failure(failure,q->client!=NULL,code,status,q->upstream,proxy_status);
+        if(retry_stale_connection(q,code,status,proxy_status,connects)) return;
         if(retry_on_backup(q,code,status,proxy_status)) return;
         send_error(q,q->request,2);
     }
@@ -986,12 +1018,6 @@ static void complete(Query *q,CURLcode code) {
     if(attached && !client->out_len) close_client(client);
     if(retries) retry_udp_waiters(q,retries);
     free_query(q);
-}
-/* Replay only a standard IN question with no server-specific options or keys. */
-static bool failover_eligible(const unsigned char *data,const DnsInfo *info) {
-    if(be16(data+4)!=1 || info->qclass!=1 || info->qtype==249 || info->qtype==250) return false;
-    unsigned additional=be16(data+10);
-    return !additional || (additional==1 && info->final_opt_rdlen && !be16(data+info->final_opt_rdlen));
 }
 static bool submit_until(const unsigned char *data,size_t len,Client *client,dnsp_socket_t udp_fd,
                          const struct sockaddr_storage *peer,dnsp_socklen_t peer_len,UdpLocal local,
