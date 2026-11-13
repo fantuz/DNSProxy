@@ -73,6 +73,24 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           & $python tests/test_http3.py -v
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build test-only libcurl diagnostics
+        if: failure()
+        shell: msys2 {0}
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -o dist/windows/dnsp-trace.exe \
+            tests/trace_curl.c $(pkg-config --cflags --libs libcurl) -lws2_32
+      - name: Diagnose idle HTTP2 against the localhost fixture
+        if: failure()
+        shell: pwsh
+        env:
+          DNSP_TEST_OPENSSL: ${{ steps.build.outputs.openssl }}
+        run: |
+          $arguments = @('bench/bench_modern.py', '--binary', 'dist/windows/dnsp-trace.exe',
+            '--protocol', 'h2', '--concurrency', '1,8', '--duration', '0.05', '--warmup', '0.03',
+            '--max-host-connections', '1', '--h2-max-streams', '4', '--h2-idle-timeout', '0.25',
+            '--assert-h2-multiplex', '--verbose', '--output', 'dist/windows-h2-diagnostic.json')
+          & python @arguments
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v6
         with:
           name: dnsp-modern-windows-amd64-poc

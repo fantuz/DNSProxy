@@ -5,6 +5,8 @@ cd "$(dirname "$0")/.."
 [[ "${MSYSTEM:-}" == UCRT64 ]] || { echo 'Use an MSYS2 UCRT64 shell' >&2; exit 2; }
 version=$(cat VERSION)
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 2
+# Never carry stale DLLs or development executables into the portable ZIP.
+rm -rf -- dist/windows
 mkdir -p dist/windows
 windres -I packaging/windows packaging/windows/dnsp-modern.rc -o dist/windows-manifest.o
 gcc -std=c11 -O2 -g -Wall -Wextra -Wpedantic -Werror \

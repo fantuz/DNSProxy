@@ -9,7 +9,6 @@ import http.server
 import socketserver
 import socket
 import ssl
-import sys
 import time
 from collections import Counter, defaultdict
 import threading
@@ -244,14 +243,7 @@ class MockServer:
                     if quic is not None:
                         quic.close()
             try:
-                if sys.platform == 'win32':
-                    # Keep the synthetic server on a readiness loop, as on Linux.
-                    # This also exercises SSL idle close through the same fixture
-                    # scheduling model instead of Windows' default IOCP transport.
-                    with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
-                        runner.run(run())
-                else:
-                    asyncio.run(run())
+                asyncio.run(run())
             except Exception as exc:
                 self.failure = exc
         self.thread = threading.Thread(target=entry, name='doh-mock', daemon=True)
