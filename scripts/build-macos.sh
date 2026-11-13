@@ -22,9 +22,11 @@ for probe in platform curl_callbacks; do
     "$compiler" "${flags[@]}" -o "dist/macos-$probe" "tests/test_$probe.c" -L"$sdk/usr/lib" -lcurl
 done
 # Reject accidental dependencies on the builder's Homebrew or workspace paths.
-otool -L "$bundle/dnsp-modern"
-otool -L "$bundle/dnsp-modern" | tail -n +2 | awk '{print $1}' | while read -r dependency; do
-    case "$dependency" in /usr/lib/*|/System/Library/*) ;; *) echo "Non-system dependency: $dependency" >&2; exit 1 ;; esac
+for executable in dnsp-modern dnsp-macos; do
+    otool -L "$bundle/$executable"
+    otool -L "$bundle/$executable" | tail -n +2 | awk '{print $1}' | while read -r dependency; do
+        case "$dependency" in /usr/lib/*|/System/Library/*) ;; *) echo "Non-system dependency: $dependency" >&2; exit 1 ;; esac
+    done
 done
 cp LICENSE "$bundle/"
 cp docs/MACOS.md "$bundle/"

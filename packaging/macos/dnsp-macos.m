@@ -46,6 +46,12 @@ static void save(NSDictionary *value,NSString *path) {
     if(!ok) unlink(temporary.fileSystemRepresentation);
     require(ok,@"Cannot persist transaction file");
     syncDirectory(path.stringByDeletingLastPathComponent);
+    // macOS fsync alone does not flush the device's write cache. Flush after
+    // the rename and directory sync, before callers are allowed to change DNS.
+    fd=open(path.fileSystemRepresentation,O_RDONLY|O_NOFOLLOW);
+    require(fd>=0,@"Cannot reopen durable state file");
+    int flushed=fcntl(fd,F_FULLFSYNC);close(fd);
+    require(flushed==0,@"Cannot fully sync transaction state to storage");
 }
 static NSDictionary *load(NSString *path) {
     if(!exists(path)) return nil;
@@ -95,6 +101,9 @@ static void launch(NSString *action,NSString *label,BOOL checked) {
     CFStringRef type=interface?SCNetworkInterfaceGetInterfaceType(interface):NULL;
     BOOL ok=SCNetworkServiceGetEnabled(service) && type &&
         (CFEqual(type,kSCNetworkInterfaceTypeEthernet)||CFEqual(type,kSCNetworkInterfaceTypeIEEE80211));
+    SCNetworkProtocolRef protocol=SCNetworkServiceCopyProtocol(service,kSCNetworkProtocolTypeDNS);
+    ok=ok && protocol && SCNetworkProtocolGetEnabled(protocol);
+    if(protocol)CFRelease(protocol);
     CFRelease(service);return ok;
 }
 - (NSDictionary*)read:(NSString*)identifier {
@@ -278,6 +287,30 @@ static void rotateLog(void) {
     }
     close(fd);
 }
+static void copyExecutable(NSString *source,NSString *destination) {
+    int input=open(source.fileSystemRepresentation,O_RDONLY|O_NOFOLLOW);
+    struct stat st;
+    require(input>=0,@"Cannot open bundle executable");
+    if(fstat(input,&st)!=0 || !S_ISREG(st.st_mode) || st.st_size<=0 || st.st_size>128*1024*1024) {
+        close(input);require(NO,@"Bundle executable must be a regular file (maximum 128 MiB)");
+    }
+    int output=open(destination.fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0700);
+    if(output<0){close(input);require(NO,@"Cannot create installed executable");}
+    // Copy bytes into a new root-owned file; do not inherit source ACLs/xattrs.
+    BOOL ok=YES;char bytes[16384];ssize_t length;
+    while((length=read(input,bytes,sizeof(bytes)))!=0) {
+        if(length<0){if(errno==EINTR)continue;ok=NO;break;}
+        ssize_t offset=0;
+        while(offset<length) {
+            ssize_t n=write(output,bytes+offset,(size_t)(length-offset));
+            if(n<0 && errno==EINTR)continue;
+            if(n<=0){ok=NO;break;}offset+=n;
+        }
+        if(!ok)break;
+    }
+    if(fchown(output,0,0)!=0 || fchmod(output,0755)!=0 || fsync(output)!=0)ok=NO;
+    close(input);close(output);require(ok,@"Cannot copy/protect installed executable");
+}
 static void install(NSArray *arguments,NSString *source) {
     require(arguments.count==0 || arguments.count==2 || arguments.count==3,@"Usage: install [HTTPS_UPSTREAM NUMERIC_BOOTSTRAP [CA_FILE]]");
     NSString *upstream=arguments.count?arguments[0]:@"https://cloudflare-dns.com/dns-query";
@@ -294,10 +327,7 @@ static void install(NSArray *arguments,NSString *source) {
         require(mkdir(Root.fileSystemRepresentation,0755)==0,@"Cannot create installation directory");made=YES;
         require(chmod(Root.fileSystemRepresentation,0755)==0,@"Cannot protect installation directory");
         for(NSString *name in @[@"dnsp-modern",@"dnsp-macos"]) {
-            NSString *from=[source stringByAppendingPathComponent:name];struct stat st;
-            require(lstat(from.fileSystemRepresentation,&st)==0 && S_ISREG(st.st_mode),@"Bundle must contain regular executable files");
-            NSError *error=nil;require([NSFileManager.defaultManager copyItemAtPath:from toPath:inside(name) error:&error],error.localizedDescription?:@"Cannot copy executable");
-            require(chown(inside(name).fileSystemRepresentation,0,0)==0 && chmod(inside(name).fileSystemRepresentation,0755)==0,@"Cannot protect executable");
+            copyExecutable([source stringByAppendingPathComponent:name],inside(name));
         }
         if(arguments.count==3) {
             NSData *ca=[NSData dataWithContentsOfFile:arguments[2]];require(ca.length>0 && ca.length<4*1024*1024,@"Cannot read CA file (maximum 4 MiB)");

@@ -1,10 +1,8 @@
 """Native launchd acceptance; never change the runner's actual adapter DNS."""
-import json
 import os
 from pathlib import Path
 import plistlib
 import re
-import signal
 import socket
 import ssl
 import struct
@@ -73,6 +71,25 @@ class MacServiceTests(unittest.TestCase):
                     self.assertNotEqual(self.helper('install', check=False).returncode, 0)
                     self.helper('services')
                     self.assertIn('original DNS settings', self.helper('status').stdout)
+                    invalid = self.helper('enable-dns', 'invalid-uuid', check=False)
+                    self.assertNotEqual(invalid.returncode, 0)
+                    self.assertIn('invalid service UUID', invalid.stderr)
+                    self.assertFalse((ROOT/'dns-state.plist').exists())
+                    job = Path('/Library/LaunchDaemons', LABEL + '.plist')
+                    original = subprocess.check_output(['sudo', 'cat', str(job)])
+                    changed = plistlib.loads(original)
+                    changed['ProgramArguments'] = ['/usr/bin/false']
+                    staged_job = Path(directory)/'changed-job.plist'
+                    staged_job.write_bytes(plistlib.dumps(changed))
+                    try:
+                        subprocess.run(['sudo', 'cp', str(staged_job), str(job)], check=True)
+                        refusal = self.helper('stop', check=False)
+                        self.assertNotEqual(refusal.returncode, 0)
+                        self.assertIn('ownership record', refusal.stderr)
+                        self.assert_dns()
+                    finally:
+                        staged_job.write_bytes(original)
+                        subprocess.run(['sudo', 'cp', str(staged_job), str(job)], check=True)
                     # External termination is recovered by launchd, retaining bound sockets.
                     subprocess.run(['sudo', 'kill', '-KILL', str(pid)], check=True)
                     deadline = time.monotonic() + 25
@@ -86,6 +103,8 @@ class MacServiceTests(unittest.TestCase):
                     self.helper('stop')
                     time.sleep(2)
                     self.assertEqual(self.pid(), 0)
+                    self.assertNotEqual(self.helper('enable-dns', '11111111-1111-1111-1111-111111111111', check=False).returncode, 0)
+                    self.assertFalse((ROOT/'dns-state.plist').exists())
                     for family, address in ((socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1')):
                         for kind in (socket.SOCK_DGRAM, socket.SOCK_STREAM):
                             with socket.socket(family, kind) as sock:
@@ -110,7 +129,11 @@ class MacServiceTests(unittest.TestCase):
                     finally:
                         # This is test-created synthetic state, not a real DNS snapshot.
                         subprocess.run(['sudo', 'rm', str(ROOT/'dns-state.plist')], check=True)
+                    with Path('/var/log/dnsp-modern.log').open('ab') as log:
+                        log.write(b'x' * (5 * 1024 * 1024))
                     self.helper('recover')
+                    self.assertLessEqual(Path('/var/log/dnsp-modern.log.1').stat().st_size, 4 * 1024 * 1024)
+                    self.assertLess(Path('/var/log/dnsp-modern.log').stat().st_size, 4 * 1024 * 1024)
                     self.assert_dns()
                 finally:
                     if installed:
