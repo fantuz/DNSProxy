@@ -141,9 +141,12 @@ install with `-ListenAddress 127.0.0.1`. Optional parameters include `-Port`,
 Executable files are administrator-owned and read-only to LocalService. Only
 `ProgramData\DNSProxy\logs` is service-writable. The console uses stderr;
 service mode keeps `service.log` and one rotated log, targeting 4 MiB each.
-Rotation checks occur once per second. SCM restarts a crashed process after
-3 seconds, then 10 seconds; further failures within the 24-hour reset period
-remain stopped. Invalid configuration/normal exits are not restarted.
+Rotation checks occur once per second. Failed rotation or writes suspend new log
+output and retry each second; DNS continues, and logging resumes when possible.
+SCM restarts crashes **and reported nonzero service exits** after 3 seconds, then
+10 seconds; further failures within the 24-hour reset period remain stopped.
+Normal Stop-Service/shutdown exits are not restarted. Failed initial installation
+still rolls back the service and its files.
 
 Service startup reports RUNNING only after all configured listeners and core
 resources are ready; it does not require the Internet to be reachable at boot.
@@ -164,7 +167,8 @@ its installation record against SCM before removing anything. Reconfiguration
 or upgrade currently uses explicit uninstall/reinstall after restoring DNS;
 there is no silent replacement of an existing service. Service files are not
 signed yet. Native CI tests real SCM startup/stop, LocalService HTTPS queries,
-IPv4/IPv6 UDP and TCP, crash recovery, port conflicts, and uninstall.
+IPv4/IPv6 UDP and TCP, crash and reported-error recovery, log-rotation failure,
+intentional stops, port conflicts, both portable launchers, and uninstall.
 
 ## Portability and validation overview
 
@@ -179,7 +183,7 @@ IPv4/IPv6 UDP and TCP, crash recovery, port conflicts, and uninstall.
 | Polling and time | Winsock `select`, `GetTickCount64`; cache time includes suspend |
 | Shutdown | Console Ctrl+C/Ctrl+Break; atomic stop flag |
 | Expired upstream connection | One fresh retry within the existing attempt deadline for replay-safe queries |
-| Statistics | Shared loopback `/metrics`; POSIX `SIGUSR1` remains Linux-only |
+| Statistics | Shared loopback `/metrics`; POSIX `SIGUSR1` is available on Linux/macOS |
 | Upstream transport | Packaged libcurl/OpenSSL with HTTP/2 and HTTP/3 |
 
 GitHub's `windows-2022` runner builds with MSYS2 UCRT64 GCC and bundles the
@@ -198,9 +202,9 @@ or signed installer. CI uses Windows Server 2022; desktop
 Windows 10/11, non-administrator accounts, ARM64, Unicode/long paths,
 suspend/resume, and VPN policies need a broader acceptance matrix before a
 supported Windows release. The shared resolver supports IPv4 and IPv6 DNS listeners. Repeat `-l` to enable
-both, for example `-l 127.0.0.1 -l ::1 -p 53`. The existing launchers still
-default to IPv4. Configure Windows DNS to `::1` only after enabling and testing
-that listener. IPv6 record types and upstream addresses remain independent of
+both, for example `-l 127.0.0.1 -l ::1 -p 53`. Both portable launchers enable
+IPv4 and IPv6 loopback by default. On an IPv6-disabled machine, run the EXE
+directly with `-l 127.0.0.1`. Test the listener before changing Windows DNS. IPv6 record types and upstream addresses remain independent of
 the client transport family.
 
 Windows wildcard UDP replies require an assigned source address. Unassigned
@@ -210,8 +214,9 @@ adapter address (`DNSP_TEST_SECOND_ADDRESS`), without changing adapter settings.
 
 Next decisions: signed installer, ARM64 builds,
 and broader desktop acceptance. Releases include the PoC ZIP alongside the
-eight Linux packages. Publication waits for the native Windows build, portable
-bundle tests, Linux package builds, and sanitizer suite; all nine downloads
+eight Linux packages and two native macOS archives. Publication waits for native
+Windows/macOS builds, portable bundle tests, Linux packages, and sanitizers; all
+eleven downloads
 are included in the release's `SHA256SUMS`. Distribution in a regular release
 does not change the Windows PoC support status described above.
 
@@ -279,7 +284,7 @@ conflict, then retry Restore. Repeated Enable refuses to overwrite an existing
 snapshot. Uninstall refuses until DNS state has been restored. Never delete
 `dns-state.json` to bypass this guard.
 
-The service's crash recovery handles runtime crashes. A committed installation
+The service's bounded recovery handles crashes and reported runtime errors. A committed installation
 does not silently switch to an unencrypted upstream if the service remains down;
 use Restore to return control to the original DNS configuration.
 
