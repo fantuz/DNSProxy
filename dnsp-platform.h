@@ -31,6 +31,7 @@ typedef WSAPOLLFD dnsp_pollfd;
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netdb.h>
 #include <poll.h>
 #include <strings.h>
 #include <sys/socket.h>
@@ -46,7 +47,32 @@ typedef struct pollfd dnsp_pollfd;
 typedef curl_socket_t dnsp_socket_t;
 typedef ptrdiff_t dnsp_ssize_t;
 #define DNSP_BAD_SOCKET CURL_SOCKET_BAD
-typedef struct { uint32_t destination,source,interface_index; } UdpLocal;
+typedef struct {
+    uint32_t destination,source,interface_index;
+    struct in6_addr destination6,source6;
+    bool ipv6;
+} UdpLocal;
+
+static inline bool dnsp_same_ip(const struct sockaddr_storage *a,const struct sockaddr_storage *b) {
+    if(a->ss_family!=b->ss_family) return false;
+    if(a->ss_family==AF_INET)
+        return ((const struct sockaddr_in*)a)->sin_addr.s_addr==((const struct sockaddr_in*)b)->sin_addr.s_addr;
+    if(a->ss_family==AF_INET6) {
+        const struct sockaddr_in6 *x=(const struct sockaddr_in6*)a,*y=(const struct sockaddr_in6*)b;
+        return x->sin6_scope_id==y->sin6_scope_id && !memcmp(&x->sin6_addr,&y->sin6_addr,sizeof(x->sin6_addr));
+    }
+    return false;
+}
+static inline bool dnsp_same_peer(const struct sockaddr_storage *a,const struct sockaddr_storage *b) {
+    if(!dnsp_same_ip(a,b)) return false;
+    return a->ss_family==AF_INET ? ((const struct sockaddr_in*)a)->sin_port==((const struct sockaddr_in*)b)->sin_port
+        : ((const struct sockaddr_in6*)a)->sin6_port==((const struct sockaddr_in6*)b)->sin6_port;
+}
+static inline bool dnsp_same_destination(UdpLocal a,UdpLocal b) {
+    if(a.ipv6!=b.ipv6) return false;
+    return a.ipv6 ? a.interface_index==b.interface_index && !memcmp(&a.destination6,&b.destination6,sizeof(a.destination6))
+                  : a.destination==b.destination;
+}
 
 static inline void dnsp_close(dnsp_socket_t fd) {
 #ifdef _WIN32
@@ -188,17 +214,19 @@ static inline const char *dnsp_bundled_ca(void) {
 #ifdef _WIN32
 static LPFN_WSARECVMSG dnsp_wsa_recvmsg;
 #endif
-static inline bool dnsp_udp_prepare(dnsp_socket_t fd,bool wildcard) {
+static inline bool dnsp_udp_prepare(dnsp_socket_t fd,int family,bool wildcard) {
 #ifdef _WIN32
     GUID id=WSAID_WSARECVMSG;
     DWORD bytes;
     if(WSAIoctl(fd,SIO_GET_EXTENSION_FUNCTION_POINTER,&id,sizeof(id),
                 &dnsp_wsa_recvmsg,sizeof(dnsp_wsa_recvmsg),&bytes,NULL,NULL)!=0) return false;
     DWORD enabled=1;
-    return !wildcard || setsockopt(fd,IPPROTO_IP,IP_PKTINFO,(const char*)&enabled,sizeof(enabled))==0;
+    return !wildcard || setsockopt(fd,family==AF_INET6?IPPROTO_IPV6:IPPROTO_IP,
+                                   family==AF_INET6?IPV6_PKTINFO:IP_PKTINFO,(const char*)&enabled,sizeof(enabled))==0;
 #else
     int enabled=1;
-    return !wildcard || setsockopt(fd,IPPROTO_IP,IP_PKTINFO,&enabled,sizeof(enabled))==0;
+    return !wildcard || setsockopt(fd,family==AF_INET6?IPPROTO_IPV6:IPPROTO_IP,
+                                   family==AF_INET6?IPV6_RECVPKTINFO:IP_PKTINFO,&enabled,sizeof(enabled))==0;
 #endif
 }
 static inline dnsp_ssize_t dnsp_recv_udp(dnsp_socket_t fd,void *data,size_t size,
@@ -206,7 +234,7 @@ static inline dnsp_ssize_t dnsp_recv_udp(dnsp_socket_t fd,void *data,size_t size
                                         UdpLocal *local,bool *truncated) {
 #ifdef _WIN32
     WSABUF buffer={.len=(ULONG)size,.buf=data};
-    union { WSACMSGHDR align;char bytes[WSA_CMSG_SPACE(sizeof(IN_PKTINFO))]; } control;
+    union { WSACMSGHDR align;char bytes[WSA_CMSG_SPACE(sizeof(IN6_PKTINFO))]; } control;
     WSAMSG msg={.name=(struct sockaddr*)peer,.namelen=*peer_len,.lpBuffers=&buffer,
                 .dwBufferCount=1,.Control={.len=sizeof(control.bytes),.buf=control.bytes}};
     DWORD bytes=0;
@@ -223,12 +251,19 @@ static inline dnsp_ssize_t dnsp_recv_udp(dnsp_socket_t fd,void *data,size_t size
             *local=(UdpLocal){.destination=info.ipi_addr.s_addr,.source=info.ipi_addr.s_addr,
                               .interface_index=info.ipi_ifindex};
             break;
+        } else if(c->cmsg_level==IPPROTO_IPV6 && c->cmsg_type==IPV6_PKTINFO &&
+                  c->cmsg_len>=WSA_CMSG_LEN(sizeof(IN6_PKTINFO))) {
+            IN6_PKTINFO info;
+            memcpy(&info,WSA_CMSG_DATA(c),sizeof(info));
+            *local=(UdpLocal){.ipv6=true,.destination6=info.ipi6_addr,.source6=info.ipi6_addr,
+                              .interface_index=info.ipi6_ifindex};
+            break;
         }
     }
     return (dnsp_ssize_t)bytes;
 #else
     struct iovec buffer={.iov_base=data,.iov_len=size};
-    union { struct cmsghdr align;unsigned char bytes[CMSG_SPACE(sizeof(struct in_pktinfo))]; } control;
+    union { struct cmsghdr align;unsigned char bytes[CMSG_SPACE(sizeof(struct in6_pktinfo))]; } control;
     struct msghdr msg={.msg_name=peer,.msg_namelen=*peer_len,.msg_iov=&buffer,.msg_iovlen=1,
                        .msg_control=control.bytes,.msg_controllen=sizeof(control.bytes)};
     ssize_t bytes=recvmsg(fd,&msg,0);
@@ -243,6 +278,13 @@ static inline dnsp_ssize_t dnsp_recv_udp(dnsp_socket_t fd,void *data,size_t size
             memcpy(&info,CMSG_DATA(c),sizeof(info));
             *local=(UdpLocal){.destination=info.ipi_addr.s_addr,.source=info.ipi_spec_dst.s_addr};
             break;
+        } else if(c->cmsg_level==IPPROTO_IPV6 && c->cmsg_type==IPV6_PKTINFO &&
+                  c->cmsg_len>=CMSG_LEN(sizeof(struct in6_pktinfo))) {
+            struct in6_pktinfo info;
+            memcpy(&info,CMSG_DATA(c),sizeof(info));
+            *local=(UdpLocal){.ipv6=true,.destination6=info.ipi6_addr,.source6=info.ipi6_addr,
+                              .interface_index=info.ipi6_ifindex};
+            break;
         }
     }
     return bytes;
@@ -253,14 +295,20 @@ static inline dnsp_ssize_t dnsp_send_udp(dnsp_socket_t fd,const struct sockaddr 
                                         const void *body,size_t body_len,UdpLocal local) {
     uint32_t source=local.source;
 #ifdef _WIN32
-    if(!prefix_len && !source) return sendto(fd,(const char*)body,(int)body_len,0,peer,peer_len);
+    if(!prefix_len && !source && !local.ipv6) return sendto(fd,(const char*)body,(int)body_len,0,peer,peer_len);
     WSABUF parts[]={{.len=(ULONG)prefix_len,.buf=(char*)prefix},
                    {.len=(ULONG)body_len,.buf=(char*)body}};
-    union { WSACMSGHDR align;char bytes[WSA_CMSG_SPACE(sizeof(IN_PKTINFO))]; } control={0};
+    union { WSACMSGHDR align;char bytes[WSA_CMSG_SPACE(sizeof(IN6_PKTINFO))]; } control={0};
     WSAMSG msg={.name=(struct sockaddr*)peer,.namelen=peer_len,
                 .lpBuffers=prefix_len?parts:parts+1,.dwBufferCount=prefix_len?2:1};
-    if(source) {
-        msg.Control=(WSABUF){.len=sizeof(control.bytes),.buf=control.bytes};
+    if(local.ipv6) {
+        msg.Control=(WSABUF){.len=WSA_CMSG_SPACE(sizeof(IN6_PKTINFO)),.buf=control.bytes};
+        WSACMSGHDR *c=WSA_CMSG_FIRSTHDR(&msg);
+        c->cmsg_level=IPPROTO_IPV6;c->cmsg_type=IPV6_PKTINFO;c->cmsg_len=WSA_CMSG_LEN(sizeof(IN6_PKTINFO));
+        IN6_PKTINFO info={.ipi6_addr=local.source6,.ipi6_ifindex=local.interface_index};
+        memcpy(WSA_CMSG_DATA(c),&info,sizeof(info));
+    } else if(source) {
+        msg.Control=(WSABUF){.len=WSA_CMSG_SPACE(sizeof(IN_PKTINFO)),.buf=control.bytes};
         WSACMSGHDR *c=WSA_CMSG_FIRSTHDR(&msg);
         c->cmsg_level=IPPROTO_IP;c->cmsg_type=IP_PKTINFO;c->cmsg_len=WSA_CMSG_LEN(sizeof(IN_PKTINFO));
         /* Pin the local address and let routing select the outgoing interface. */
@@ -270,14 +318,20 @@ static inline dnsp_ssize_t dnsp_send_udp(dnsp_socket_t fd,const struct sockaddr 
     DWORD bytes=0;
     return WSASendMsg(fd,&msg,0,&bytes,NULL,NULL)==0?(dnsp_ssize_t)bytes:-1;
 #else
-    if(!prefix_len && !source) return sendto(fd,body,body_len,0,peer,peer_len);
+    if(!prefix_len && !source && !local.ipv6) return sendto(fd,body,body_len,0,peer,peer_len);
     struct iovec parts[]={{.iov_base=(void*)prefix,.iov_len=prefix_len},
                          {.iov_base=(void*)body,.iov_len=body_len}};
-    union { struct cmsghdr align;unsigned char bytes[CMSG_SPACE(sizeof(struct in_pktinfo))]; } control={0};
+    union { struct cmsghdr align;unsigned char bytes[CMSG_SPACE(sizeof(struct in6_pktinfo))]; } control={0};
     struct msghdr msg={.msg_name=(void*)peer,.msg_namelen=peer_len,
                        .msg_iov=prefix_len?parts:parts+1,.msg_iovlen=prefix_len?2:1};
-    if(source) {
-        msg.msg_control=control.bytes;msg.msg_controllen=sizeof(control.bytes);
+    if(local.ipv6) {
+        msg.msg_control=control.bytes;msg.msg_controllen=CMSG_SPACE(sizeof(struct in6_pktinfo));
+        struct cmsghdr *c=CMSG_FIRSTHDR(&msg);
+        c->cmsg_level=IPPROTO_IPV6;c->cmsg_type=IPV6_PKTINFO;c->cmsg_len=CMSG_LEN(sizeof(struct in6_pktinfo));
+        struct in6_pktinfo info={.ipi6_addr=local.source6,.ipi6_ifindex=local.interface_index};
+        memcpy(CMSG_DATA(c),&info,sizeof(info));
+    } else if(source) {
+        msg.msg_control=control.bytes;msg.msg_controllen=CMSG_SPACE(sizeof(struct in_pktinfo));
         struct cmsghdr *c=CMSG_FIRSTHDR(&msg);
         c->cmsg_level=IPPROTO_IP;c->cmsg_type=IP_PKTINFO;c->cmsg_len=CMSG_LEN(sizeof(struct in_pktinfo));
         struct in_pktinfo info={.ipi_spec_dst.s_addr=source};

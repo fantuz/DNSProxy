@@ -150,9 +150,11 @@ The artifact is a Windows **x86-64 PoC**, unsigned, without an MSI/MSIX installe
 or Service Control Manager integration. CI uses Windows Server 2022; desktop
 Windows 10/11, non-administrator accounts, ARM64, Unicode/long paths,
 suspend/resume, and VPN policies need a broader acceptance matrix before a
-supported Windows release. Client DNS listeners remain IPv4, as on Linux;
-AAAA records and IPv6 upstream addresses work, but `::1` is not a listener.
-Do not configure Windows DNS to `::1` yet.
+supported Windows release. The shared resolver supports IPv4 and IPv6 DNS listeners. Repeat `-l` to enable
+both, for example `-l 127.0.0.1 -l ::1 -p 53`. The existing launchers still
+default to IPv4. Configure Windows DNS to `::1` only after enabling and testing
+that listener. IPv6 record types and upstream addresses remain independent of
+the client transport family.
 
 Windows wildcard UDP replies require an assigned source address. Unassigned
 loopback aliases such as `127.0.0.2` are not supported for wildcard replies via
@@ -160,7 +162,7 @@ loopback aliases such as `127.0.0.2` are not supported for wildcard replies via
 adapter address (`DNSP_TEST_SECOND_ADDRESS`), without changing adapter settings.
 
 Next decisions: persistent service and least-privilege account, reversible
-adapter configuration, native IPv6 listeners, signed installer, ARM64 builds,
+adapter configuration, signed installer, ARM64 builds,
 and broader desktop acceptance. Releases include the PoC ZIP alongside the
 eight Linux packages. Publication waits for the native Windows build, portable
 bundle tests, Linux package builds, and sanitizer suite; all nine downloads

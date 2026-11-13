@@ -17,6 +17,7 @@ modern-check: dnsp-modern
 	$(CC) $(CPPFLAGS) -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic $(LDFLAGS) -o "$$probe" tests/test_platform.c $(CURL_FLAGS) $(LDLIBS); \
 	"$$probe"
 	python3 tests/test_modern.py
+	python3 tests/test_ipv6.py
 
 clean:
 	rm -f dnsp-modern

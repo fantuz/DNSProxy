@@ -42,6 +42,7 @@ jobs:
       - name: Test the portable bundle without MSYS2 on PATH
         shell: pwsh
         env:
+          DNSP_REQUIRE_IPV6: '1'
           DNSP_TEST_OPENSSL: ${{ steps.build.outputs.openssl }}
         run: |
           $python = (Get-Command python).Source
@@ -67,6 +68,8 @@ jobs:
           }
           $failed = $false
           & $python tests/test_modern.py -v
+          if ($LASTEXITCODE) { $failed = $true }
+          & $python tests/test_ipv6.py -v
           if ($LASTEXITCODE) { $failed = $true }
           & $python tests/test_windows.py -v
           if ($LASTEXITCODE) { $failed = $true }
