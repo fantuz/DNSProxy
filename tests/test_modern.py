@@ -5,6 +5,7 @@ import atexit
 import http.client
 import http.server
 import os
+import random
 import shutil
 import signal
 import socket
@@ -266,10 +267,26 @@ class CacheDoH(DoH):
 
 
 def unused_ports():
-    with socket.socket() as a, socket.socket() as b:
-        a.bind(('127.0.0.1', 0))
-        b.bind(('127.0.0.1', 0))
-        return a.getsockname()[1], b.getsockname()[1]
+    # Windows can allocate an ephemeral TCP port excluded for UDP (Hyper-V),
+    # and outbound fixture sockets can steal recently released ephemeral ports.
+    # Probe both protocols outside the usual ephemeral range before spawning.
+    with ExitStack() as sockets:
+        ports = []
+        for port in random.sample(range(10000, 18000), 100):
+            try:
+                with ExitStack() as candidate:
+                    for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+                        sock = candidate.enter_context(socket.socket(socket.AF_INET, kind))
+                        if os.name == 'nt':
+                            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                        sock.bind(('127.0.0.1', port))
+                    sockets.enter_context(candidate.pop_all())
+                ports.append(port)
+                if len(ports) == 2:
+                    return tuple(ports)
+            except OSError:
+                continue
+    raise RuntimeError('Could not reserve DNS fixture ports')
 
 
 class Tests(unittest.TestCase):
