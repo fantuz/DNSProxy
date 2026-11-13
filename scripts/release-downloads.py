@@ -12,7 +12,7 @@ END = "<!-- dnsp-downloads:end -->"
 VERSION = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 
 
-def downloads(version, repository):
+def downloads(version, repository, *, macos=True):
     if not re.fullmatch(VERSION, version):
         raise ValueError("Expected a MAJOR.MINOR.PATCH release version")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
@@ -30,6 +30,10 @@ def downloads(version, repository):
              "| Platform | x86-64 / amd64 | ARM64 / aarch64 |",
              "| --- | --- | --- |",
              "| Windows (PoC) | " + asset("**Portable ZIP**", f"dnsp-modern-{version}-windows-amd64-poc.zip") + " | Not available |"]
+    if macos:
+        links = [asset(label, f"dnsp-modern-{version}-macos-{arch}.tar.gz")
+                 for label, arch in (("**Intel archive**", "x86_64"), ("**Apple Silicon archive**", "arm64"))]
+        lines.append(f"| macOS 15+ | {' | '.join(links)} |")
     for label, distro in (("Ubuntu 22.04", "ubuntu22.04"),
                          ("Ubuntu 24.04", "ubuntu24.04"),
                          ("Debian 13", "debian13")):
@@ -42,7 +46,12 @@ def downloads(version, repository):
     checksums = asset("SHA256SUMS", "SHA256SUMS")
     lines.extend(["",
                   "**Windows:** extract the entire ZIP and double-click **Start-DNSProxy.cmd**. "
-                  "Keep the EXE, DLLs and certificate bundle together.", "",
+                  "Keep the EXE, DLLs and certificate bundle together."])
+    if macos:
+        lines.extend(["", "**macOS:** extract the archive into its own folder and run **Start-DNSProxy.command**. "
+                      "The launcher uses local port 5053; system DNS setup and download approval are covered in the "
+                      f"[macOS guide]({root}/blob/{tag}/docs/MACOS.md)."])
+    lines.extend(["",
                   f"[Windows setup guide]({root}/blob/{tag}/docs/WINDOWS.md) · "
                   f"[Linux installation guide]({root}/blob/{tag}/packaging/README-packaging.md) · "
                   f"[Checksum instructions]({root}/blob/{tag}/packaging/README-packaging.md#automatic-and-manual-releases) · {checksums}",
@@ -54,8 +63,12 @@ def refresh(release, repository):
     match = re.fullmatch(f"v({VERSION})-modern", release["tag_name"])
     if not match or release.get("draft") or release.get("prerelease"):
         raise ValueError("Expected a published stable DNSProxy modern release")
-    block, expected = downloads(match.group(1), repository)
-    missing = expected - {asset["name"] for asset in release["assets"]}
+    available = {asset["name"] for asset in release["assets"]}
+    # Older releases have no macOS packages. Never add broken links to them;
+    # if either architecture is present, require the complete pair.
+    macos = any(name.endswith(("-macos-x86_64.tar.gz", "-macos-arm64.tar.gz")) for name in available)
+    block, expected = downloads(match.group(1), repository, macos=macos)
+    missing = expected - available
     if missing:
         raise ValueError("Release is missing downloads: " + ", ".join(sorted(missing)))
     body = release.get("body") or ""

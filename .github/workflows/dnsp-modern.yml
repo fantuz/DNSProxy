@@ -352,7 +352,7 @@ jobs:
           pattern: dnsp-modern-*
           merge-multiple: true
           path: release-assets
-      - name: Publish DEBs, RPMs, Windows ZIP, and checksums
+      - name: Publish Linux packages, Windows ZIP, macOS archives, and checksums
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

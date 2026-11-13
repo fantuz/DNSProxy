@@ -76,6 +76,8 @@ class ReleaseTests(unittest.TestCase):
         for arch in ("x86_64", "aarch64"):
             (directory / f"dnsp-modern-0.3.8-1.el9.{arch}.rpm").write_text(arch)
         (directory / "dnsp-modern-0.3.8-windows-amd64-poc.zip").write_text("Windows bundle")
+        for arch in ("x86_64", "arm64"):
+            (directory / f"dnsp-modern-0.3.8-macos-{arch}.tar.gz").write_text(arch)
         return directory
 
     def test_prepare_plan_and_publish_retry(self):
@@ -148,7 +150,7 @@ esac
         for package in expected_packages:
             self.assertEqual(arguments.count(package), 2)
         checksums = (assets / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(checksums), 9)
+        self.assertEqual(len(checksums), 11)
         self.assertEqual(sorted(line.split("  ", 1)[1] for line in checksums), expected_packages)
         self.script("publish-modern.sh", assets, FAIL_PUBLICATION="true", **publish)
         self.assertEqual(create_args.read_text(), attempts)
@@ -175,6 +177,8 @@ esac
         self.assertIn("https://github.com/example/project/releases/download/v0.3.8-modern/", result.stdout)
         self.assertIn("dnsp-modern_0.3.8%2Bdebian13_arm64.deb", result.stdout)
         self.assertIn("/blob/v0.3.8-modern/docs/WINDOWS.md", result.stdout)
+        self.assertIn("dnsp-modern-0.3.8-macos-arm64.tar.gz", result.stdout)
+        self.assertIn("dnsp-modern-0.3.8-macos-x86_64.tar.gz", result.stdout)
         release["body"] = result.stdout
         again = render()
         self.assertEqual(again.returncode, 0, again.stderr)
@@ -192,13 +196,25 @@ esac
                 self.assertEqual(invalid.stdout, "")
                 release[field] = previous
 
+        release["assets"] = [a for a in release["assets"] if "-macos-" not in a["name"]]
+        legacy = render()
+        self.assertEqual(legacy.returncode, 0, legacy.stderr)
+        self.assertNotIn("-macos-", legacy.stdout)
+        self.assertNotIn("docs/MACOS.md", legacy.stdout)
+        self.assertIn("Existing notes and links stay intact.", legacy.stdout)
+        release["assets"].append({"name": "dnsp-modern-0.3.8-macos-arm64.tar.gz"})
+        incomplete = render()
+        self.assertNotEqual(incomplete.returncode, 0)
+        self.assertEqual(incomplete.stdout, "")
+
     def test_incomplete_package_sets_never_tag_or_publish(self):
         prepared = self.script("prepare-release.sh")["commit"]
         gh_calls = self.root / "gh-calls"
         gh = self.root / "gh"
         gh.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$TEST_GH_CALLS"\nexit 1\n')
         gh.chmod(0o755)
-        for case in ("missing-windows", "empty-windows", "wrong-version", "extra-zip", "missing-linux"):
+        for case in ("missing-windows", "empty-windows", "wrong-version", "extra-zip", "missing-linux",
+                     "missing-macos", "empty-macos", "extra-macos"):
             with self.subTest(case=case):
                 assets = self.packages(self.root / case)
                 windows = assets / "dnsp-modern-0.3.8-windows-amd64-poc.zip"
@@ -210,8 +226,14 @@ esac
                     windows.rename(assets / "dnsp-modern-0.3.7-windows-amd64-poc.zip")
                 elif case == "extra-zip":
                     (assets / "stale-build.zip").write_text("old build")
-                else:
+                elif case == "missing-linux":
                     (assets / "dnsp-modern_0.3.8+debian13_arm64.deb").unlink()
+                elif case == "missing-macos":
+                    (assets / "dnsp-modern-0.3.8-macos-x86_64.tar.gz").unlink()
+                elif case == "empty-macos":
+                    (assets / "dnsp-modern-0.3.8-macos-arm64.tar.gz").write_bytes(b"")
+                else:
+                    (assets / "stale-build.tar.gz").write_text("old build")
                 self.script("publish-modern.sh", assets, succeeds=False,
                             PATH=f"{self.root}:{os.environ['PATH']}",
                             RELEASE_MODE="manual", RELEASE_TAG="v0.3.8-modern",

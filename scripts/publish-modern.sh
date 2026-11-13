@@ -42,8 +42,11 @@ for arch in x86_64 aarch64; do
     packages+=("dnsp-modern-${version}-1.el9.${arch}.rpm")
 done
 packages+=("dnsp-modern-${version}-windows-amd64-poc.zip")
+for arch in x86_64 arm64; do
+    packages+=("dnsp-modern-${version}-macos-${arch}.tar.gz")
+done
 shopt -s nullglob
-present=(*.deb *.rpm *.zip)
+present=(*.deb *.rpm *.zip *.tar.gz)
 if (( ${#present[@]} != ${#packages[@]} )); then
     echo "Expected ${#packages[@]} packages, found ${#present[@]}" >&2
     exit 1

@@ -80,6 +80,12 @@ do not replace its stub listener or symlink as part of service setup.
 | Ubuntu 24.04 | DEB | amd64 | arm64 |
 | Debian 13 | DEB | amd64 | arm64 |
 | Rocky Linux 9 | RPM | x86_64 | aarch64 |
+| Windows PoC | Portable ZIP | amd64 | — |
+| macOS 15+ | Portable tar.gz | x86_64 (Intel) | arm64 (Apple Silicon) |
+
+The [macOS archives](../docs/MACOS.md) use Apple's system libcurl and include a
+foreground launcher on local port 5053. They require neither Homebrew nor
+Rosetta. Developer ID signing/notarization and launchd installation are deferred.
 
 Build RPMs from a committed checkout on Rocky Linux 9:
 
@@ -101,27 +107,31 @@ helpers.
    `master`.
 2. The first successful build for the new version creates the matching
    `vVERSION-modern` tag at the tested commit and publishes a regular GitHub release
-   with eight Linux packages, the Windows x86-64 PoC ZIP, and `SHA256SUMS`.
-   Publication waits for the native Windows build and portable bundle tests
-   as well as Linux packaging and sanitizers. Other commits at the published version
+   with eight Linux packages, the Windows x86-64 PoC ZIP, two native macOS
+   archives, and `SHA256SUMS`. Publication waits for the native Windows and both
+   macOS builds and extracted-package tests, as well as Linux packaging and
+   sanitizers. Other commits at the published version
    produce CI artifacts. A failed check prevents publication.
 3. To release from the Actions page, open **DNSProxy modern - test and package
    → Run workflow**, choose `master`, and enable **publish**. Enter a
    `release_version` higher than both the selected commit's `VERSION` and the
    highest release tag. The workflow stages a commit that changes only
-   `VERSION`. All eight Linux package builds, the Windows build/tests, and the
-   sanitizer job check out that commit before the workflow tags it and publishes
+   `VERSION`. All eight Linux package builds, Windows and both macOS builds/tests,
+   and the sanitizer job check out that commit before the workflow tags it and publishes
    the complete set. A blank
    field uses the `VERSION` from `master`. Pushing an explicit tag also works
    when it matches the tagged commit's `VERSION`.
 
-Release notes begin with a download table for Windows and each Linux package
-target, followed by the generated changelog. The README download button points
-to the latest release's table, so it does not need a version-specific URL.
+Release notes begin with a download table for Windows, macOS Intel/Apple Silicon
+and each Linux package target, followed by the generated changelog. README
+download buttons point to the latest release's table, so they do not need
+version-specific URLs.
 The **Refresh release download table** workflow updates the latest release's
 table when its renderer changes on `master`, or when run manually from `master`.
 It verifies that every linked asset exists and preserves the existing changelog;
-it does not change release tags, versions or package assets.
+it does not change release tags, versions or package assets. When refreshing
+older releases without macOS archives, it preserves their original package set
+instead of adding unavailable downloads.
 
 Manual releases with a version input stage the commit on `ci/release-<run-id>`.
 Publication removes that branch after creating the release. Failed runs keep
@@ -151,8 +161,12 @@ source for both files.
 Windows downloads are available from v4.0.3 onward as
 `dnsp-modern-VERSION-windows-amd64-poc.zip`, also covered by `SHA256SUMS`.
 See the [Windows guide](../docs/WINDOWS.md) for PowerShell verification and setup.
+macOS downloads are available from v4.2.0 onward as
+`dnsp-modern-VERSION-macos-x86_64.tar.gz` and
+`dnsp-modern-VERSION-macos-arm64.tar.gz`, also covered by `SHA256SUMS`.
 The publisher rejects missing, empty, extra, or wrong-version packages, including
-the Windows ZIP, before creating a release tag. Existing package assets remain unchanged.
+the Windows ZIP and either macOS archive, before creating a release tag.
+Existing package assets remain unchanged.
 
 ## Protocol and performance limitations
 

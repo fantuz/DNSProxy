@@ -63,7 +63,7 @@ apply to macOS.
 
 These packages are not Developer ID signed or notarized. macOS may request
 approval before running a downloaded executable or command file. Follow
-[Apple's guidance for opening an app from an unidentified developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unidentified-developer-mh40616/mac)
+[Apple's guidance for opening downloaded apps](https://support.apple.com/102445)
 after verifying the release and checksum. Developer ID signing, notarization
 and an installer are deferred; no global Gatekeeper changes are needed.
 
@@ -78,6 +78,8 @@ bash scripts/build-macos.sh
 CI extracts and tests the exact archive on each native architecture. It checks
 system-only dynamic dependencies, IPv4/IPv6 UDP/TCP, wildcard reply addresses,
 DNS parsing, caching, failover, TLS certificate checks and HTTP/2 multiplexing.
-The C callback and socket probes run too. Loopback aliases are added on the
+The C callback and socket probes run too. The packaged launcher is started from
+another directory and checked for dual-stack DNS and clean Ctrl+C shutdown.
+Loopback aliases are added on the
 disposable CI runner to exercise distinct client addresses; users do not need
 those aliases for normal operation.
