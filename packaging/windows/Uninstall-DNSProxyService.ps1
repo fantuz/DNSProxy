@@ -3,6 +3,7 @@
 [CmdletBinding()]
 param([ValidatePattern('^[A-Za-z0-9_-]{1,64}$')][string]$ServiceName = 'DNSProxy')
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'ServiceFiles.ps1')
 $program = Join-Path $env:ProgramFiles $ServiceName
 $state = Join-Path $env:ProgramData $ServiceName
 $record = Get-Content -LiteralPath (Join-Path $state 'installation.json') -Raw | ConvertFrom-Json
@@ -24,8 +25,8 @@ if ($service) {
 }
 # Files may still be held briefly while SCM releases the stopped process.
 for ($attempt=0; $attempt -lt 20; $attempt++) {
-    try { [IO.Directory]::Delete($program, $true); break }
+    try { Remove-ServiceDirectory $program; break }
     catch { if ($attempt -eq 19) { throw }; Start-Sleep -Milliseconds 100 }
 }
 # Do not follow reparse points planted in the service-writable log directory.
-[IO.Directory]::Delete($state, $true)
+Remove-ServiceDirectory $state
