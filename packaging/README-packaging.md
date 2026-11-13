@@ -115,6 +115,14 @@ helpers.
    field uses the `VERSION` from `master`. Pushing an explicit tag also works
    when it matches the tagged commit's `VERSION`.
 
+Release notes begin with a download table for Windows and each Linux package
+target, followed by the generated changelog. The README download button points
+to the latest release's table, so it does not need a version-specific URL.
+The **Refresh release download table** workflow updates the latest release's
+table when its renderer changes on `master`, or when run manually from `master`.
+It verifies that every linked asset exists and preserves the existing changelog;
+it does not change release tags, versions or package assets.
+
 Manual releases with a version input stage the commit on `ci/release-<run-id>`.
 Publication removes that branch after creating the release. Failed runs keep
 it so **Re-run failed jobs** can use the same commit. To abandon a failed run,
@@ -144,7 +152,7 @@ Windows downloads are available from v4.0.3 onward as
 `dnsp-modern-VERSION-windows-amd64-poc.zip`, also covered by `SHA256SUMS`.
 See the [Windows guide](../docs/WINDOWS.md) for PowerShell verification and setup.
 The publisher rejects missing, empty, extra, or wrong-version packages, including
-the Windows ZIP, before creating a release tag. Earlier releases remain unchanged.
+the Windows ZIP, before creating a release tag. Existing package assets remain unchanged.
 
 ## Protocol and performance limitations
 

@@ -1,0 +1,37 @@
+name: Refresh release download table
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - scripts/release-downloads.py
+      - .github/workflows/release-downloads.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-download-table
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate release-note generation
+        run: python3 tests/test_release.py
+      - name: Put downloads above the latest release changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$RUNNER_TEMP/release.json"
+          python3 scripts/release-downloads.py --release-json "$RUNNER_TEMP/release.json" > "$RUNNER_TEMP/release-notes.md"
+          tag=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag_name"])' "$RUNNER_TEMP/release.json")
+          gh release edit "$tag" --notes-file "$RUNNER_TEMP/release-notes.md"

@@ -22,12 +22,17 @@ DNSProxy bridges conventional **DNS clients (UDP/TCP)** to upstream
 uses RFC 8484 `application/dns-message` POST requests, libcurl's event-driven
 multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
 
-A [native Windows PoC](docs/WINDOWS.md) builds the same C resolver source,
-with UDP/TCP port 53 launchers, optional Administrator elevation, and Windows
-DNS setup and rollback instructions. From v4.0.3 onward, download its portable
-`windows-amd64-poc.zip` from [GitHub Releases](https://github.com/fantuz/DNSProxy/releases).
-The Windows CI artifact also provides builds for testing; the guide describes
-validation and remaining work.
+[![Download for Windows — 64-bit portable ZIP](https://img.shields.io/badge/Download%20for%20Windows-64--bit%20portable%20ZIP-0078D4?style=for-the-badge)](https://github.com/fantuz/DNSProxy/releases/latest#downloads)
+
+**[Linux DEB / RPM downloads](https://github.com/fantuz/DNSProxy/releases/latest#downloads)**
+· [Windows setup guide](docs/WINDOWS.md)
+· [Linux installation guide](packaging/README-packaging.md)
+
+On the release page, choose **Portable ZIP** in the Windows row. Extract the
+entire archive and double-click **Start-DNSProxy.cmd**. Keep `dnsp-modern.exe`,
+its DLLs and the certificate bundle together. The native Windows PoC uses the
+same C resolver as Linux; the setup guide covers service installation,
+Administrator options, DNS adapter configuration and rollback.
 
 This project grew out of DNS transport and privacy experiments dating to roughly
 2009–2010 and work surrounding [RFC 8484](https://www.rfc-editor.org/rfc/rfc8484).
