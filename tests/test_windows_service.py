@@ -88,6 +88,24 @@ class ServiceTests(unittest.TestCase):
                 f"& {self.quoted(integration)} -ServiceName {name} -Action Status").stdout)
             self.ps(f"& {self.quoted(integration)} -ServiceName {name} -Action Enable -WhatIf")
             self.assertFalse((Path(os.environ['ProgramData'])/name/'dns-state.json').exists())
+            # Read the runner's real configuration, then restore an already-original
+            # snapshot. This exercises registry origin reads and real SYSTEM task
+            # registration/removal without performing any adapter DNS writes.
+            self.ps(f'''
+                . {self.quoted(integration)} -ServiceName {name} -Action Status
+                $adapter = Get-NetAdapter | Where-Object Status -eq Up | Select-Object -First 1
+                $g = $adapter.InterfaceGuid.ToString().Trim('{{','}}')
+                $entries = @()
+                foreach ($family in @('IPv4','IPv6')) {{
+                    $entries += @{{Guid=$g; Family=$family; Before=(Read-AdapterDns $g $family);
+                        After=@{{Mode='Static'; Servers=@($(if ($family -eq 'IPv4') {{'127.0.0.1'}} else {{'::1'}}))}}}}
+                }}
+                @{{Version=1; Phase='Active'; Deadline=[DateTime]::UtcNow.ToString('o'); Entries=$entries}} |
+                    ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+                & {self.quoted(integration)} -ServiceName {name} -Action Restore
+                if (Test-Path -LiteralPath $statePath) {{ throw 'Restoration retained state' }}
+                if (Get-ScheduledTask -TaskName '{name}-DNS-Recovery' -ErrorAction SilentlyContinue) {{ throw 'Recovery task was not removed' }}
+            ''')
             # Duplicate install cannot replace an existing service or delete its files.
             duplicate = self.ps(f"& {self.quoted(source/'Install-DNSProxyService.ps1')} -ServiceName {name}", check=False)
             self.assertNotEqual(duplicate.returncode, 0)

@@ -77,7 +77,7 @@ $backend = @{
         $timer = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 1)
         $boot = New-ScheduledTaskTrigger -AtStartup
         $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-        $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+        $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
         $null = Register-ScheduledTask -TaskName $taskName -Action $job -Trigger @($timer,$boot) -Principal $principal -Settings $settings
     }
     Disarm = {
@@ -110,7 +110,12 @@ try {
     if ($Action -eq 'Recover' -and (Test-Path -LiteralPath $statePath)) {
         if ((Read-DnsState $statePath).Phase -eq 'Active') { return }
     }
-    if ($Action -in @('Restore','Recover')) { Restore-DnsTransaction $statePath $backend; return }
+    if ($Action -in @('Restore','Recover')) {
+        if ($Action -eq 'Restore' -and (Test-Path -LiteralPath $statePath) -and
+            -not (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) { & $backend.Arm }
+        Restore-DnsTransaction $statePath $backend
+        return
+    }
     if (-not $AdapterGuid.Count) { throw 'Use -Action Status to list adapters, then explicitly select -AdapterGuid.' }
     if (@(Get-DnsClientNrptPolicy -Effective).Count) { throw 'NRPT policy is present; automatic integration is not supported.' }
     if ((Get-CimInstance Win32_ComputerSystem).PartOfDomain) { throw 'Domain-managed hosts require manual DNS integration.' }
