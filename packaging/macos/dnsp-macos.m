@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <grp.h>
 
 static NSString *const Root=@"/Library/Application Support/DNSProxy";
 static NSString *const Label=@"net.fantuz.dnsproxy";
@@ -261,7 +262,19 @@ static NSDictionary *serviceJob(NSString *upstream,NSString *bootstrap,BOOL cust
         @"StandardOutPath":@"/dev/null",@"StandardErrorPath":Log,@"WorkingDirectory":Root,
         @"ProcessType":@"Background",@"Umask":@077};
 }
+static gid_t logGroup(void) {
+    struct group *group=getgrnam("nobody");
+    require(group!=NULL,@"Cannot find the service log group");
+    return group->gr_gid;
+}
+static void checkLog(void) {
+    struct stat st;
+    require(lstat(Log.fileSystemRepresentation,&st)==0 && S_ISREG(st.st_mode) &&
+        st.st_nlink==1 && st.st_uid==0 && st.st_gid==logGroup() && (st.st_mode&0777)==0620,
+        @"Service log ownership or permissions changed; expected root:nobody mode 0620");
+}
 static void checkInstalled(void) {
+    checkLog();
     protectedPath(Root,YES);protectedPath(inside(@"dnsp-modern"),NO);protectedPath(inside(@"dnsp-macos"),NO);
     NSDictionary *record=load(inside(@"installation.plist"));
     require([record[@"Version"] isEqual:@1] && [record[@"Service"] isEqual:load(plist(Label))] &&
@@ -273,7 +286,7 @@ static void armRecovery(void) {
         launch(@"bootstrap",Recovery,YES);
 }
 static void rotateLog(void) {
-    protectedPath(Log,NO);
+    checkLog();
     int fd=open(Log.fileSystemRepresentation,O_RDWR|O_NOFOLLOW);if(fd<0)return;
     struct stat st;
     if(fstat(fd,&st)==0 && st.st_size>4*1024*1024) {
@@ -342,7 +355,12 @@ static void install(NSArray *arguments,NSString *source) {
             require([ca writeToFile:inside(@"ca-bundle.crt") options:NSDataWritingAtomic error:NULL],@"Cannot copy CA file");
             require(chmod(inside(@"ca-bundle.crt").fileSystemRepresentation,0644)==0,@"Cannot protect CA file");
         }
-        int fd=open(Log.fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0640);require(fd>=0,@"Cannot create service log");close(fd);
+        int fd=open(Log.fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
+        require(fd>=0,@"Cannot create service log");
+        // launchd opens standard streams with the job's credentials. Keep the
+        // file root-owned, allowing only the service group to append/write it.
+        BOOL logOK=fchown(fd,0,logGroup())==0 && fchmod(fd,0620)==0;
+        close(fd);require(logOK,@"Cannot grant the service access to its log");
         NSDictionary *service=serviceJob(upstream,bootstrap,arguments.count==3);
         save(service,plist(Label));save(recoveryJob(),plist(Recovery));
         save(@{@"Version":@1,@"Service":service},inside(@"installation.plist"));
