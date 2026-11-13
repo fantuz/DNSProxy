@@ -1,30 +1,41 @@
 # DNSProxy — DNS over HTTPS (DoH)
 
-[![Tests and packages](https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-modern.yml/badge.svg?branch=master)](https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-modern.yml)
-[![CodeQL](https://github.com/fantuz/DNSProxy/actions/workflows/codeql.yml/badge.svg?branch=master)](https://github.com/fantuz/DNSProxy/actions/workflows/codeql.yml)
-
-[![Latest stable modern release](https://img.shields.io/github/v/release/fantuz/DNSProxy?filter=v*-modern&sort=date&label=release)](https://github.com/fantuz/DNSProxy/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/fantuz/DNSProxy/total?label=downloads)](https://github.com/fantuz/DNSProxy/releases)
-[![MIT license](https://img.shields.io/github/license/fantuz/DNSProxy)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/fantuz/DNSProxy?style=flat)](https://github.com/fantuz/DNSProxy/stargazers)
-[![Open issues](https://img.shields.io/github/issues/fantuz/DNSProxy)](https://github.com/fantuz/DNSProxy/issues)
-[![Last commit on master](https://img.shields.io/github/last-commit/fantuz/DNSProxy/master)](https://github.com/fantuz/DNSProxy/commits/master)
-
-[![Platforms: Linux, macOS and Windows PoC](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows%20PoC-507269)](packaging/README-packaging.md#packages-and-architectures)
-[![Shared resolver core: C11](https://img.shields.io/badge/core-C11-00599c)](dnsp-modern.c)
-[![Install DEB or RPM packages for amd64 and arm64](https://img.shields.io/badge/Install-DEB%2FRPM%20%C2%B7%20amd64%2Farm64-2e7d32)](packaging/README-packaging.md#packages-and-architectures)
-[![Upstream DoH with HTTP/2 and optional HTTP/3](https://img.shields.io/badge/Upstream%20DoH-HTTP%2F2%20%2B%20optional%20HTTP%2F3-0072b8)](#optional-upstream-http3)
-[![RFC 8484](https://img.shields.io/badge/DoH-RFC%208484-blue)](https://www.rfc-editor.org/rfc/rfc8484)
-[![Security policy and private vulnerability reporting](https://img.shields.io/badge/security-private%20reporting-507269)](SECURITY.md)
+<p align="center">
+  <a href="https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-modern.yml"><img src="https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-modern.yml/badge.svg?branch=master" alt="Tests and packages" height="20"></a>
+  <a href="https://github.com/fantuz/DNSProxy/actions/workflows/codeql.yml"><img src="https://github.com/fantuz/DNSProxy/actions/workflows/codeql.yml/badge.svg?branch=master" alt="CodeQL" height="20"></a>
+  <a href="https://github.com/fantuz/DNSProxy/releases/latest"><img src="https://img.shields.io/github/v/release/fantuz/DNSProxy?filter=v*-modern&amp;sort=date&amp;label=release" alt="Latest stable modern release" height="20"></a>
+  <a href="https://github.com/fantuz/DNSProxy/releases"><img src="https://img.shields.io/github/downloads/fantuz/DNSProxy/total?label=downloads" alt="Downloads" height="20"></a>
+  <br>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/fantuz/DNSProxy" alt="MIT license" height="20"></a>
+  <a href="https://github.com/fantuz/DNSProxy/stargazers"><img src="https://img.shields.io/github/stars/fantuz/DNSProxy?style=flat" alt="GitHub stars" height="20"></a>
+  <a href="https://github.com/fantuz/DNSProxy/issues"><img src="https://img.shields.io/github/issues/fantuz/DNSProxy" alt="Open issues" height="20"></a>
+  <a href="https://github.com/fantuz/DNSProxy/commits/master"><img src="https://img.shields.io/github/last-commit/fantuz/DNSProxy/master" alt="Last commit on master" height="20"></a>
+  <br>
+  <a href="packaging/README-packaging.md#packages-and-architectures"><img src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows%20PoC-507269" alt="Platforms: Linux, macOS and Windows PoC" height="20"></a>
+  <a href="dnsp-modern.c"><img src="https://img.shields.io/badge/core-C11-00599c" alt="Shared resolver core: C11" height="20"></a>
+  <a href="packaging/README-packaging.md#packages-and-architectures"><img src="https://img.shields.io/badge/Install-DEB%2FRPM%20%C2%B7%20amd64%2Farm64-2e7d32" alt="Install DEB or RPM packages for amd64 and arm64" height="20"></a>
+  <br>
+  <a href="#optional-upstream-http3"><img src="https://img.shields.io/badge/Upstream%20DoH-HTTP%2F2%20%2B%20optional%20HTTP%2F3-0072b8" alt="Upstream DoH with HTTP/2 and optional HTTP/3" height="20"></a>
+  <a href="https://www.rfc-editor.org/rfc/rfc8484"><img src="https://img.shields.io/badge/DoH-RFC%208484-blue" alt="RFC 8484" height="20"></a>
+  <a href="SECURITY.md"><img src="https://img.shields.io/badge/security-private%20reporting-507269" alt="Security policy and private vulnerability reporting" height="20"></a>
+</p>
 
 DNSProxy bridges conventional **DNS clients (UDP/TCP)** to upstream
 **DNS-over-HTTPS (DoH)** resolvers. The `dnsp-modern` forwarder
 uses RFC 8484 `application/dns-message` POST requests, libcurl's event-driven
 multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
 
-[![Download for Windows — 64-bit portable ZIP](https://img.shields.io/badge/Download%20for%20Windows-64--bit%20portable%20ZIP-0078D4?style=for-the-badge)](https://github.com/fantuz/DNSProxy/releases/latest#downloads)
-[![Download for macOS — Apple Silicon ARM64](https://img.shields.io/badge/Download%20for%20macOS-Apple%20Silicon%20ARM64-222222?style=for-the-badge)](https://github.com/fantuz/DNSProxy/releases/latest#downloads)
-[![Download for macOS — Intel x86-64](https://img.shields.io/badge/Download%20for%20macOS-Intel%20x86--64-555555?style=for-the-badge)](https://github.com/fantuz/DNSProxy/releases/latest#downloads)
+<p align="center">
+  <a href="https://github.com/fantuz/DNSProxy/releases/latest#downloads"><img src="https://img.shields.io/badge/Download%20for%20Windows-64--bit%20portable%20ZIP-0078D4?style=for-the-badge" alt="Download for Windows — 64-bit portable ZIP" height="28"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/fantuz/DNSProxy/releases/latest#downloads"><img src="https://img.shields.io/badge/Download%20for%20macOS-Apple%20Silicon%20ARM64-222222?style=for-the-badge" alt="Download for macOS — Apple Silicon ARM64" height="28"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/fantuz/DNSProxy/releases/latest#downloads"><img src="https://img.shields.io/badge/Download%20for%20macOS-Intel%20x86--64-555555?style=for-the-badge" alt="Download for macOS — Intel x86-64" height="28"></a>
+</p>
 
 **[Linux DEB / RPM downloads](https://github.com/fantuz/DNSProxy/releases/latest#downloads)**
 · [Windows setup guide](docs/WINDOWS.md)
