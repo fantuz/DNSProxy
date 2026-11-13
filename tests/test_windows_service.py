@@ -100,7 +100,8 @@ class ServiceTests(unittest.TestCase):
             # registration/removal without performing any adapter DNS writes.
             self.ps(f'''
                 . {self.quoted(integration)} -ServiceName {name} -Action Status
-                $adapter = Get-NetAdapter | Where-Object Status -eq Up | Select-Object -First 1
+                $ip = Get-NetIPAddress -IPAddress $env:DNSP_TEST_SECOND_ADDRESS | Select-Object -First 1
+                $adapter = Get-NetAdapter -InterfaceIndex $ip.InterfaceIndex
                 $g = $adapter.InterfaceGuid.ToString().Trim('{{','}}')
                 $entries = @()
                 foreach ($family in @('IPv4','IPv6')) {{

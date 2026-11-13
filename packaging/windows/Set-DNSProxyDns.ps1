@@ -31,7 +31,7 @@ function Read-AdapterDns([string]$Guid, [string]$Family) {
     $adapter = Find-Adapter $Guid
     $protocol = if ($Family -eq 'IPv4') { 'Tcpip' } else { 'Tcpip6' }
     $key = "HKLM:\SYSTEM\CurrentControlSet\Services\$protocol\Parameters\Interfaces\{$Guid}"
-    if (-not (Test-Path -LiteralPath $key)) { throw "Missing $Family configuration for adapter $Guid." }
+    if (-not (Test-Path -LiteralPath $key)) { throw "Missing $Family configuration for adapter $Guid at $key." }
     # Get-DnsClientServerAddress returns effective servers, including DHCP/RA.
     # Snapshot the configured NameServer separately so automatic mode is restored
     # as automatic, rather than pinning today's DHCP/RA addresses permanently.

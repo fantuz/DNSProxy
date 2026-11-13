@@ -10,6 +10,7 @@ param(
     [switch]$NoStart
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'ServiceFiles.ps1')
 $uri = [Uri]$Upstream
 if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne 'https' -or $Upstream -match '[\s"]' -or $uri.UserInfo) {
     throw 'Use an HTTPS upstream URL without credentials, whitespace, or quotation marks.'
@@ -86,10 +87,8 @@ try {
     }
     # Only folders created by this invocation are removed; pre-existing paths were rejected.
     for ($attempt=0; $attempt -lt 20; $attempt++) {
-        # Directory.Delete removes reparse points without traversing their targets.
-        # The service-writable log subtree must never redirect elevated cleanup.
-        if ($programCreated) { try { [IO.Directory]::Delete($program, $true) } catch {} }
-        if ($stateCreated) { try { [IO.Directory]::Delete($state, $true) } catch {} }
+        if ($programCreated) { try { Remove-ServiceDirectory $program } catch {} }
+        if ($stateCreated) { try { Remove-ServiceDirectory $state } catch {} }
         if ((-not $programCreated -or -not (Test-Path -LiteralPath $program)) -and
             (-not $stateCreated -or -not (Test-Path -LiteralPath $state))) { break }
         Start-Sleep -Milliseconds 100
