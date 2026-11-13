@@ -891,7 +891,7 @@ static bool failover_eligible(const unsigned char *data,const DnsInfo *info) {
 }
 static bool retry_stale_connection(Query *q,CURLcode code,long status,long proxy_status,long connects) {
     if(q->retried_stale || connects || status || q->resp_len ||
-       (code!=CURLE_SEND_ERROR && code!=CURLE_RECV_ERROR && code!=CURLE_GOT_NOTHING) ||
+       (code!=CURLE_SEND_ERROR && code!=CURLE_RECV_ERROR && code!=CURLE_GOT_NOTHING && code!=CURLE_HTTP2) ||
        !failover_eligible(q->request,&q->info)) return false;
     long verify=0,proxy_verify=0;
     if(curl_easy_getinfo(q->easy,CURLINFO_SSL_VERIFYRESULT,&verify)!=CURLE_OK || verify ||
@@ -906,7 +906,8 @@ static bool retry_stale_connection(Query *q,CURLcode code,long status,long proxy
     if(now>=deadline) return false;
     /* A plain DNS lookup can be replayed once when a pooled connection dies
      * before a response. Keep the original attempt budget and force a fresh
-     * connection, including when libcurl cannot detect an idle TLS closure. */
+     * connection, including when an idle TLS closure surfaces as a framing
+     * error before libcurl can detect that the pooled connection is dead. */
     bool started=start_upstream(q,(long)(deadline-now));
     q->attempt_deadline_ms=deadline;
     return started;

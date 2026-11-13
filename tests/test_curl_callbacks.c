@@ -59,7 +59,7 @@ static bool stale_retry_preserves_budget_and_replay_policy(void) {
         q->attempt_deadline_ms=clock_ms();
         ok=ok && !retry_stale_connection(q,CURLE_GOT_NOTHING,0,0,0);
         q->attempt_deadline_ms=deadline;
-        ok=ok && retry_stale_connection(q,CURLE_GOT_NOTHING,0,0,0) &&
+        ok=ok && retry_stale_connection(q,CURLE_HTTP2,0,0,0) &&
            q->retried_stale && q->attempt_deadline_ms<=deadline && active==q && active_count==1 &&
            !retry_stale_connection(q,CURLE_GOT_NOTHING,0,0,0);
     }
