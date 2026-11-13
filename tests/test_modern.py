@@ -349,6 +349,7 @@ class Tests(unittest.TestCase):
 
     def udp(self, payload):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 131072)
             s.settimeout(4)
             s.sendto(payload, ('127.0.0.1', self.port))
             try:

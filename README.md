@@ -10,7 +10,7 @@
 [![Open issues](https://img.shields.io/github/issues/fantuz/DNSProxy)](https://github.com/fantuz/DNSProxy/issues)
 [![Last commit on master](https://img.shields.io/github/last-commit/fantuz/DNSProxy/master)](https://github.com/fantuz/DNSProxy/commits/master)
 
-[![Platforms: Linux and Windows PoC](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20PoC-507269)](docs/WINDOWS.md#portability-and-validation-overview)
+[![Platforms: Linux, macOS and Windows PoC](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows%20PoC-507269)](packaging/README-packaging.md#packages-and-architectures)
 [![Shared resolver core: C11](https://img.shields.io/badge/core-C11-00599c)](dnsp-modern.c)
 [![Install DEB or RPM packages for amd64 and arm64](https://img.shields.io/badge/Install-DEB%2FRPM%20%C2%B7%20amd64%2Farm64-2e7d32)](packaging/README-packaging.md#packages-and-architectures)
 [![Upstream DoH with HTTP/2 and optional HTTP/3](https://img.shields.io/badge/Upstream%20DoH-HTTP%2F2%20%2B%20optional%20HTTP%2F3-0072b8)](#optional-upstream-http3)
@@ -23,9 +23,12 @@ uses RFC 8484 `application/dns-message` POST requests, libcurl's event-driven
 multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
 
 [![Download for Windows — 64-bit portable ZIP](https://img.shields.io/badge/Download%20for%20Windows-64--bit%20portable%20ZIP-0078D4?style=for-the-badge)](https://github.com/fantuz/DNSProxy/releases/latest#downloads)
+[![Download for macOS — Apple Silicon ARM64](https://img.shields.io/badge/Download%20for%20macOS-Apple%20Silicon%20ARM64-222222?style=for-the-badge)](https://github.com/fantuz/DNSProxy/releases/latest#downloads)
+[![Download for macOS — Intel x86-64](https://img.shields.io/badge/Download%20for%20macOS-Intel%20x86--64-555555?style=for-the-badge)](https://github.com/fantuz/DNSProxy/releases/latest#downloads)
 
 **[Linux DEB / RPM downloads](https://github.com/fantuz/DNSProxy/releases/latest#downloads)**
 · [Windows setup guide](docs/WINDOWS.md)
+· [macOS setup guide](docs/MACOS.md)
 · [Linux installation guide](packaging/README-packaging.md)
 
 On the release page, choose **Portable ZIP** in the Windows row. Extract the
@@ -33,6 +36,13 @@ entire archive and double-click **Start-DNSProxy.cmd**. Keep `dnsp-modern.exe`,
 its DLLs and the certificate bundle together. The native Windows PoC uses the
 same C resolver as Linux; the setup guide covers service installation,
 Administrator options, DNS adapter configuration and rollback.
+
+**macOS 15+:** choose the **Intel** or **Apple Silicon** archive in the download
+table, extract it into its own folder and run **Start-DNSProxy.command**. Both
+architectures run natively using Apple's system libcurl; no Homebrew or Rosetta
+is required. The launcher uses local port **5053**. See the macOS guide for port
+53, system DNS setup and download approval. Developer ID signing and notarization
+remain follow-ups.
 
 This project grew out of DNS transport and privacy experiments dating to roughly
 2009–2010 and work surrounding [RFC 8484](https://www.rfc-editor.org/rfc/rfc8484).

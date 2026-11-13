@@ -54,6 +54,7 @@ jobs:
       fuzz: ${{ steps.pr.outputs.fuzz }}
       protocols: ${{ steps.pr.outputs.protocols }}
       windows: ${{ steps.pr.outputs.windows }}
+      macos: ${{ steps.pr.outputs.macos }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -92,6 +93,8 @@ jobs:
             tests/test_modern.py .github/workflows/dnsp-modern-benchmark.yml
           check_paths windows "${common[@]}" bench/ tests/ packaging/windows/ docs/WINDOWS.md \
             scripts/build-windows.sh scripts/bundle-windows.py .github/workflows/dnsp-modern-windows.yml
+          check_paths macos "${common[@]}" bench/ tests/ packaging/macos/ docs/MACOS.md \
+            scripts/build-macos.sh .github/workflows/dnsp-modern-macos.yml
 
   deb:
     needs: plan
@@ -286,10 +289,19 @@ jobs:
     with:
       ref: ${{ needs.plan.outputs.commit }}
 
+  macos:
+    needs: plan
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      (github.event_name != 'pull_request' || needs.plan.outputs.macos == 'true')
+    uses: ./.github/workflows/dnsp-modern-macos.yml
+    with:
+      ref: ${{ needs.plan.outputs.commit }}
+
   pr-checks:
     name: DNSProxy PR checks
     if: ${{ always() && github.event_name == 'pull_request' }}
-    needs: [plan, deb, debian, rpm, sanitizers, codeql, fuzz, protocols, windows]
+    needs: [plan, deb, debian, rpm, sanitizers, codeql, fuzz, protocols, windows, macos]
     runs-on: ubuntu-24.04
     permissions: {}
     steps:
@@ -304,7 +316,7 @@ jobs:
 
           jobs = json.loads(os.environ["JOB_RESULTS"])
           planned = jobs["plan"]["outputs"]
-          optional = {"codeql", "fuzz", "protocols", "windows"}
+          optional = {"codeql", "fuzz", "protocols", "windows", "macos"}
           failed = []
           for name, job in sorted(jobs.items()):
               expected = "skipped" if name in optional and planned.get(name) == "false" else "success"
@@ -322,9 +334,9 @@ jobs:
       !cancelled() && github.event_name != 'pull_request' &&
       needs.plan.result == 'success' && needs.deb.result == 'success' &&
       needs.debian.result == 'success' && needs.rpm.result == 'success' &&
-      needs.sanitizers.result == 'success' && needs.windows.result == 'success' &&
+      needs.sanitizers.result == 'success' && needs.windows.result == 'success' && needs.macos.result == 'success' &&
       (needs.plan.outputs.mode == 'master' || needs.plan.outputs.mode == 'tag' || needs.plan.outputs.mode == 'manual')
-    needs: [plan, deb, debian, rpm, sanitizers, windows]
+    needs: [plan, deb, debian, rpm, sanitizers, windows, macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -340,7 +352,7 @@ jobs:
           pattern: dnsp-modern-*
           merge-multiple: true
           path: release-assets
-      - name: Publish DEBs, RPMs, Windows ZIP, and checksums
+      - name: Publish Linux packages, Windows ZIP, macOS archives, and checksums
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

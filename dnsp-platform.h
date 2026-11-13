@@ -1,8 +1,12 @@
 #ifndef DNSP_PLATFORM_H
 #define DNSP_PLATFORM_H
 
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#define __APPLE_USE_RFC_3542
+#endif
 /* Only operating-system interfaces live here. DNS and libcurl state remain
- * in dnsp-modern.c, shared by the native Windows and Linux builds. */
+ * in dnsp-modern.c, shared by native Windows, Linux and macOS builds. */
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -37,6 +41,10 @@ typedef WSAPOLLFD dnsp_pollfd;
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach_time.h>
+#include <sys/select.h>
+#endif
 typedef socklen_t dnsp_socklen_t;
 typedef struct pollfd dnsp_pollfd;
 #endif
@@ -86,6 +94,10 @@ static inline int nonblock(dnsp_socket_t fd) {
     u_long enabled=1;
     return ioctlsocket(fd,FIONBIO,&enabled);
 #else
+#ifdef __APPLE__
+    int enabled=1;
+    if(setsockopt(fd,SOL_SOCKET,SO_NOSIGPIPE,&enabled,sizeof(enabled))!=0) return -1;
+#endif
     int flags=fcntl(fd,F_GETFL,0);
     return flags<0?-1:fcntl(fd,F_SETFL,flags|O_NONBLOCK);
 #endif
@@ -127,21 +139,29 @@ static inline const char *dnsp_socket_message(int error) {
 #endif
 }
 static inline int dnsp_poll(dnsp_pollfd *fds,size_t count,int timeout) {
-#ifdef _WIN32
-    /* Winsock select reports a peer FIN as readable EOF. WSAPoll reports
+#if defined(_WIN32) || defined(__APPLE__)
+    /* select reports a peer FIN as readable EOF. WSAPoll and Darwin poll report
      * POLLHUP while data is still queued, unlike Linux poll, and can spin
      * on half-closed clients whose framing reads are paused. */
+#ifdef _WIN32
     if(count>FD_SETSIZE) {WSASetLastError(WSAEINVAL);return -1;}
+#endif
+    int nfds=0;
     fd_set reads,writes,errors;
     FD_ZERO(&reads);FD_ZERO(&writes);FD_ZERO(&errors);
     for(size_t i=0;i<count;i++) {
         fds[i].revents=0;
+#ifdef __APPLE__
+        /* POSIX fd_set is indexed by descriptor value, unlike Winsock's array. */
+        if(fds[i].fd<0 || fds[i].fd>=FD_SETSIZE) {errno=EINVAL;return -1;}
+        if(fds[i].fd>=nfds) nfds=fds[i].fd+1;
+#endif
         if(fds[i].events&POLLIN) FD_SET(fds[i].fd,&reads);
         if(fds[i].events&POLLOUT) FD_SET(fds[i].fd,&writes);
         FD_SET(fds[i].fd,&errors);
     }
     struct timeval wait={.tv_sec=timeout/1000,.tv_usec=(timeout%1000)*1000};
-    int result=select(0,&reads,&writes,&errors,timeout<0?NULL:&wait);
+    int result=select(nfds,&reads,&writes,&errors,timeout<0?NULL:&wait);
     if(result<=0) return result;
     int ready=0;
     for(size_t i=0;i<count;i++) {
@@ -163,6 +183,13 @@ static inline bool dnsp_paused_tcp_reset(dnsp_socket_t fd) {
     if(recv(fd,&byte,1,MSG_PEEK)>=0) return false;
     int error=WSAGetLastError();
     return error==WSAECONNRESET || error==WSAECONNABORTED;
+#elif defined(__APPLE__)
+    /* Darwin can retain unread bytes after RST, so MSG_PEEK alone can miss it.
+     * SO_ERROR detects reset without consuming a queued successor or a FIN. */
+    int error=0;
+    socklen_t size=sizeof(error);
+    return getsockopt(fd,SOL_SOCKET,SO_ERROR,&error,&size)==0 &&
+           (error==ECONNRESET || error==ECONNABORTED);
 #else
     (void)fd;
     return false;
@@ -178,6 +205,8 @@ static inline dnsp_ssize_t dnsp_recv(dnsp_socket_t fd,void *data,size_t size) {
 static inline dnsp_ssize_t dnsp_send(dnsp_socket_t fd,const void *data,size_t size) {
 #ifdef _WIN32
     return send(fd,(const char*)data,(int)size,0);
+#elif defined(__APPLE__)
+    return send(fd,data,size,0); /* SO_NOSIGPIPE is set when making the socket nonblocking. */
 #else
     return send(fd,data,size,MSG_NOSIGNAL);
 #endif
@@ -187,6 +216,13 @@ static inline uint64_t dnsp_clock_ms(bool include_suspend) {
     (void)include_suspend;
     /* GetTickCount64 includes sleep, so suspended machines cannot serve stale TTLs. */
     return GetTickCount64();
+#elif defined(__APPLE__)
+    static mach_timebase_info_data_t scale;
+    if(!scale.denom && mach_timebase_info(&scale)!=KERN_SUCCESS) return 0;
+    /* Cache TTLs include sleep; event-loop deadlines use the uptime clock. */
+    uint64_t ticks=include_suspend?mach_continuous_time():mach_absolute_time();
+    uint64_t nanos=(ticks/scale.denom)*scale.numer+(ticks%scale.denom)*scale.numer/scale.denom;
+    return nanos/1000000u;
 #else
     struct timespec t;
     if(clock_gettime(include_suspend?CLOCK_BOOTTIME:CLOCK_MONOTONIC,&t)!=0) return 0;
@@ -276,7 +312,13 @@ static inline dnsp_ssize_t dnsp_recv_udp(dnsp_socket_t fd,void *data,size_t size
            c->cmsg_len>=CMSG_LEN(sizeof(struct in_pktinfo))) {
             struct in_pktinfo info;
             memcpy(&info,CMSG_DATA(c),sizeof(info));
+#ifdef __APPLE__
+            /* Darwin supplies the received destination in ipi_addr and leaves
+             * ipi_spec_dst zero; the latter is only used when sending. */
+            *local=(UdpLocal){.destination=info.ipi_addr.s_addr,.source=info.ipi_addr.s_addr};
+#else
             *local=(UdpLocal){.destination=info.ipi_addr.s_addr,.source=info.ipi_spec_dst.s_addr};
+#endif
             break;
         } else if(c->cmsg_level==IPPROTO_IPV6 && c->cmsg_type==IPV6_PKTINFO &&
                   c->cmsg_len>=CMSG_LEN(sizeof(struct in6_pktinfo))) {
