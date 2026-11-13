@@ -54,6 +54,8 @@ jobs:
           python3 tests/test_ipv6.py -v || failed=1
           python3 -m unittest discover -s tests -p test_benchmark.py -v || failed=1
           python3 tests/test_macos.py -v || failed=1
+          sudo dist/macos-dns-tests || failed=1
+          python3 tests/test_macos_service.py -v || failed=1
           exit "$failed"
       - uses: actions/upload-artifact@v6
         with:

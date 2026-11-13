@@ -1090,7 +1090,42 @@ static bool submit(const unsigned char *data,size_t len,Client *client,dnsp_sock
                    const struct sockaddr_storage *peer,dnsp_socklen_t peer_len,UdpLocal local) {
     return submit_until(data,len,client,udp_fd,peer,peer_len,local,0,&primary);
 }
+#ifdef __APPLE__
+#include <launch.h>
+/* launchd binds privileged sockets; the resolver itself runs as nobody. */
+static dnsp_socket_t launchd_listener(int type,const char *ip,int port) {
+    bool ipv6=!strcmp(ip,"::1");
+    if(port!=53 || (!ipv6 && strcmp(ip,"127.0.0.1"))) return DNSP_BAD_SOCKET;
+    const char *name=type==SOCK_DGRAM?(ipv6?"UDP6":"UDP4"):(ipv6?"TCP6":"TCP4");
+    int *fds=NULL;size_t count=0;
+    int error=launch_activate_socket(name,&fds,&count);
+    int fd=-1;
+    if(!error && count==1) {
+        struct sockaddr_storage addr={0};socklen_t len=sizeof(addr),size=sizeof(int);
+        int actual=0,accepting=0;
+        bool ok=getsockname(fds[0],(struct sockaddr*)&addr,&len)==0 &&
+            getsockopt(fds[0],SOL_SOCKET,SO_TYPE,&actual,&size)==0 && actual==type;
+        if(ipv6) ok=ok && addr.ss_family==AF_INET6 &&
+            ((struct sockaddr_in6*)&addr)->sin6_port==htons(53) &&
+            IN6_IS_ADDR_LOOPBACK(&((struct sockaddr_in6*)&addr)->sin6_addr);
+        else ok=ok && addr.ss_family==AF_INET &&
+            ((struct sockaddr_in*)&addr)->sin_port==htons(53) &&
+            ((struct sockaddr_in*)&addr)->sin_addr.s_addr==htonl(INADDR_LOOPBACK);
+        if(type==SOCK_STREAM) ok=ok && getsockopt(fds[0],SOL_SOCKET,SO_ACCEPTCONN,&accepting,&size)==0 && accepting;
+        if(ok && nonblock(fds[0])==0 && dnsp_listener_options(fds[0]) &&
+           (type!=SOCK_DGRAM || dnsp_udp_prepare(fds[0],addr.ss_family,false))) {fd=fds[0];fds[0]=-1;}
+    }
+    for(size_t i=0;i<count;i++) if(fds[i]>=0) close(fds[i]);
+    free(fds);
+    if(fd<0) fprintf(stderr,"level=error event=launchd_socket name=%s error=%d\n",name,error);
+    return fd;
+}
+#endif
 static dnsp_socket_t listener(const char *role,int type,const char *bindip,int port) {
+#ifdef __APPLE__
+    if(getenv("DNSP_LAUNCHD") && !strcmp(getenv("DNSP_LAUNCHD"),"1") && strcmp(role,"metrics"))
+        return launchd_listener(type,bindip,port);
+#endif
     char service[16];
     snprintf(service,sizeof(service),"%d",port);
     struct addrinfo hints={.ai_family=AF_UNSPEC,.ai_socktype=type,.ai_flags=AI_NUMERICHOST|AI_NUMERICSERV};

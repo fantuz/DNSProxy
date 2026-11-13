@@ -55,7 +55,7 @@ Administrator options, DNS adapter configuration and rollback.
 table, extract it into its own folder and run **Start-DNSProxy.command**. Both
 architectures run natively using Apple's system libcurl; no Homebrew or Rosetta
 is required. The launcher uses local port **5053**. See the macOS guide for port
-53, system DNS setup and download approval. Developer ID signing and notarization
+53, launchd service installation, reversible DNS setup and download approval. Developer ID signing and notarization
 remain follow-ups.
 
 This project grew out of DNS transport and privacy experiments dating to roughly
