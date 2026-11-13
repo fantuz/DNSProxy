@@ -43,6 +43,7 @@ typedef WSAPOLLFD dnsp_pollfd;
 #include <unistd.h>
 #ifdef __APPLE__
 #include <mach/mach_time.h>
+#include <sys/select.h>
 #endif
 typedef socklen_t dnsp_socklen_t;
 typedef struct pollfd dnsp_pollfd;
@@ -138,21 +139,29 @@ static inline const char *dnsp_socket_message(int error) {
 #endif
 }
 static inline int dnsp_poll(dnsp_pollfd *fds,size_t count,int timeout) {
-#ifdef _WIN32
-    /* Winsock select reports a peer FIN as readable EOF. WSAPoll reports
+#if defined(_WIN32) || defined(__APPLE__)
+    /* select reports a peer FIN as readable EOF. WSAPoll and Darwin poll report
      * POLLHUP while data is still queued, unlike Linux poll, and can spin
      * on half-closed clients whose framing reads are paused. */
+#ifdef _WIN32
     if(count>FD_SETSIZE) {WSASetLastError(WSAEINVAL);return -1;}
+#endif
+    int nfds=0;
     fd_set reads,writes,errors;
     FD_ZERO(&reads);FD_ZERO(&writes);FD_ZERO(&errors);
     for(size_t i=0;i<count;i++) {
         fds[i].revents=0;
+#ifdef __APPLE__
+        /* POSIX fd_set is indexed by descriptor value, unlike Winsock's array. */
+        if(fds[i].fd<0 || fds[i].fd>=FD_SETSIZE) {errno=EINVAL;return -1;}
+        if(fds[i].fd>=nfds) nfds=fds[i].fd+1;
+#endif
         if(fds[i].events&POLLIN) FD_SET(fds[i].fd,&reads);
         if(fds[i].events&POLLOUT) FD_SET(fds[i].fd,&writes);
         FD_SET(fds[i].fd,&errors);
     }
     struct timeval wait={.tv_sec=timeout/1000,.tv_usec=(timeout%1000)*1000};
-    int result=select(0,&reads,&writes,&errors,timeout<0?NULL:&wait);
+    int result=select(nfds,&reads,&writes,&errors,timeout<0?NULL:&wait);
     if(result<=0) return result;
     int ready=0;
     for(size_t i=0;i<count;i++) {
@@ -174,6 +183,13 @@ static inline bool dnsp_paused_tcp_reset(dnsp_socket_t fd) {
     if(recv(fd,&byte,1,MSG_PEEK)>=0) return false;
     int error=WSAGetLastError();
     return error==WSAECONNRESET || error==WSAECONNABORTED;
+#elif defined(__APPLE__)
+    /* Darwin can retain unread bytes after RST, so MSG_PEEK alone can miss it.
+     * SO_ERROR detects reset without consuming a queued successor or a FIN. */
+    int error=0;
+    socklen_t size=sizeof(error);
+    return getsockopt(fd,SOL_SOCKET,SO_ERROR,&error,&size)==0 &&
+           (error==ECONNRESET || error==ECONNABORTED);
 #else
     (void)fd;
     return false;

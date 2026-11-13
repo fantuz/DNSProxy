@@ -48,8 +48,8 @@ jobs:
           export DNSP_TEST_BINARY="$portable/dnsp-modern"
           "$DNSP_TEST_BINARY" --version
           failed=0
-          dist/macos-platform || failed=1
-          dist/macos-curl_callbacks || failed=1
+          dist/macos-platform || { echo "::error::Socket probe failed (exit $?)"; failed=1; }
+          dist/macos-curl_callbacks || { echo "::error::Callback probe failed (exit $?)"; failed=1; }
           python3 tests/test_modern.py -v || failed=1
           python3 tests/test_ipv6.py -v || failed=1
           python3 -m unittest discover -s tests -p test_benchmark.py -v || failed=1
