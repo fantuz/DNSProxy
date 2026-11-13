@@ -21,9 +21,12 @@ import test_modern as fixtures
 class ServiceTests(unittest.TestCase):
     def ps(self, text, check=True):
         executable = Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe'
+        # The workflow runs in PowerShell 7. Its module path points at incompatible
+        # assemblies for Windows PowerShell 5.1; let the child select its own.
+        environment = {k: v for k, v in os.environ.items() if k.lower() != 'psmodulepath'}
         result = subprocess.run([str(executable), '-NoProfile', '-NonInteractive', '-Command',
                                  "$ErrorActionPreference='Stop'; " + text],
-                                text=True, capture_output=True, timeout=45)
+                                text=True, capture_output=True, timeout=45, env=environment)
         if check:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
@@ -119,6 +122,7 @@ class ServiceTests(unittest.TestCase):
             sock.bind(('127.0.0.1', 53))
             result = self.ps(f"& {self.quoted(fixtures.BINARY.parent/'Install-DNSProxyService.ps1')} -ServiceName {name}", check=False)
             self.assertNotEqual(result.returncode, 0)
+            self.assertIn('Start-Service', result.stderr)
         self.assertFalse((Path(os.environ['ProgramFiles'])/name).exists())
         self.assertFalse((Path(os.environ['ProgramData'])/name).exists())
 
