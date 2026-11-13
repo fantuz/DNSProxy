@@ -22,7 +22,7 @@ if ($record.SchemaVersion -ne 1 -or $record.ServiceName -ne $ServiceName -or
 if (-not (Test-Path -LiteralPath $installedScript)) { throw 'Reinstall the service using a bundle that includes DNS integration.' }
 
 function Find-Adapter([string]$Guid) {
-    $matches = @(Get-NetAdapter -IncludeHidden | Where-Object { $_.InterfaceGuid -eq [Guid]$Guid })
+    $matches = @(Get-NetAdapter -IncludeHidden | Where-Object { ([Guid]$_.InterfaceGuid) -eq [Guid]$Guid })
     if ($matches.Count -ne 1) { throw "Adapter $Guid is absent; reconnect it and retry restoration." }
     return $matches[0]
 }
