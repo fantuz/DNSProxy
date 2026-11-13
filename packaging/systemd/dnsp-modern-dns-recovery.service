@@ -1,0 +1,15 @@
+[Unit]
+Description=Recover an interrupted DNSProxy DNS configuration transaction
+After=NetworkManager.service systemd-networkd.service systemd-resolved.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/dnsp-configure-dns recover
+TimeoutStartSec=50s
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK

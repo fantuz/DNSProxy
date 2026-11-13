@@ -60,6 +60,18 @@ verify concurrent HTTP/2 and HTTP/3 streams with local upstreams. Metrics
 reset when the process restarts and omit query names and client addresses.
 See [deployment checks and test coverage](../docs/OPERATIONS.md).
 
+## Optional direct port 53 service
+
+The package includes an example `port-53.conf` systemd drop-in. It keeps
+`DynamicUser=yes`, adds only `CAP_NET_BIND_SERVICE`, explicitly enables IPv4
+and IPv6 loopback, and pins the upstream bootstrap address to prevent recursive
+system DNS lookup. Copy it into `dnsp-modern.service.d` only when direct port 53
+is wanted, review the addresses/provider, then reload systemd and restart.
+On IPv6-disabled hosts remove `-l ::1`. Check for existing port 53 listeners
+before enabling it. Ordinary installations keep port 5300 without capabilities.
+When systemd-resolved fronts DNSProxy it can instead forward to port 5300;
+do not replace its stub listener or symlink as part of service setup.
+
 ## Packages and architectures
 
 | Distribution | Format | x86-64 | ARM64 |
@@ -147,3 +159,104 @@ HTTP status, Content-Type, DNS header/ID/question, and record-boundary checks.
 Use the default loopback bind for local forwarding. The project also includes
 local TLS/ALPN benchmarks for HTTP/2 and HTTP/1.1. See
 [bench/README.md](../bench/README.md) for setup and measurements.
+
+## Reversible Linux resolver integration
+
+The package includes `dnsp-configure-dns` (Python 3 standard library) and an
+inactive systemd recovery service/timer. Installation and upgrade do not change
+DNS settings or enable this timer. Supported backends are **NetworkManager**
+(`nmcli`) and **systemd-networkd + systemd-resolved**; choose one explicitly.
+Other managers, resolvconf, static resolv.conf, macOS/BSD and VPN split-DNS need
+manual integration. The helper never replaces `/etc/resolv.conf`.
+
+First configure the existing service using the packaged `port-53.conf` example:
+
+```sh
+sudo mkdir -p /etc/systemd/system/dnsp-modern.service.d
+sudo install -m 0644 /usr/share/doc/dnsp-modern/port-53.conf \
+  /etc/systemd/system/dnsp-modern.service.d/port-53.conf
+# Review the upstream and numeric bootstrap address in the drop-in first.
+sudo systemctl daemon-reload
+sudo systemctl enable --now dnsp-modern
+sudo systemctl restart dnsp-modern
+```
+
+On RPM systems, find the documentation directory with `rpm -ql dnsp-modern`.
+The drop-in retains DynamicUser and adds only CAP_NET_BIND_SERVICE for port 53.
+It binds IPv4/IPv6 loopback. Do not enable a second resolver on those addresses;
+resolved's usual `127.0.0.53` stub can coexist. A custom backup upstream must have
+its own numeric bootstrap address to avoid a resolver dependency loop.
+
+Review and apply an explicit selection (replace `enp1s0`; repeat `--interface`
+for multiple interfaces):
+
+```sh
+sudo dnsp-configure-dns enable --backend nm --interface enp1s0 --dry-run
+sudo dnsp-configure-dns enable --backend nm --interface enp1s0
+sudo dnsp-configure-dns status
+sudo dnsp-configure-dns restore
+```
+
+For networkd, use `--backend networkd` instead. Both paths require the owned
+service enabled at boot, dual loopback port 53, numeric bootstrap and working
+UDP/TCP DNS. Setup checks the persisted and effective adapter settings and then
+checks system name resolution; a failed check restores the original settings.
+A dry run performs reads and health probes and prints the exact snapshot/changes.
+
+**NetworkManager:** only active Ethernet/Wi-Fi profiles with IPv4 and IPv6 using
+`auto` or `manual` are accepted. The helper saves the connection UUID and changes
+only `ipv4.dns`, `ipv6.dns` and their `ignore-auto-dns` properties. It uses `device
+reapply`, without disconnecting the link. Original ordered static addresses and
+automatic-DNS flags are restored exactly; DHCP/RA address leases are not pinned.
+Search-domain properties are preserved, but NetworkManager's ignore-auto-dns
+also suppresses DHCP-provided search domains while enabled. Other profiles,
+routes, DNS priorities and global manager settings are untouched. Restoration
+finds the currently active device by UUID; an inactive profile is restored on
+disk without being activated. A NetworkManager-owned resolv.conf or the
+systemd-resolved stub symlink is required.
+
+**networkd/resolved:** requires the resolved stub resolv.conf symlink and an
+active `.network` profile with a single exact `[Match] Name=enp1s0`. Broad matches,
+MAC-only matches and existing drop-ins require manual setup. This conservative
+restriction prevents applying changes to unselected interfaces. The helper owns
+one `90-dnsproxy.conf` drop-in, sets dual loopback DNS and `~.` routing, and disables
+DNS learned by DHCPv4, DHCPv6 and RA. It preserves the base profile and existing
+search domains. Restore removes only an unchanged DNSProxy-owned drop-in, reloads
+networkd and reconfigures the same profile/link if still present. A link that is
+absent is restored persistently for its next appearance. Profile changes require
+manual inspection. This works with suitable `/run/systemd/network` generated
+profiles without editing the generated base file.
+
+Neither backend promises exclusive DNS routing across all interfaces, VPNs or
+application-level DoH. Per-link split-DNS, enterprise policy and custom local
+DNSSEC/DoT requirements need dedicated validation. Do not use this helper to
+replace corporate DNS policy. The common implementation targets the versions in
+Ubuntu 22.04/24.04, Debian 13 and Rocky 9; CI covers transaction logic and package
+lifecycle on the existing package matrix, not all live network-manager combinations.
+
+### Recovery and removal
+
+A root-only `state.json` in `/var/lib/dnsp-modern-integration` records the original
+settings before any DNS write. A persistent systemd timer is armed before writes;
+failed setup rolls back immediately. Pending transactions expire after two minutes.
+The watchdog retries every minute and after boot, using the same process lock.
+Commands have bounded execution time. If setup is killed after a persisted write,
+the next recovery attempt restores from disk. A successful commit disables the
+watchdog and keeps the original snapshot for explicit restoration.
+
+Always run `sudo dnsp-configure-dns restore` **before** stopping or removing the
+service. DEB/RPM removal refuses while the recovery record exists. Upgrades retain
+the snapshot. Restore refuses external edits, keeps the record and reports the
+conflicting profile/drop-in. Resolve the conflict and retry; never delete the
+record merely to bypass package removal. Committed integration relies on the
+resolver service's restart policy; it does not silently fall back to plaintext
+DNS when the service remains unavailable.
+
+Tests cover durable writes, process death after a write, automatic/static restore,
+partial reapply/health failures, watchdog failure, administrator drift, preview,
+profile identity changes, and owned drop-in removal. Before broad deployment,
+use disposable VMs for each backend: apply and resolve over both transports;
+restore mixed DHCP/static settings; kill setup and reboot while pending; unplug
+and rename an adapter; reboot a committed setup; test package upgrade/removal;
+and attach/detach the actual VPN used on the host. Real networkd/NM reload and
+roaming acceptance remains separate from the synthetic boundary tests.

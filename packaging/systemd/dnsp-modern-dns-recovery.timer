@@ -1,0 +1,11 @@
+[Unit]
+Description=Retry recovery of interrupted DNSProxy DNS configuration
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+OnActiveSec=2min
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

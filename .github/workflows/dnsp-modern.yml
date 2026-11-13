@@ -84,7 +84,7 @@ jobs:
             esac
           }
 
-          common=(dnsp-modern.c dnsp-platform.h modern.mk VERSION .github/workflows/dnsp-modern.yml)
+          common=(dnsp-modern.c dnsp-platform.h dnsp-service.h modern.mk VERSION .github/workflows/dnsp-modern.yml)
           check_paths codeql "${common[@]}" .github/workflows/codeql.yml
           check_paths fuzz "${common[@]}" tests/fuzz_dns.c tests/make_fuzz_corpus.py \
             tests/test_modern.py .github/workflows/dnsp-modern-fuzz.yml

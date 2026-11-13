@@ -1,0 +1,407 @@
+#!/usr/bin/python3
+"""Opt-in Linux DNS integration. Own only selected profile fields or one drop-in."""
+import argparse
+import configparser
+import fcntl
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import struct
+import subprocess
+import sys
+import time
+import uuid
+
+STATE_DIR = Path('/var/lib/dnsp-modern-integration')
+STATE = STATE_DIR / 'state.json'
+TIMER = 'dnsp-modern-dns-recovery.timer'
+KEYS = ('ipv4.dns', 'ipv4.ignore-auto-dns', 'ipv6.dns', 'ipv6.ignore-auto-dns')
+AFTER = dict(zip(KEYS, ('127.0.0.1', 'yes', '::1', 'yes')))
+DROPIN = '''# Managed by dnsp-configure-dns; use its restore command before removal.
+[Network]
+DNS=
+DNS=127.0.0.1
+DNS=::1
+Domains=~.
+[DHCPv4]
+UseDNS=no
+[DHCPv6]
+UseDNS=no
+[IPv6AcceptRA]
+UseDNS=no
+'''
+
+
+def run(*args):
+    result = subprocess.run(args, check=True, text=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, timeout=20,
+                            env=dict(os.environ, LC_ALL='C', SYSTEMD_COLORS='0', SYSTEMD_PAGER='cat'))
+    return result.stdout.strip()
+
+
+def atomic_write(path, data, mode=0o600):
+    temporary = path.with_name(path.name + '.new')
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def save(path, record):
+    atomic_write(path, json.dumps(record, indent=2) + '\n')
+
+
+def load(path):
+    record = json.loads(path.read_text())
+    if record.get('version') != 1 or record.get('phase') not in ('pending', 'active', 'restoring'):
+        raise RuntimeError('Unsupported recovery state; preserve it for manual recovery')
+    if record.get('backend') not in ('nm', 'networkd') or not record.get('entries'):
+        raise RuntimeError('Invalid recovery state')
+    return record
+
+
+def arm():
+    run('systemctl', 'enable', '--now', TIMER)
+    if run('systemctl', 'is-active', TIMER) != 'active':
+        raise RuntimeError('Could not arm the DNS recovery timer')
+
+
+def disarm():
+    run('systemctl', 'disable', '--now', TIMER)
+
+
+def dns_probe(address, tcp=False):
+    family = socket.AF_INET6 if ':' in address else socket.AF_INET
+    ident = os.urandom(2)
+    label = uuid.uuid4().hex.encode('ascii')
+    question = bytes([len(label)]) + label + b'\x07invalid\0\0\x01\0\x01'
+    packet = ident + b'\x01\0\0\x01\0\0\0\0\0\0' + question
+    with socket.socket(family, socket.SOCK_STREAM if tcp else socket.SOCK_DGRAM) as sock:
+        sock.settimeout(4)
+        sock.connect((address, 53))
+        if tcp:
+            sock.sendall(struct.pack('!H', len(packet)) + packet)
+            def receive(size):
+                data = b''
+                while len(data) < size:
+                    chunk = sock.recv(size - len(data))
+                    if not chunk:
+                        raise RuntimeError('Short TCP DNS response')
+                    data += chunk
+                return data
+            size = struct.unpack('!H', receive(2))[0]
+            reply = receive(size)
+        else:
+            sock.send(packet)
+            reply = sock.recv(65535)
+    if (len(reply) < len(packet) or reply[:2] != ident or not reply[2] & 0x80 or
+            reply[3] & 15 not in (0, 3) or reply[4:6] != b'\0\1' or
+            reply[12:12+len(question)] != question):
+        raise RuntimeError(f'Invalid DNS health response from {address}')
+
+
+def health():
+    if run('systemctl', 'is-active', 'dnsp-modern.service') != 'active':
+        raise RuntimeError('Start dnsp-modern.service before configuring DNS')
+    if run('systemctl', 'is-enabled', 'dnsp-modern.service') != 'enabled':
+        raise RuntimeError('Enable dnsp-modern.service at boot before configuring DNS')
+    pid = int(run('systemctl', 'show', '--property=MainPID', '--value', 'dnsp-modern.service'))
+    arguments = Path(f'/proc/{pid}/cmdline').read_bytes().decode().rstrip('\0').split('\0')
+    if arguments[0] != '/usr/bin/dnsp-modern':
+        raise RuntimeError('Unexpected service executable')
+    def values(option):
+        return [arguments[i+1] for i, item in enumerate(arguments[:-1]) if item == option]
+    if values('-p') != ['53'] or not {'127.0.0.1', '::1'}.issubset(values('-l')):
+        raise RuntimeError('Install the documented dual-loopback port-53 service drop-in first')
+    bootstrap = values('--bootstrap-address')
+    if len(bootstrap) != 1:
+        raise RuntimeError('Configure a numeric DoH bootstrap address first')
+    ipaddress.ip_address(bootstrap[0])
+    if values('--backup-upstream') and not values('--backup-bootstrap-address'):
+        raise RuntimeError('Configure a numeric backup bootstrap address as well')
+    for address in ('127.0.0.1', '::1'):
+        dns_probe(address)
+        dns_probe(address, tcp=True)
+
+
+class NetworkManager:
+    name = 'nm'
+
+    @staticmethod
+    def get(key, identity):
+        return run('nmcli', '--escape', 'no', '--get-values', key, 'connection', 'show', 'uuid', identity)
+
+    def prepare(self, interfaces):
+        entries = []
+        for interface in interfaces:
+            identity = run('nmcli', '-g', 'GENERAL.CON-UUID', 'device', 'show', interface)
+            uuid.UUID(identity)
+            if self.get('connection.type', identity) not in ('802-3-ethernet', '802-11-wireless'):
+                raise RuntimeError('Only active Ethernet/Wi-Fi NetworkManager profiles are supported')
+            for family in ('ipv4', 'ipv6'):
+                if self.get(family + '.method', identity) not in ('auto', 'manual'):
+                    raise RuntimeError('Both IP families must use auto/manual configuration')
+            entry = dict(interface=interface, identity=identity, after=AFTER.copy())
+            entry['before'] = self.read(entry)
+            if entry['before'] == entry['after']:
+                raise RuntimeError('Profile already uses DNSProxy without a recovery record')
+            entries.append(entry)
+        if len({item['identity'] for item in entries}) != len(entries):
+            raise RuntimeError('Select each connection profile only once')
+        return entries
+
+    def read(self, entry):
+        return {key: self.get(key, entry['identity']) for key in KEYS}
+
+    def write(self, entry, settings):
+        args = ['nmcli', 'connection', 'modify', 'uuid', entry['identity']]
+        for key in KEYS:
+            args.extend((key, settings[key]))
+        run(*args)
+
+    def refresh(self, entry):
+        # Find the current device by UUID, rather than applying to a saved index/name.
+        devices = self.get('GENERAL.DEVICES', entry['identity']).split(',')
+        devices = [name.strip() for name in devices if name.strip() not in ('', '--')]
+        for device in devices:
+            current = run('nmcli', '-g', 'GENERAL.CON-UUID', 'device', 'show', device)
+            if current != entry['identity']:
+                raise RuntimeError('Connection changed during DNS update')
+            run('nmcli', 'device', 'reapply', device)
+        # An inactive profile is restored persistently without bringing it up.
+        return devices
+
+    def verify_active(self, entry):
+        devices = self.refresh(entry)
+        if not devices:
+            raise RuntimeError('Profile became inactive during setup')
+        for device in devices:
+            servers = run('nmcli', '-g', 'IP4.DNS,IP6.DNS', 'device', 'show', device).splitlines()
+            if set(servers) != {'127.0.0.1', '::1'}:
+                raise RuntimeError('Effective adapter DNS differs from the requested loopback servers')
+
+
+class Networkd:
+    name = 'networkd'
+
+    @staticmethod
+    def profile(interface):
+        status = run('networkctl', 'status', '--no-pager', '--no-legend', interface)
+        match = re.search(r'^\s*Network File:\s+(\S+\.network)\s*$', status, re.M)
+        if not match:
+            raise RuntimeError(f'{interface} is not managed by a recognized networkd profile')
+        return Path(match[1])
+
+    def prepare(self, interfaces):
+        entries = []
+        for interface in interfaces:
+            source = self.profile(interface)
+            config = configparser.ConfigParser(strict=False, interpolation=None)
+            config.read(source)
+            # Refuse broad matches: a drop-in must not alter unselected links.
+            if config.get('Match', 'Name', fallback='') != interface:
+                raise RuntimeError('Automatic networkd setup requires a profile with one exact Match Name')
+            basename = source.name
+            if len(re.findall(r'^\s*Name\s*=', source.read_text(), re.M)) != 1:
+                raise RuntimeError('Multiple networkd match names require manual integration')
+            for root in ('/etc', '/run', '/usr/lib', '/usr/local/lib'):
+                if list((Path(root)/'systemd/network'/f'{basename}.d').glob('*.conf')):
+                    raise RuntimeError('Existing networkd drop-ins require manual integration')
+            target = Path('/etc/systemd/network') / (basename + '.d') / '90-dnsproxy.conf'
+            if target.exists() or target.is_symlink():
+                raise RuntimeError('Networkd DNSProxy drop-in already exists without recovery state')
+            entries.append(dict(interface=interface, identity=str(source), path=str(target),
+                                before=None, after=DROPIN))
+        if len({entry['path'] for entry in entries}) != len(entries):
+            raise RuntimeError('A networkd profile cannot be shared by selected interfaces')
+        return entries
+
+    def read(self, entry):
+        target = Path(entry['path'])
+        if target.is_symlink():
+            raise RuntimeError('Refusing a symlink at the managed networkd drop-in path')
+        return target.read_text() if target.exists() else None
+
+    def write(self, entry, content):
+        target = Path(entry['path'])
+        if target.parent.is_symlink():
+            raise RuntimeError('Refusing a symlink at the managed networkd directory')
+        if content is None:
+            target.unlink(missing_ok=True)
+        else:
+            target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+            atomic_write(target, content, 0o644)
+
+    def refresh(self, entry):
+        run('networkctl', 'reload')
+        # A removed link still gets its persistent settings restored. Nothing is
+        # brought up or rebound to a different interface by this helper.
+        if not (Path('/sys/class/net') / entry['interface']).exists():
+            return []
+        if str(self.profile(entry['interface'])) != entry['identity']:
+            raise RuntimeError('Networkd profile changed; inspect the retained recovery state')
+        run('networkctl', 'reconfigure', entry['interface'])
+        return [entry['interface']]
+
+    def verify_active(self, entry):
+        if not self.refresh(entry):
+            raise RuntimeError('Interface disappeared during DNS setup')
+        deadline = time.monotonic() + 5
+        while True:
+            output = run('resolvectl', 'dns', entry['interface'])
+            addresses = output.split(': ', 1)[-1].split()
+            if set(addresses) == {'127.0.0.1', '::1'}:
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError('Resolved did not apply the requested per-link DNS servers')
+            time.sleep(.2)
+
+
+def restore(path, backend, stop_timer=disarm):
+    if not path.exists():
+        stop_timer()
+        return
+    record = load(path)
+    record['phase'] = 'restoring'
+    save(path, record)
+    failures = []
+    for entry in record['entries']:
+        try:
+            current = backend.read(entry)
+            if current != entry['before']:
+                if current != entry['after']:
+                    raise RuntimeError('DNS changed externally; refusing to overwrite administrator changes')
+                backend.write(entry, entry['before'])
+            # Also refresh if a previous attempt persisted the original values
+            # but failed before reapplying them to the active interface.
+            backend.refresh(entry)
+            if backend.read(entry) != entry['before']:
+                raise RuntimeError('Could not verify restored DNS settings')
+        except Exception as error:
+            failures.append(f"{entry['identity']}: {error}")
+    if failures:
+        raise RuntimeError('\n'.join(failures))
+    stop_timer()
+    path.unlink()
+
+
+def system_health():
+    if not run('getent', 'ahosts', 'example.com'):
+        raise RuntimeError('System resolver did not return an address')
+
+
+def enable(path, backend, interfaces, check=health, start_timer=arm, stop_timer=disarm,
+           preview=False, check_system=system_health):
+    if path.exists():
+        raise RuntimeError('Recovery state already exists; restore before starting a new transaction')
+    check()
+    entries = backend.prepare(interfaces)
+    if not entries:
+        raise RuntimeError('Explicitly select at least one interface')
+    record = dict(version=1, phase='pending', backend=backend.name,
+                  deadline=time.time()+120, entries=entries)
+    if preview:
+        return record
+    save(path, record)
+    try:
+        start_timer()
+        for entry in entries:
+            if backend.read(entry) != entry['before']:
+                raise RuntimeError('DNS settings changed during preflight')
+            backend.write(entry, entry['after'])
+            backend.verify_active(entry)
+            if backend.read(entry) != entry['after']:
+                raise RuntimeError('DNS settings could not be verified')
+        check()
+        check_system()
+        if time.time() >= record['deadline']:
+            raise RuntimeError('DNS transaction deadline expired')
+        record['phase'] = 'active'
+        save(path, record)
+    except Exception as original:
+        try:
+            restore(path, backend, stop_timer)
+        except Exception as recovery:
+            raise RuntimeError(f'Setup failed: {original}; recovery needs attention (record retained): {recovery}') from original
+        raise
+    stop_timer()
+    return record
+
+
+def preflight_resolver_manager(backend):
+    resolved = Path('/etc/resolv.conf').resolve()
+    if backend == 'networkd':
+        if resolved != Path('/run/systemd/resolve/stub-resolv.conf'):
+            raise RuntimeError('Networkd integration requires the systemd-resolved stub resolv.conf symlink')
+        run('systemctl', 'is-active', 'systemd-networkd.service', 'systemd-resolved.service')
+    else:
+        run('systemctl', 'is-active', 'NetworkManager.service')
+        if resolved == Path('/run/systemd/resolve/stub-resolv.conf'):
+            run('systemctl', 'is-active', 'systemd-resolved.service')
+        elif resolved != Path('/run/NetworkManager/resolv.conf') and not Path('/etc/resolv.conf').read_text().startswith('# Generated by NetworkManager'):
+            raise RuntimeError('resolv.conf is not recognized as NetworkManager/resolved managed; use manual integration')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=('status', 'enable', 'restore', 'recover'))
+    parser.add_argument('--backend', choices=('nm', 'networkd'))
+    parser.add_argument('--interface', action='append', default=[])
+    parser.add_argument('--dry-run', action='store_true')
+    args = parser.parse_args()
+    if os.geteuid() != 0:
+        parser.error('Run as root')
+    if args.action == 'enable' and (not args.backend or not args.interface):
+        parser.error('Enable requires --backend and explicit --interface (repeat for multiple)')
+    if args.dry_run and args.action != 'enable':
+        parser.error('--dry-run is supported for enable')
+    for interface in args.interface:
+        if not re.fullmatch(r'[A-Za-z0-9_.:-]{1,15}', interface) or interface == 'lo':
+            parser.error('Select a valid non-loopback interface name')
+    if len(set(args.interface)) != len(args.interface):
+        parser.error('Select each interface once')
+    STATE_DIR.mkdir(mode=0o700, exist_ok=True)
+    stat = STATE_DIR.lstat()
+    if STATE_DIR.is_symlink() or stat.st_uid != 0 or stat.st_mode & 0o077:
+        raise RuntimeError('Recovery directory must be root-owned, mode 0700, without a symlink')
+    with open(STATE_DIR / 'lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        record = load(STATE) if STATE.exists() else None
+        if args.action == 'status':
+            print(json.dumps(record, indent=2) if record else 'No DNSProxy integration is active.')
+            return
+        if args.action == 'recover' and record:
+            if record['phase'] == 'active' or time.time() < record['deadline']:
+                return
+        if args.action in ('restore', 'recover'):
+            if args.action == 'restore' and record:
+                arm()  # An interrupted explicit restore must also recover at boot.
+            backend = NetworkManager() if record and record['backend'] == 'nm' else Networkd()
+            restore(STATE, backend)
+        else:
+            preflight_resolver_manager(args.backend)
+            backend = NetworkManager() if args.backend == 'nm' else Networkd()
+            print(json.dumps(enable(STATE, backend, args.interface, preview=args.dry_run), indent=2))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
+        print(f'DNS integration failed: {error}', file=sys.stderr)
+        sys.exit(1)
