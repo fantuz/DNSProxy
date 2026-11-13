@@ -105,9 +105,13 @@ class ServiceTests(unittest.TestCase):
                 $g = $adapter.InterfaceGuid.ToString().Trim('{{','}}')
                 $entries = @()
                 foreach ($family in @('IPv4','IPv6')) {{
+                    # The hosted NIC may have IPv6 unbound even though loopback
+                    # IPv6 works. Read only families exposed by the DNS provider.
+                    if (@(Get-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -AddressFamily $family).Count -eq 0) {{ continue }}
                     $entries += @{{Guid=$g; Family=$family; Before=(Read-AdapterDns $g $family);
                         After=@{{Mode='Static'; Servers=@($(if ($family -eq 'IPv4') {{'127.0.0.1'}} else {{'::1'}}))}}}}
                 }}
+                if (-not $entries.Count) {{ throw 'No adapter DNS configuration was tested' }}
                 @{{Version=1; Phase='Active'; Deadline=[DateTime]::UtcNow.ToString('o'); Entries=$entries}} |
                     ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
                 & {self.quoted(integration)} -ServiceName {name} -Action Restore

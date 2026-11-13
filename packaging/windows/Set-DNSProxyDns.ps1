@@ -29,6 +29,8 @@ function Find-Adapter([string]$Guid) {
 
 function Read-AdapterDns([string]$Guid, [string]$Family) {
     $adapter = Find-Adapter $Guid
+    $dnsObjects = @(Get-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -AddressFamily $Family)
+    if ($dnsObjects.Count -ne 1) { throw "No unique $Family DNS configuration for adapter $Guid; check the protocol binding." }
     $protocol = if ($Family -eq 'IPv4') { 'Tcpip' } else { 'Tcpip6' }
     $key = "HKLM:\SYSTEM\CurrentControlSet\Services\$protocol\Parameters\Interfaces\{$Guid}"
     if (-not (Test-Path -LiteralPath $key)) { throw "Missing $Family configuration for adapter $Guid at $key." }
@@ -39,7 +41,7 @@ function Read-AdapterDns([string]$Guid, [string]$Family) {
     if ($value -isnot [string]) { throw 'Unsupported DNS registry representation.' }
     $servers = @($value -split '[,;\s]+' | Where-Object { $_ })
     foreach ($server in $servers) { $null = [Net.IPAddress]::Parse($server) }
-    $effective = @(Get-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -AddressFamily $Family).ServerAddresses
+    $effective = @($dnsObjects[0].ServerAddresses)
     if ($servers.Count -and (@($effective) -join ',') -ne ($servers -join ',')) {
         throw "Configured and effective $Family DNS disagree; check policy/profile management."
     }
