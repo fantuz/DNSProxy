@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "dnsp-service.h"
 
 #ifndef DNSP_VERSION
 #define DNSP_VERSION "dev"
@@ -1541,7 +1542,7 @@ static void usage(FILE *stream,const char *program) {
             MIN_TIMEOUT_MS,MAX_DOH_TIMEOUT_MS,DOH_CONNECT_MS,
             MIN_TIMEOUT_MS,MAX_DOH_TIMEOUT_MS,DOH_TIMEOUT_MS,CACHE_MAX_ENTRIES,UDP_REPLY_MAX,UDP_REPLY_DEFAULT);
 }
-int main(int argc,char **argv) {
+static int dnsp_run(int argc,char **argv) {
     const char *bindips[MAX_LISTENERS]={"127.0.0.1"},*bootstrap_address=NULL;
     size_t bind_count=0;
     const char *backup_address=NULL;
@@ -1621,7 +1622,7 @@ int main(int argc,char **argv) {
     if(backup_address && !backup.url) {
         fprintf(stderr,"--backup-bootstrap-address requires --backup-upstream\n");return 2;
     }
-    if(!dnsp_install_handlers(stop_now,request_report)) {
+    if(!dnsp_service_active() && !dnsp_install_handlers(stop_now,request_report)) {
         fprintf(stderr,"level=error event=control_handler\n");return 1;
     }
     if(!init_curl()) return 1;
@@ -1699,8 +1700,10 @@ int main(int argc,char **argv) {
             " http_preference=%s backup=%s libcurl_build=%s libcurl_runtime=%s\n",
             bindips[i],port,metrics_port,primary.loopback_http?"http":"https",http_preference,
             backup.url?"enabled":"disabled",LIBCURL_VERSION,curl_info?curl_info->version:"unknown");
+    if(!dnsp_service_ready()) goto cleanup;
     exitcode=0;
     while(!stopping) {
+        if(!dnsp_service_tick()) {exitcode=1;break;}
         uint64_t now=clock_ms();
         if(atomic_load_explicit(&report_requested,memory_order_relaxed)) {
             atomic_store_explicit(&report_requested,false,memory_order_relaxed);
@@ -1809,3 +1812,22 @@ cleanup:
     curl_global_cleanup();
     return exitcode;
 }
+
+#ifdef _WIN32
+int wmain(int argc,wchar_t **wide) {
+    char **argv=calloc((size_t)argc+1,sizeof(*argv));
+    if(!argv) return 1;
+    int result=1;
+    for(int i=0;i<argc;i++) {
+        int size=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,wide[i],-1,NULL,0,NULL,NULL);
+        if(!size || !(argv[i]=malloc((size_t)size)) ||
+           !WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,wide[i],-1,argv[i],size,NULL,NULL)) goto done;
+    }
+    result=argc>1 && !strcmp(argv[1],"--service") ? dnsp_service_dispatch(argc,argv,dnsp_run,stop_now) : dnsp_run(argc,argv);
+done:
+    for(int i=0;i<argc;i++) free(argv[i]);
+    free(argv);return result;
+}
+#else
+int main(int argc,char **argv) {return dnsp_run(argc,argv);}
+#endif

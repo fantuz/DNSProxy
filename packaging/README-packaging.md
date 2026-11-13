@@ -60,6 +60,18 @@ verify concurrent HTTP/2 and HTTP/3 streams with local upstreams. Metrics
 reset when the process restarts and omit query names and client addresses.
 See [deployment checks and test coverage](../docs/OPERATIONS.md).
 
+## Optional direct port 53 service
+
+The package includes an example `port-53.conf` systemd drop-in. It keeps
+`DynamicUser=yes`, adds only `CAP_NET_BIND_SERVICE`, explicitly enables IPv4
+and IPv6 loopback, and pins the upstream bootstrap address to prevent recursive
+system DNS lookup. Copy it into `dnsp-modern.service.d` only when direct port 53
+is wanted, review the addresses/provider, then reload systemd and restart.
+On IPv6-disabled hosts remove `-l ::1`. Check for existing port 53 listeners
+before enabling it. Ordinary installations keep port 5300 without capabilities.
+When systemd-resolved fronts DNSProxy it can instead forward to port 5300;
+do not replace its stub listener or symlink as part of service setup.
+
 ## Packages and architectures
 
 | Distribution | Format | x86-64 | ARM64 |

@@ -7,7 +7,7 @@ DNSP_BUILD_VERSION := $(shell sed -nE '/^[0-9]+\.[0-9]+\.[0-9]+$$/p' VERSION)
 .PHONY: all modern-check clean
 all: dnsp-modern
 
-dnsp-modern: dnsp-modern.c dnsp-platform.h modern.mk VERSION
+dnsp-modern: dnsp-modern.c dnsp-platform.h dnsp-service.h modern.mk VERSION
 	$(CC) $(CPPFLAGS) -DDNSP_VERSION='"$(DNSP_BUILD_VERSION)"' -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic $(LDFLAGS) -o $@ $< $(CURL_FLAGS) $(LDLIBS)
 
 modern-check: dnsp-modern

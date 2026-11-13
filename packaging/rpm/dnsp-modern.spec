@@ -44,6 +44,6 @@ install -Dpm 0644 packaging/systemd/dnsp-modern.service %{buildroot}%{_unitdir}/
 
 %files
 %license LICENSE
-%doc packaging/README-packaging.md
+%doc packaging/README-packaging.md packaging/systemd/port-53.conf
 %{_bindir}/dnsp-modern
 %{_unitdir}/dnsp-modern.service
