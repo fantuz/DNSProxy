@@ -296,7 +296,13 @@ static inline dnsp_ssize_t dnsp_recv_udp(dnsp_socket_t fd,void *data,size_t size
            c->cmsg_len>=CMSG_LEN(sizeof(struct in_pktinfo))) {
             struct in_pktinfo info;
             memcpy(&info,CMSG_DATA(c),sizeof(info));
+#ifdef __APPLE__
+            /* Darwin supplies the received destination in ipi_addr and leaves
+             * ipi_spec_dst zero; the latter is only used when sending. */
+            *local=(UdpLocal){.destination=info.ipi_addr.s_addr,.source=info.ipi_addr.s_addr};
+#else
             *local=(UdpLocal){.destination=info.ipi_addr.s_addr,.source=info.ipi_spec_dst.s_addr};
+#endif
             break;
         } else if(c->cmsg_level==IPPROTO_IPV6 && c->cmsg_type==IPV6_PKTINFO &&
                   c->cmsg_len>=CMSG_LEN(sizeof(struct in6_pktinfo))) {

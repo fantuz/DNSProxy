@@ -47,11 +47,13 @@ jobs:
           (cd "$portable" && shasum -a 256 -c SHA256SUMS)
           export DNSP_TEST_BINARY="$portable/dnsp-modern"
           "$DNSP_TEST_BINARY" --version
-          dist/macos-platform
-          dist/macos-curl_callbacks
-          python3 tests/test_modern.py -v
-          python3 tests/test_ipv6.py -v
-          python3 -m unittest discover -s tests -p test_benchmark.py -v
+          failed=0
+          dist/macos-platform || failed=1
+          dist/macos-curl_callbacks || failed=1
+          python3 tests/test_modern.py -v || failed=1
+          python3 tests/test_ipv6.py -v || failed=1
+          python3 -m unittest discover -s tests -p test_benchmark.py -v || failed=1
+          exit "$failed"
       - uses: actions/upload-artifact@v6
         with:
           name: dnsp-modern-macos-${{ matrix.arch }}
