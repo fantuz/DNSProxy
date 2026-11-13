@@ -304,16 +304,6 @@ def run_suite(args, protocol, tmpdir):
                 warm_clients = 1
             one_load(proxy_port, warm_clients, args.warmup)
             await_quiescent(metrics_port, upstream_server)
-            idle_probe = None
-            if protocol == 'h2' and args.h2_idle_timeout:
-                before_idle = metric_snapshot(metrics_port)
-                time.sleep(args.h2_idle_timeout + 0.2)
-                # Zero seconds still issues the initial single query.
-                idle_probe = one_load(proxy_port, 1, 0)
-                await_quiescent(metrics_port, upstream_server)
-                after_idle = metric_snapshot(metrics_port)
-                idle_probe['curl_metric_delta'] = metrics_delta(before_idle, after_idle)
-                idle_probe['upstream_phases'] = phase_timings(before_idle, after_idle)
             if upstream_server:
                 upstream_server.app.reset()
             before = metric_snapshot(metrics_port)
@@ -322,6 +312,19 @@ def run_suite(args, protocol, tmpdir):
             cpu_after, rss_after, rss_peak = proxy_cpu_rss(proxy.pid)
             await_quiescent(metrics_port, upstream_server)
             after = metric_snapshot(metrics_port)
+            observed = upstream_server.app.snapshot() if upstream_server else None
+            idle_probe = None
+            if protocol == 'h2' and args.h2_idle_timeout:
+                # Measure the warmed connection first. Probing idle recovery
+                # before the load can leave another cold connection whose
+                # legal initial burst has not learned the advertised limit.
+                time.sleep(args.h2_idle_timeout + 0.2)
+                # Zero seconds still issues the initial single query.
+                idle_probe = one_load(proxy_port, 1, 0)
+                await_quiescent(metrics_port, upstream_server)
+                after_idle = metric_snapshot(metrics_port)
+                idle_probe['curl_metric_delta'] = metrics_delta(after, after_idle)
+                idle_probe['upstream_phases'] = phase_timings(after, after_idle)
             result.update({
                 'protocol_requested': protocol if upstream_server else 'external',
                 'concurrency': concurrency, 'max_host_connections': args.max_host_connections,
@@ -335,7 +338,7 @@ def run_suite(args, protocol, tmpdir):
                 'curl_metric_delta': metrics_delta(before, after),
                 'upstream_phases': phase_timings(before, after),
                 'h2_idle_probe': idle_probe,
-                'upstream_observed': upstream_server.app.snapshot() if upstream_server else None,
+                'upstream_observed': observed,
             })
             if args.assert_h2_multiplex and upstream_server and protocol=='h2' and concurrency>=8:
                 obs = result['upstream_observed']

@@ -163,12 +163,14 @@ class BenchmarkIntegrationTests(unittest.TestCase):
             h2 = next(r for r in results if r['protocol_requested']=='h2' and r['concurrency']==8)
             h1 = next(r for r in results if r['protocol_requested']=='h1' and r['concurrency']==8)
             self.assertGreaterEqual(h2['upstream_observed']['upstream_max_simultaneous_per_connection'], 2)
-            self.assertLessEqual(h2['upstream_observed']['upstream_max_simultaneous_per_connection'], 4)
+            self.assertLessEqual(h2['upstream_observed']['upstream_max_simultaneous_per_connection'], 4, h2)
             self.assertEqual(h1['upstream_observed']['upstream_max_simultaneous_per_connection'], 1)
             self.assertGreater(h2['curl_metric_delta']['dnsp_upstream_http_responses_total{version="2"}'], 0)
             self.assertEqual(h1['curl_metric_delta']['dnsp_upstream_http_responses_total{version="2"}'], 0)
             self.assertGreater(h2['successful_queries'], 0)
             self.assertGreater(h1['successful_queries'], 0)
+            self.assertEqual(h2['failed_responses'] + h2['timeouts'], 0, h2)
+            self.assertEqual(h1['failed_responses'] + h1['timeouts'], 0, h1)
             if sys.platform.startswith('linux'):
                 self.assertGreater(h2['proxy_rss_peak_bytes'], 0)
             else:

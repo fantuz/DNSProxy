@@ -65,14 +65,16 @@ jobs:
             $null = [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors)
             if ($errors) { throw $errors }
           }
+          $failed = $false
           & $python tests/test_modern.py -v
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE) { $failed = $true }
           & $python tests/test_windows.py -v
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE) { $failed = $true }
           & $python -m unittest discover -s tests -p test_benchmark.py -v
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE) { $failed = $true }
           & $python tests/test_http3.py -v
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE) { $failed = $true }
+          if ($failed) { exit 1 }
       - uses: actions/upload-artifact@v6
         with:
           name: dnsp-modern-windows-amd64-poc
