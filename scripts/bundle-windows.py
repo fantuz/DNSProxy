@@ -40,7 +40,7 @@ def main():
     shutil.copytree(args.prefix/'share/licenses', dest/'third-party-licenses', dirs_exist_ok=True)
     shutil.copy2(root/'LICENSE', dest/'LICENSE')
     shutil.copy2(root/'docs/WINDOWS.md', dest/'WINDOWS.md')
-    for name in ('Start-DNSProxy.ps1', 'Start-DNSProxy.cmd', 'Install-DNSProxyService.ps1', 'Uninstall-DNSProxyService.ps1'):
+    for name in ('Start-DNSProxy.ps1', 'Start-DNSProxy.cmd', 'Install-DNSProxyService.ps1', 'Uninstall-DNSProxyService.ps1', 'Set-DNSProxyDns.ps1', 'DNSProxyDns.psm1'):
         shutil.copy2(root/'packaging/windows'/name, dest/name)
     packages = subprocess.check_output(['pacman', '-Q'], text=True)
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()

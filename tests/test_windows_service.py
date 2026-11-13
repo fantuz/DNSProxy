@@ -83,6 +83,11 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(service['StartName'].lower(), 'nt authority\\localservice')
             self.assertEqual(service['StartMode'], 'Auto')
             self.assert_dns()
+            integration = Path(os.environ['ProgramFiles'])/name/'Set-DNSProxyDns.ps1'
+            self.assertIn('No DNSProxy adapter configuration', self.ps(
+                f"& {self.quoted(integration)} -ServiceName {name} -Action Status").stdout)
+            self.ps(f"& {self.quoted(integration)} -ServiceName {name} -Action Enable -WhatIf")
+            self.assertFalse((Path(os.environ['ProgramData'])/name/'dns-state.json').exists())
             # Duplicate install cannot replace an existing service or delete its files.
             duplicate = self.ps(f"& {self.quoted(source/'Install-DNSProxyService.ps1')} -ServiceName {name}", check=False)
             self.assertNotEqual(duplicate.returncode, 0)
