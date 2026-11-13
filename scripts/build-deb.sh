@@ -15,9 +15,13 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 STAGE="$WORK/stage"
 mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/lib/systemd/system" \
-         "$STAGE/usr/share/doc/dnsp-modern" "$WORK/deps/debian"
+         "$STAGE/usr/share/doc/dnsp-modern" "$STAGE/usr/sbin" "$WORK/deps/debian"
 install -m 0755 dnsp-modern "$STAGE/usr/bin/dnsp-modern"
 install -m 0644 packaging/systemd/dnsp-modern.service "$STAGE/lib/systemd/system/dnsp-modern.service"
+install -m 0755 packaging/linux/dnsp-configure-dns "$STAGE/usr/sbin/dnsp-configure-dns"
+for unit in packaging/systemd/dnsp-modern-dns-recovery.*; do
+    install -m 0644 "$unit" "$STAGE/lib/systemd/system/"
+done
 for script in postinst prerm postrm; do
     install -m 0755 "packaging/debian/$script" "$STAGE/DEBIAN/$script"
 done
@@ -50,7 +54,7 @@ Section: net
 Priority: optional
 Architecture: $ARCH
 Maintainer: DNSProxy contributors <noreply@github.com>
-Depends: $DEPS, ca-certificates, init-system-helpers
+Depends: $DEPS, ca-certificates, init-system-helpers, python3
 Description: DNS-over-HTTPS forwarding resolver
  Event-driven DoH forwarder with EDNS validation and Prometheus metrics.
 END

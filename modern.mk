@@ -18,6 +18,7 @@ modern-check: dnsp-modern
 	"$$probe"
 	python3 tests/test_modern.py
 	python3 tests/test_ipv6.py
+	python3 tests/test_linux_dns.py
 
 clean:
 	rm -f dnsp-modern
