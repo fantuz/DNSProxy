@@ -17,9 +17,9 @@ Get-FileHash .\dnsp-modern-4.0.3-windows-amd64-poc.zip -Algorithm SHA256
 
 For an unreleased build, open a successful **DNSProxy modern - test and package**
 Actions run and download the **dnsp-modern-windows-amd64-poc** artifact. It
-contains the portable ZIP and its `.zip.sha256` checksum file. Older releases,
-including v4.0.2, published only Linux packages; their Windows ZIP is in the
-corresponding Actions run.
+contains the portable ZIP and its `.zip.sha256` checksum file. Release v4.0.2
+published only Linux packages; its Windows ZIP was uploaded to the corresponding
+Actions run. CI artifacts are retained for 14 days.
 
 Extract the portable ZIP into a folder, keeping the EXE, DLLs and CA bundle
 together. MSYS2, Python, and development tools are only build/test dependencies.
