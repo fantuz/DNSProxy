@@ -59,7 +59,14 @@ class ServiceTests(unittest.TestCase):
                 finally:
                     state = Path(os.environ['ProgramData'])/name/'installation.json'
                     if state.exists():
+                        victim = source.parent/'unrelated-data'
+                        victim.mkdir()
+                        sentinel = victim/'keep.txt'
+                        sentinel.write_text('keep outside the installation')
+                        junction = state.parent/'logs/outside-link'
+                        self.ps(f"New-Item -ItemType Junction -Path {self.quoted(junction)} -Target {self.quoted(victim)} | Out-Null")
                         self.ps(f"& {self.quoted(source/'Uninstall-DNSProxyService.ps1')} -ServiceName {name}")
+                        self.assertEqual(sentinel.read_text(), 'keep outside the installation')
                     server.shutdown()
                     worker.join(timeout=3)
         finally:

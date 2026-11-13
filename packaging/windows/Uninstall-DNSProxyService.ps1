@@ -24,7 +24,8 @@ if ($service) {
 }
 # Files may still be held briefly while SCM releases the stopped process.
 for ($attempt=0; $attempt -lt 20; $attempt++) {
-    try { Remove-Item -LiteralPath $program -Recurse -Force; break }
+    try { [IO.Directory]::Delete($program, $true); break }
     catch { if ($attempt -eq 19) { throw }; Start-Sleep -Milliseconds 100 }
 }
-Remove-Item -LiteralPath $state -Recurse -Force
+# Do not follow reparse points planted in the service-writable log directory.
+[IO.Directory]::Delete($state, $true)

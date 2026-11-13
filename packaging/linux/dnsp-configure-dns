@@ -389,6 +389,8 @@ def main():
             if record['phase'] == 'active' or time.time() < record['deadline']:
                 return
         if args.action in ('restore', 'recover'):
+            if args.action == 'restore' and record:
+                arm()  # An interrupted explicit restore must also recover at boot.
             backend = NetworkManager() if record and record['backend'] == 'nm' else Networkd()
             restore(STATE, backend)
         else:

@@ -79,17 +79,20 @@ try {
     Get-Service $ServiceName
     Write-Output "Log: $log"
 } catch {
+    $failure = $_
     if ($created) {
         Stop-Service $ServiceName -ErrorAction SilentlyContinue
         & sc.exe delete $ServiceName | Out-Null
     }
     # Only folders created by this invocation are removed; pre-existing paths were rejected.
     for ($attempt=0; $attempt -lt 20; $attempt++) {
-        if ($programCreated) { Remove-Item -LiteralPath $program -Recurse -Force -ErrorAction SilentlyContinue }
-        if ($stateCreated) { Remove-Item -LiteralPath $state -Recurse -Force -ErrorAction SilentlyContinue }
+        # Directory.Delete removes reparse points without traversing their targets.
+        # The service-writable log subtree must never redirect elevated cleanup.
+        if ($programCreated) { try { [IO.Directory]::Delete($program, $true) } catch {} }
+        if ($stateCreated) { try { [IO.Directory]::Delete($state, $true) } catch {} }
         if ((-not $programCreated -or -not (Test-Path -LiteralPath $program)) -and
             (-not $stateCreated -or -not (Test-Path -LiteralPath $state))) { break }
         Start-Sleep -Milliseconds 100
     }
-    throw
+    throw $failure
 }
