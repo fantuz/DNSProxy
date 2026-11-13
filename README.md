@@ -457,10 +457,29 @@ The release requires all eight Linux packages and the Windows ZIP, covered by
 [packaging guide](packaging/README-packaging.md) for installation, local
 builds, and manual release recovery.
 
+## IPv4 and IPv6 listeners
+
+The same C resolver supports native UDP/TCP listeners on Windows and Linux.
+Repeat `-l` for up to eight numeric addresses, sharing one DNS port and cache:
+
+```sh
+./dnsp-modern -l 127.0.0.1 -l ::1 -p 5300 --bootstrap-address 1.1.1.1
+```
+
+Omitting `-l` preserves the IPv4 loopback default. IPv6 sockets explicitly use
+`IPV6_V6ONLY=1`; use both addresses to serve both families. An explicitly
+requested listener must bind successfully, otherwise startup closes all listeners
+and fails. Wildcards (`0.0.0.0` / `::`) expose the selected family on all interfaces
+and require appropriate network access controls. Link-local IPv6 addresses need
+an interface scope, for example `fe80::1%eth0` or a numeric interface index.
+UDP replies preserve the receiving local address and IPv6 interface scope.
+Non-jumbo UDP input limits are 65,507 bytes on IPv4 and 65,527 bytes on IPv6.
+TCP source limits distinguish address families and scoped IPv6 addresses.
+Metrics remain on IPv4 loopback; DNS records and upstream transports are
+independent of the listener family.
+
 ## Feature ideas
 
-- **IPv6 DNS listeners.** Accept local DNS traffic on `::1` and explicit IPv6
-  addresses, with independent IPv4 and IPv6 bind tests.
 - **DNS-aware response caching.** Bound memory, honor positive and negative
   TTLs, and start with queries free of client-specific EDNS options.
 - **Tail-latency metrics.** Add bounded latency buckets by client transport

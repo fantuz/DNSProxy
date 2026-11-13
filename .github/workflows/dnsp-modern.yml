@@ -249,6 +249,7 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
           DNSP_TEST_STARTUP_TIMEOUT: '12'
+          DNSP_REQUIRE_IPV6: '1'
         run: |
           make -B -f modern.mk modern-check CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
 

@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #define _DEFAULT_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #include "dnsp-platform.h"
@@ -18,8 +19,8 @@
 
 /* DNS/DoH forwarder. All descriptors and CURL handles are
  * owned by one event loop. Do not call libcurl from another thread. */
-enum { DNS_HEADER=12, UDP_RX_MAX=65507, UDP_REPLY_MAX=4096, UDP_REPLY_DEFAULT=1232, TCP_MAX=65535,
-       MAX_ACTIVE=128, MAX_CLIENTS=128, MAX_UDP_WAITERS=8,
+enum { DNS_HEADER=12, UDP_RX_MAX=65527, UDP_REPLY_MAX=4096, UDP_REPLY_DEFAULT=1232, TCP_MAX=65535,
+       MAX_ACTIVE=128, MAX_CLIENTS=128, MAX_UDP_WAITERS=8, MAX_LISTENERS=8,
        TCP_MAX_PER_SOURCE=32, TCP_PRESSURE_CLIENTS=MAX_CLIENTS*3/4, TCP_PRESSURE_IDLE_MS=3000,
        UDP_BATCH_PACKETS=32, UDP_BATCH_BYTES=64*1024, DNS_MAX_POINTER_HOPS=128,
        MAX_METRICS_CLIENTS=16, MAX_CURL_SOCKETS=1024, TCP_IDLE_MS=15000,
@@ -215,7 +216,7 @@ static DnsResult dns_parse(const unsigned char *p,size_t n,const DnsInfo *reques
 
 typedef struct Client Client;
 typedef struct Query Query;
-typedef struct {struct sockaddr_in peer;UdpLocal local;uint16_t id;uint64_t deadline_ms;} UdpWaiter;
+typedef struct {struct sockaddr_storage peer;dnsp_socklen_t peer_len;UdpLocal local;uint16_t id;uint64_t deadline_ms;} UdpWaiter;
 typedef struct {
     size_t count;
     uint16_t offset[CACHE_MAX_ANSWERS];
@@ -241,7 +242,7 @@ typedef struct {
 } Upstream;
 struct Client {
     dnsp_socket_t fd;size_t have,need,sent,out_len;
-    uint32_t source;
+    struct sockaddr_storage source;
     unsigned char length[2];
     unsigned char *in,*out;
     bool busy,read_eof,out_satisfies_query;uint64_t generation,queries_started;
@@ -478,7 +479,7 @@ static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_qu
         for(size_t i=0;i<q->udp_waiter_count;i++) {
             UdpWaiter *waiter=&q->udp_waiters[i];
             unsigned char id[]={ (unsigned char)(waiter->id>>8),(unsigned char)waiter->id };
-            written=dnsp_send_udp(q->udp_fd,(const struct sockaddr*)&waiter->peer,sizeof(waiter->peer),
+            written=dnsp_send_udp(q->udp_fd,(const struct sockaddr*)&waiter->peer,waiter->peer_len,
                                   id,sizeof(id),p+2,n-2,waiter->local);
             if(satisfies_query && written==(dnsp_ssize_t)n) metrics.queries_satisfied++;
         }
@@ -710,9 +711,6 @@ static void record_client_query(Client *client) {
         metrics.tcp_queries++;
     } else metrics.udp_queries++;
 }
-static bool same_udp_peer(const struct sockaddr_in *a,const struct sockaddr_in *b) {
-    return a->sin_port==b->sin_port && a->sin_addr.s_addr==b->sin_addr.s_addr;
-}
 enum { EDNS_PADDING_BLOCK=128, EDNS_PADDING_CODE=12 };
 static size_t edns_padding_size(const unsigned char *p,size_t n,const DnsInfo *info) {
     if(!info->final_opt_rdlen || info->message_signature) return 0;
@@ -752,21 +750,18 @@ static void strip_doh_padding(Query *q,const DnsInfo *info) {
     q->resp_len=write_pos;
 }
 static bool join_udp_query(const Query *pending,const unsigned char *data) {
-    UdpWaiter incoming={.local=pending->udp_local,.id=be16(data),
+    UdpWaiter incoming={.peer=pending->peer,.peer_len=pending->peer_len,.local=pending->udp_local,.id=be16(data),
                         .deadline_ms=clock_ms()+(uint64_t)doh_timeout_ms};
-    memcpy(&incoming.peer,&pending->peer,sizeof(incoming.peer));
     Query *available=NULL;
     for(Query *q=active;q;q=q->next) {
         if(!q->shareable_udp || q->udp_fd!=pending->udp_fd || q->req_len!=pending->req_len ||
            memcmp(q->request+2,data+2,q->req_len-2)!=0) continue;
-        struct sockaddr_in leader;
-        memcpy(&leader,&q->peer,sizeof(leader));
-        if(incoming.id==be16(q->request) && incoming.local.destination==q->udp_local.destination &&
-           same_udp_peer(&incoming.peer,&leader)) return true;
+        if(incoming.id==be16(q->request) && dnsp_same_destination(incoming.local,q->udp_local) &&
+           dnsp_same_peer(&incoming.peer,&q->peer)) return true;
         for(size_t i=0;i<q->udp_waiter_count;i++) {
             UdpWaiter *waiter=&q->udp_waiters[i];
-            if(incoming.id==waiter->id && incoming.local.destination==waiter->local.destination &&
-               same_udp_peer(&incoming.peer,&waiter->peer)) return true;
+            if(incoming.id==waiter->id && dnsp_same_destination(incoming.local,waiter->local) &&
+               dnsp_same_peer(&incoming.peer,&waiter->peer)) return true;
         }
         if(!available && q->udp_waiter_count<MAX_UDP_WAITERS) available=q;
     }
@@ -787,7 +782,7 @@ static void retry_udp_waiters(const Query *q,size_t count) {
         memcpy(&peer,&waiter->peer,sizeof(waiter->peer));
         request[0]=(unsigned char)(waiter->id>>8);
         request[1]=(unsigned char)waiter->id;
-        (void)submit_until(request,q->req_len,NULL,q->udp_fd,&peer,sizeof(waiter->peer),
+        (void)submit_until(request,q->req_len,NULL,q->udp_fd,&peer,waiter->peer_len,
                            waiter->local,waiter->deadline_ms,q->upstream);
     }
 }
@@ -1049,8 +1044,10 @@ static bool submit_until(const unsigned char *data,size_t len,Client *client,dns
         metrics.cache_misses++;
     }
     /* Share only unsigned UDP address queries without additional records. */
-    pending.shareable_udp=!deadline_ms && !client && peer_len==sizeof(struct sockaddr_in) &&
-                          pending.peer.ss_family==AF_INET && !be16(data+10) && plain_address_query(data,&info);
+    pending.shareable_udp=!deadline_ms && !client &&
+                          ((pending.peer.ss_family==AF_INET && peer_len==sizeof(struct sockaddr_in)) ||
+                           (pending.peer.ss_family==AF_INET6 && peer_len==sizeof(struct sockaddr_in6))) &&
+                          !be16(data+10) && plain_address_query(data,&info);
     if(pending.shareable_udp && join_udp_query(&pending,data)) {
         metrics.udp_queries_coalesced++;
         record_client_query(NULL);
@@ -1093,23 +1090,32 @@ static bool submit(const unsigned char *data,size_t len,Client *client,dnsp_sock
     return submit_until(data,len,client,udp_fd,peer,peer_len,local,0,&primary);
 }
 static dnsp_socket_t listener(const char *role,int type,const char *bindip,int port) {
-    struct sockaddr_in a={.sin_family=AF_INET,.sin_port=htons((uint16_t)port)};
-    if(inet_pton(AF_INET,bindip,&a.sin_addr)!=1) {
+    char service[16];
+    snprintf(service,sizeof(service),"%d",port);
+    struct addrinfo hints={.ai_family=AF_UNSPEC,.ai_socktype=type,.ai_flags=AI_NUMERICHOST|AI_NUMERICSERV};
+    struct addrinfo *address=NULL;
+    if(getaddrinfo(bindip,service,&hints,&address)!=0 || !address) {
         fprintf(stderr,"level=error event=listener_address role=%s port=%d\n",role,port);
-        return -1;
+        return DNSP_BAD_SOCKET;
     }
-    dnsp_socket_t fd=socket(AF_INET,type,0);
+    int family=address->ai_family;
+    bool wildcard=family==AF_INET ? ((struct sockaddr_in*)address->ai_addr)->sin_addr.s_addr==htonl(INADDR_ANY)
+        : IN6_IS_ADDR_UNSPECIFIED(&((struct sockaddr_in6*)address->ai_addr)->sin6_addr);
+    dnsp_socket_t fd=socket(family,type,0);
     if(fd!=DNSP_BAD_SOCKET) {
+        int only=1;
         bool options=dnsp_listener_options(fd) &&
-                     (type!=SOCK_DGRAM || dnsp_udp_prepare(fd,a.sin_addr.s_addr==htonl(INADDR_ANY)));
-        if(options && nonblock(fd)==0 && bind(fd,(struct sockaddr*)&a,sizeof(a))==0 &&
-           (type!=SOCK_STREAM || listen(fd,128)==0)) return fd;
+                     (family!=AF_INET6 || setsockopt(fd,IPPROTO_IPV6,IPV6_V6ONLY,(const char*)&only,sizeof(only))==0) &&
+                     (type!=SOCK_DGRAM || dnsp_udp_prepare(fd,family,wildcard));
+        if(options && nonblock(fd)==0 && bind(fd,address->ai_addr,(dnsp_socklen_t)address->ai_addrlen)==0 &&
+           (type!=SOCK_STREAM || listen(fd,128)==0)) {freeaddrinfo(address);return fd;}
     }
     int error=dnsp_socket_error();
+    freeaddrinfo(address);
     if(fd!=DNSP_BAD_SOCKET) dnsp_close(fd);
     fprintf(stderr,"level=error event=listener_failed role=%s port=%d errno=%d message=%s\n",
             role,port,error,dnsp_socket_message(error));
-    return -1;
+    return DNSP_BAD_SOCKET;
 }
 /* At most one in-flight query and one fully buffered successor per TCP
  * connection. Framing reads stop exactly at a message boundary: further
@@ -1387,7 +1393,7 @@ static void metric_io(MetricClient *c,short events) {
 }
 static void accept_tcp(dnsp_socket_t server,bool is_metrics) {
     for(int i=0;i<16;i++) {
-        struct sockaddr_in peer={0};
+        struct sockaddr_storage peer={0};
         dnsp_socklen_t peer_len=sizeof(peer);
         dnsp_socket_t fd=accept(server,(struct sockaddr*)&peer,&peer_len);
         if(fd==DNSP_BAD_SOCKET) break;
@@ -1402,7 +1408,7 @@ static void accept_tcp(dnsp_socket_t server,bool is_metrics) {
             for(size_t j=0;j<MAX_CLIENTS;j++) {
                 if(clients[j].fd==DNSP_BAD_SOCKET) {
                     if(slot==MAX_CLIENTS) slot=j;
-                } else if(clients[j].source==peer.sin_addr.s_addr) from_source++;
+                } else if(dnsp_same_ip(&clients[j].source,&peer)) from_source++;
             }
             if(from_source>=tcp_max_per_source) {
                 metrics.tcp_rejected_source++;
@@ -1412,7 +1418,7 @@ static void accept_tcp(dnsp_socket_t server,bool is_metrics) {
                 dnsp_close(fd);
             } else {
                 uint64_t g=clients[slot].generation+1;
-                clients[slot]=(Client){.fd=fd,.source=peer.sin_addr.s_addr,.generation=g,.idle_since_ms=clock_ms()};
+                clients[slot]=(Client){.fd=fd,.source=peer,.generation=g,.idle_since_ms=clock_ms()};
                 metrics.tcp_accepted++;
             }
         }
@@ -1510,7 +1516,7 @@ static long parse_range(const char *s,long min,long max) {
 }
 static void usage(FILE *stream,const char *program) {
     fprintf(stream,"Usage: %s [options]\n"
-            "  -l IPv4                     DNS bind address (default 127.0.0.1)\n"
+            "  -l IP                       DNS bind address; repeat up to 8 times (default 127.0.0.1)\n"
             "  -p PORT                     UDP/TCP DNS port, 1..65535 (default 5300)\n"
             "  -s URL                      Upstream DoH URL (default https://cloudflare-dns.com/dns-query)\n"
             "  --backup-upstream URL        Optional DoH endpoint for transport failover\n"
@@ -1521,7 +1527,7 @@ static void usage(FILE *stream,const char *program) {
             "  --ca-file PEM                CA bundle for upstream TLS verification\n"
             "  --upstream-http MODE          auto (default) or prefer-h3 (HTTPS with fallback)\n"
             "  --max-host-connections N     Upstream connections, 1..16 (default 8)\n"
-            "  --tcp-max-per-source N       TCP connections per IPv4 source, 1..%d (default %d)\n"
+            "  --tcp-max-per-source N       TCP connections per source address, 1..%d (default %d)\n"
             "  --tcp-idle-ms MS             Idle TCP session, %d..%d (default %d)\n"
             "  --tcp-io-ms MS               TCP frame read/write deadline, %d..%d (default %d)\n"
             "  --doh-connect-ms MS          Upstream connection deadline, %d..%d (default %d)\n"
@@ -1536,7 +1542,8 @@ static void usage(FILE *stream,const char *program) {
             MIN_TIMEOUT_MS,MAX_DOH_TIMEOUT_MS,DOH_TIMEOUT_MS,CACHE_MAX_ENTRIES,UDP_REPLY_MAX,UDP_REPLY_DEFAULT);
 }
 int main(int argc,char **argv) {
-    const char *bindip="127.0.0.1",*bootstrap_address=NULL;
+    const char *bindips[MAX_LISTENERS]={"127.0.0.1"},*bootstrap_address=NULL;
+    size_t bind_count=0;
     const char *backup_address=NULL;
     bool prefer_h3=false;
     int port=5300,metrics_port=0;
@@ -1545,7 +1552,10 @@ int main(int argc,char **argv) {
     for(int i=1;i<argc;i++) {
         if(!strcmp(argv[i],"--help") || !strcmp(argv[i],"-h")) {usage(stdout,argv[0]);return 0;}
         else if(!strcmp(argv[i],"--version") || !strcmp(argv[i],"-V")) return show_version();
-        else if(!strcmp(argv[i],"-l") && i+1<argc) bindip=argv[++i];
+        else if(!strcmp(argv[i],"-l") && i+1<argc) {
+            if(bind_count==MAX_LISTENERS) {fprintf(stderr,"too many listen addresses (maximum %d)\n",MAX_LISTENERS);return 2;}
+            bindips[bind_count++]=argv[++i];
+        }
         else if(!strcmp(argv[i],"-p") && i+1<argc) port=(int)parse_range(argv[++i],1,65535);
         else if(!strcmp(argv[i],"-s") && i+1<argc) primary.url=argv[++i];
         else if(!strcmp(argv[i],"--backup-upstream") && i+1<argc) backup.url=argv[++i];
@@ -1598,6 +1608,7 @@ int main(int argc,char **argv) {
         }
         else {usage(stderr,argv[0]);return 2;}
     }
+    if(!bind_count) bind_count=1;
     if(port<0 || metrics_port<0 || metrics_port==port) {
         fprintf(stderr,"invalid port\n");return 2;
     }
@@ -1634,7 +1645,8 @@ int main(int argc,char **argv) {
         curl_global_cleanup();
         return 1;
     }
-    dnsp_socket_t udp=DNSP_BAD_SOCKET,tcp=DNSP_BAD_SOCKET,mfd=DNSP_BAD_SOCKET;
+    dnsp_socket_t udp[MAX_LISTENERS],tcp[MAX_LISTENERS],mfd=DNSP_BAD_SOCKET;
+    for(size_t i=0;i<MAX_LISTENERS;i++) udp[i]=tcp[i]=DNSP_BAD_SOCKET;
     int exitcode=1;
     PollItem *items=NULL;
     dnsp_pollfd *pfds=NULL;
@@ -1663,15 +1675,17 @@ int main(int argc,char **argv) {
     MULTI_OPT(CURLMOPT_SOCKETFUNCTION,on_curl_socket);
     MULTI_OPT(CURLMOPT_TIMERFUNCTION,curl_timer_callback);
 #undef MULTI_OPT
-    udp=listener("dns_udp",SOCK_DGRAM,bindip,port);
-    if(udp==DNSP_BAD_SOCKET) goto cleanup;
-    tcp=listener("dns_tcp",SOCK_STREAM,bindip,port);
-    if(tcp==DNSP_BAD_SOCKET) goto cleanup;
+    for(size_t i=0;i<bind_count;i++) {
+        udp[i]=listener("dns_udp",SOCK_DGRAM,bindips[i],port);
+        if(udp[i]==DNSP_BAD_SOCKET) goto cleanup;
+        tcp[i]=listener("dns_tcp",SOCK_STREAM,bindips[i],port);
+        if(tcp[i]==DNSP_BAD_SOCKET) goto cleanup;
+    }
     if(metrics_port) {
         mfd=listener("metrics",SOCK_STREAM,"127.0.0.1",metrics_port);
         if(mfd==DNSP_BAD_SOCKET) goto cleanup;
     }
-    const size_t cap=3+MAX_CLIENTS+MAX_METRICS_CLIENTS+MAX_CURL_SOCKETS;
+    const size_t cap=2*bind_count+1+MAX_CLIENTS+MAX_METRICS_CLIENTS+MAX_CURL_SOCKETS;
     items=calloc(cap,sizeof(*items));
     pfds=calloc(cap,sizeof(*pfds));
     if(!items || !pfds) {
@@ -1681,16 +1695,17 @@ int main(int argc,char **argv) {
     const char *http_preference=prefer_h3?"h3":"http/1.1";
     if(!primary.loopback_http && upstream_http_version==CURL_HTTP_VERSION_2TLS) http_preference="h2";
     uint64_t started_ms=clock_ms();
-    fprintf(stderr,"level=info event=listening address=%s port=%d metrics_port=%d upstream_scheme=%s"
+    for(size_t i=0;i<bind_count;i++) fprintf(stderr,"level=info event=listening address=%s port=%d metrics_port=%d upstream_scheme=%s"
             " http_preference=%s backup=%s libcurl_build=%s libcurl_runtime=%s\n",
-            bindip,port,metrics_port,primary.loopback_http?"http":"https",http_preference,
+            bindips[i],port,metrics_port,primary.loopback_http?"http":"https",http_preference,
             backup.url?"enabled":"disabled",LIBCURL_VERSION,curl_info?curl_info->version:"unknown");
     exitcode=0;
     while(!stopping) {
         uint64_t now=clock_ms();
         if(atomic_load_explicit(&report_requested,memory_order_relaxed)) {
             atomic_store_explicit(&report_requested,false,memory_order_relaxed);
-            report_status(now-started_ms,bindip,port,metrics_port,http_preference,max_host_connections);
+            for(size_t i=0;i<bind_count;i++)
+                report_status(now-started_ms,bindips[i],port,metrics_port,http_preference,max_host_connections);
         }
         if(curl_deadline>=0 && (int64_t)now>=curl_deadline) {
             metrics.timer_fires++;
@@ -1701,8 +1716,10 @@ int main(int argc,char **argv) {
     pfds[n]=(dnsp_pollfd){.fd=(fd_),.events=(events_)}; \
     items[n++]=(PollItem){.kind=(kind_),.idx=(idx_),.generation=(gen_)}; \
 } while(0)
-        ADD(P_UDP,udp,POLLIN,0,0);
-        ADD(P_TCP_LISTEN,tcp,POLLIN,0,0);
+        for(size_t i=0;i<bind_count;i++) {
+            ADD(P_UDP,udp[i],POLLIN,i,0);
+            ADD(P_TCP_LISTEN,tcp[i],POLLIN,i,0);
+        }
         if(mfd!=DNSP_BAD_SOCKET) ADD(P_METRIC_LISTEN,mfd,POLLIN,0,0);
         for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) {
             /* Even events=0 reports resets/errors while reads are paused. */
@@ -1744,8 +1761,8 @@ int main(int argc,char **argv) {
             result--;
             dnsp_socket_t fd=pfds[i].fd;
             switch(items[i].kind) {
-                case P_UDP:if(re&POLLIN) udp_io(udp);break;
-                case P_TCP_LISTEN:if(re&POLLIN) accept_tcp(tcp,false);break;
+                case P_UDP:if(re&POLLIN) udp_io(fd);break;
+                case P_TCP_LISTEN:if(re&POLLIN) accept_tcp(fd,false);break;
                 case P_METRIC_LISTEN:if(re&POLLIN) accept_tcp(mfd,true);break;
                 case P_TCP_CLIENT: {
                     Client *c=&clients[items[i].idx];
@@ -1781,8 +1798,10 @@ cleanup:
     while(active) remove_query(active);
     while(idle_easy_count) curl_easy_cleanup(idle_easies[--idle_easy_count]);
     free(answer_cache);
-    if(udp!=DNSP_BAD_SOCKET) dnsp_close(udp);
-    if(tcp!=DNSP_BAD_SOCKET) dnsp_close(tcp);
+    for(size_t i=0;i<bind_count;i++) {
+        if(udp[i]!=DNSP_BAD_SOCKET) dnsp_close(udp[i]);
+        if(tcp[i]!=DNSP_BAD_SOCKET) dnsp_close(tcp[i]);
+    }
     if(mfd!=DNSP_BAD_SOCKET) dnsp_close(mfd);
     curl_multi_cleanup(multi);
     curl_slist_free_all(doh_headers);
