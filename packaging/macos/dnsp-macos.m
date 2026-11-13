@@ -48,7 +48,7 @@ static void save(NSDictionary *value,NSString *path) {
     syncDirectory(path.stringByDeletingLastPathComponent);
     // macOS fsync alone does not flush the device's write cache. Flush after
     // the rename and directory sync, before callers are allowed to change DNS.
-    fd=open(path.fileSystemRepresentation,O_RDONLY|O_NOFOLLOW);
+    fd=open(path.fileSystemRepresentation,O_RDWR|O_NOFOLLOW);
     require(fd>=0,@"Cannot reopen durable state file");
     int flushed=fcntl(fd,F_FULLFSYNC);close(fd);
     require(flushed==0,@"Cannot fully sync transaction state to storage");
@@ -111,6 +111,9 @@ static void launch(NSString *action,NSString *label,BOOL checked) {
     SCNetworkProtocolRef protocol=SCNetworkServiceCopyProtocol(service,kSCNetworkProtocolTypeDNS);
     CFRelease(service);require(protocol!=NULL,@"Network service has no DNS protocol");
     CFDictionaryRef config=SCNetworkProtocolGetConfiguration(protocol);
+    if(!config && SCError()!=kSCStatusNoKey && SCError()!=kSCStatusOK) {
+        CFRelease(protocol);require(NO,@"Cannot read configured DNS settings");
+    }
     NSDictionary *snapshot=@{@"Present":@(config!=NULL),@"Configuration":config?[(__bridge NSDictionary*)config copy]:@{}};
     CFRelease(protocol);return snapshot;
 }
@@ -178,6 +181,11 @@ static void restore(id<DNSPreferences> prefs,NSDictionary *state,NSString *path)
     // ApplyChanges failed. Do not discard the recovery record until apply works.
     [prefs write:changes];
     require(unlink(path.fileSystemRepresentation)==0,@"Cannot remove restored state");syncDirectory(path.stringByDeletingLastPathComponent);
+}
+static BOOL recoveryDue(NSDictionary *state,NSDate *now) {
+    validateState(state);
+    return [state[@"Phase"] isEqual:@"Restoring"] ||
+        ([state[@"Phase"] isEqual:@"Pending"] && [state[@"Deadline"] compare:now]!=NSOrderedDescending);
 }
 static void enable(id<DNSPreferences> prefs,NSArray *identifiers,NSString *path,BOOL (^health)(void),void (^arm)(void)) {
     require(!exists(path),@"A DNS snapshot already exists; restore it before enabling again");
@@ -344,6 +352,18 @@ static void install(NSArray *arguments,NSString *source) {
         launch(@"bootstrap",Recovery,YES);
     } @catch(NSException *error) {
         if(made) {
+            // Preserve useful startup diagnostics before removing owned files.
+            execute(@"/bin/launchctl",@[@"print",[@"system/" stringByAppendingString:Label]],NO);
+            int diagnostic=open(Log.fileSystemRepresentation,O_RDONLY|O_NOFOLLOW);
+            if(diagnostic>=0) {
+                char tail[16384];off_t end=lseek(diagnostic,0,SEEK_END);
+                if(end>0) {
+                    off_t start=end>(off_t)sizeof(tail)?end-(off_t)sizeof(tail):0;
+                    ssize_t n=pread(diagnostic,tail,sizeof(tail),start);
+                    if(n>0){fputs("DNSProxy startup log:\n",stderr);fwrite(tail,1,(size_t)n,stderr);}
+                }
+                close(diagnostic);
+            }
             launch(@"bootout",Recovery,NO);launch(@"bootout",Label,NO);
             unlink(plist(Label).fileSystemRepresentation);unlink(plist(Recovery).fileSystemRepresentation);unlink(Log.fileSystemRepresentation);
             [NSFileManager.defaultManager removeItemAtPath:Root error:NULL];
@@ -386,8 +406,7 @@ int main(int argc,const char **argv) {
                 } else if([action isEqual:@"restore-dns"]) {
                     if(state)restore([NativePreferences new],state,path);puts("Original DNS configuration restored.");
                 } else if([action isEqual:@"recover"]) {
-                    if(state && (![state[@"Phase"] isEqual:@"Active"]) &&
-                       ([state[@"Phase"] isEqual:@"Restoring"] || [state[@"Deadline"] timeIntervalSinceNow]<=0))
+                    if(state && recoveryDue(state,NSDate.date))
                         restore([NativePreferences new],state,path);
                     rotateLog();
                 } else if([action isEqual:@"start"]) {

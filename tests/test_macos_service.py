@@ -114,7 +114,8 @@ class MacServiceTests(unittest.TestCase):
                     self.assert_dns()
                     self.helper('restore-dns')  # Idempotent, no snapshot means no network changes.
                     # A synthetic, unavailable service exercises stop/uninstall guards.
-                    state = {'Version': 1, 'Phase': 'Active', 'Deadline': __import__('datetime').datetime.now(),
+                    from datetime import datetime, timedelta
+                    state = {'Version': 1, 'Phase': 'Pending', 'Deadline': datetime.now() + timedelta(minutes=5),
                              'Entries': {'11111111-1111-1111-1111-111111111111': {
                                  'Before': {'Present': False, 'Configuration': {}},
                                  'After': {'Present': True, 'Configuration': {'ServerAddresses': ['127.0.0.1', '::1']}}}}}
@@ -122,6 +123,11 @@ class MacServiceTests(unittest.TestCase):
                     staged.write_bytes(plistlib.dumps(state))
                     subprocess.run(['sudo', 'install', '-m', '600', str(staged), str(ROOT/'dns-state.plist')], check=True)
                     try:
+                        self.helper('recover')  # Future Pending must not roll back yet.
+                        state['Deadline'] = datetime.now() - timedelta(minutes=5)
+                        staged.write_bytes(plistlib.dumps(state))
+                        subprocess.run(['sudo', 'install', '-m', '600', str(staged), str(ROOT/'dns-state.plist')], check=True)
+                        self.assertNotEqual(self.helper('recover', check=False).returncode, 0)
                         for command in ('stop', 'uninstall', 'restore-dns'):
                             self.assertNotEqual(self.helper(command, check=False).returncode, 0)
                         self.assertTrue((ROOT/'dns-state.plist').exists())

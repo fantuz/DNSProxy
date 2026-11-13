@@ -63,6 +63,11 @@ int main(void) {
             puts("PASS commit/apply failures");
 
             reset();NSDictionary *pending=plan(prefs,@[A,B]);save(pending,path);
+            require(!recoveryDue(pending,NSDate.date),@"Pending transaction recovered before its deadline");
+            require(recoveryDue(pending,[NSDate dateWithTimeIntervalSinceNow:180]),@"Expired pending transaction was not recoverable");
+            NSMutableDictionary *phase=[pending mutableCopy];phase[@"Phase"]=@"Active";
+            require(!recoveryDue(phase,[NSDate dateWithTimeIntervalSinceNow:180]),@"Committed DNS unexpectedly restored");
+            phase[@"Phase"]=@"Restoring";require(recoveryDue(phase,NSDate.date),@"Interrupted restore was not retried immediately");
             // Simulate power loss between individual changes, before Active was saved.
             prefs.values[A]=pending[@"Entries"][A][@"After"];
             restore(prefs,load(path),path);
