@@ -1,8 +1,12 @@
 #ifndef DNSP_PLATFORM_H
 #define DNSP_PLATFORM_H
 
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#define __APPLE_USE_RFC_3542
+#endif
 /* Only operating-system interfaces live here. DNS and libcurl state remain
- * in dnsp-modern.c, shared by the native Windows and Linux builds. */
+ * in dnsp-modern.c, shared by native Windows, Linux and macOS builds. */
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -37,6 +41,9 @@ typedef WSAPOLLFD dnsp_pollfd;
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach_time.h>
+#endif
 typedef socklen_t dnsp_socklen_t;
 typedef struct pollfd dnsp_pollfd;
 #endif
@@ -86,6 +93,10 @@ static inline int nonblock(dnsp_socket_t fd) {
     u_long enabled=1;
     return ioctlsocket(fd,FIONBIO,&enabled);
 #else
+#ifdef __APPLE__
+    int enabled=1;
+    if(setsockopt(fd,SOL_SOCKET,SO_NOSIGPIPE,&enabled,sizeof(enabled))!=0) return -1;
+#endif
     int flags=fcntl(fd,F_GETFL,0);
     return flags<0?-1:fcntl(fd,F_SETFL,flags|O_NONBLOCK);
 #endif
@@ -178,6 +189,8 @@ static inline dnsp_ssize_t dnsp_recv(dnsp_socket_t fd,void *data,size_t size) {
 static inline dnsp_ssize_t dnsp_send(dnsp_socket_t fd,const void *data,size_t size) {
 #ifdef _WIN32
     return send(fd,(const char*)data,(int)size,0);
+#elif defined(__APPLE__)
+    return send(fd,data,size,0); /* SO_NOSIGPIPE is set when making the socket nonblocking. */
 #else
     return send(fd,data,size,MSG_NOSIGNAL);
 #endif
@@ -187,6 +200,13 @@ static inline uint64_t dnsp_clock_ms(bool include_suspend) {
     (void)include_suspend;
     /* GetTickCount64 includes sleep, so suspended machines cannot serve stale TTLs. */
     return GetTickCount64();
+#elif defined(__APPLE__)
+    static mach_timebase_info_data_t scale;
+    if(!scale.denom && mach_timebase_info(&scale)!=KERN_SUCCESS) return 0;
+    /* Cache TTLs include sleep; event-loop deadlines use the uptime clock. */
+    uint64_t ticks=include_suspend?mach_continuous_time():mach_absolute_time();
+    uint64_t nanos=(ticks/scale.denom)*scale.numer+(ticks%scale.denom)*scale.numer/scale.denom;
+    return nanos/1000000u;
 #else
     struct timespec t;
     if(clock_gettime(include_suspend?CLOCK_BOOTTIME:CLOCK_MONOTONIC,&t)!=0) return 0;

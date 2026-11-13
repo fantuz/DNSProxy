@@ -7,7 +7,9 @@ static bool udp_dispatch_is_bounded(void) {
     if(socketpair(AF_UNIX,SOCK_DGRAM,0,fd)<0) return false;
     /* Three invalid messages fit in the queue. Two cross the byte budget. */
     static const unsigned char datagram[UDP_BATCH_BYTES/2+1]={[2]=0x80};
-    bool ok=nonblock(fd[1])==0;
+    int capacity=256*1024;
+    bool ok=setsockopt(fd[0],SOL_SOCKET,SO_SNDBUF,&capacity,sizeof(capacity))==0 &&
+            setsockopt(fd[1],SOL_SOCKET,SO_RCVBUF,&capacity,sizeof(capacity))==0 && nonblock(fd[1])==0;
     for(unsigned i=0;ok && i<3;i++)
         ok=send(fd[0],datagram,sizeof(datagram),MSG_DONTWAIT)==(ssize_t)sizeof(datagram);
     if(ok) {

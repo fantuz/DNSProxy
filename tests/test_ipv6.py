@@ -96,6 +96,7 @@ class IPv6Tests(unittest.TestCase):
     @staticmethod
     def udp(address, port, packet=None, timeout=3):
         with socket.socket(socket.AF_INET6 if ':' in address else socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 131072)
             sock.settimeout(timeout)
             sock.connect((address, port))
             sock.send(packet or query())

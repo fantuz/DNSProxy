@@ -1,0 +1,62 @@
+name: DNSProxy modern - native macOS
+
+"on":
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  native-macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x86_64
+          - runner: macos-15
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Build and bundle the shared C resolver
+        run: bash scripts/build-macos.sh
+      - name: Install protocol fixtures and configure loopback test addresses
+        run: |
+          python3 -m pip install 'hypercorn==0.18.0' 'h2==4.3.0'
+          for n in 2 3 4 5 6; do sudo ifconfig lo0 alias "127.0.0.$n" up; done
+      - name: Test the extracted package
+        env:
+          DNSP_REQUIRE_IPV6: '1'
+        run: |
+          portable="$RUNNER_TEMP/DNSProxy portable bundle"
+          mkdir -p "$portable"
+          tar -xzf "dist/dnsp-modern-$(cat VERSION)-macos-${{ matrix.arch }}.tar.gz" -C "$portable"
+          (cd "$portable" && shasum -a 256 -c SHA256SUMS)
+          export DNSP_TEST_BINARY="$portable/dnsp-modern"
+          "$DNSP_TEST_BINARY" --version
+          dist/macos-platform
+          dist/macos-curl_callbacks
+          python3 tests/test_modern.py -v
+          python3 tests/test_ipv6.py -v
+          python3 -m unittest discover -s tests -p test_benchmark.py -v
+      - uses: actions/upload-artifact@v6
+        with:
+          name: dnsp-modern-macos-${{ matrix.arch }}
+          path: |
+            dist/dnsp-modern-*-macos-${{ matrix.arch }}.tar.gz
+            dist/dnsp-modern-*-macos-${{ matrix.arch }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
