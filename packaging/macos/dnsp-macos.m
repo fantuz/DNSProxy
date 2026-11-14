@@ -270,8 +270,8 @@ static gid_t logGroup(void) {
 static void checkLog(void) {
     struct stat st;
     require(lstat(Log.fileSystemRepresentation,&st)==0 && S_ISREG(st.st_mode) &&
-        st.st_nlink==1 && st.st_uid==0 && st.st_gid==logGroup() && (st.st_mode&0777)==0620,
-        @"Service log ownership or permissions changed; expected root:nobody mode 0620");
+        st.st_nlink==1 && st.st_uid==0 && st.st_gid==logGroup() && (st.st_mode&0777)==0660,
+        @"Service log ownership or permissions changed; expected root:nobody mode 0660");
 }
 static void checkInstalled(void) {
     checkLog();
@@ -357,9 +357,9 @@ static void install(NSArray *arguments,NSString *source) {
         }
         int fd=open(Log.fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
         require(fd>=0,@"Cannot create service log");
-        // launchd opens standard streams with the job's credentials. Keep the
-        // file root-owned, allowing only the service group to append/write it.
-        BOOL logOK=fchown(fd,0,logGroup())==0 && fchmod(fd,0620)==0;
+        // launchd opens StandardErrorPath read/write with the job's credentials.
+        // Retain root ownership and grant both permissions to its service group.
+        BOOL logOK=fchown(fd,0,logGroup())==0 && fchmod(fd,0660)==0;
         close(fd);require(logOK,@"Cannot grant the service access to its log");
         NSDictionary *service=serviceJob(upstream,bootstrap,arguments.count==3);
         save(service,plist(Label));save(recoveryJob(),plist(Recovery));

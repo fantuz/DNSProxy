@@ -5,6 +5,7 @@ import plistlib
 import re
 import socket
 import ssl
+import stat
 import struct
 import subprocess
 import sys
@@ -48,6 +49,8 @@ class MacServiceTests(unittest.TestCase):
                 self.assertEqual(fixtures.Tests.tcp_frame(client)[3] & 15, 0)
 
     def test_launchd_lifecycle_unprivileged_dns_recovery_and_uninstall(self):
+        import grp
+
         with tempfile.TemporaryDirectory() as directory:
             cert, key = Path(directory)/'localhost.crt', Path(directory)/'localhost.key'
             subprocess.run([fixtures.OPENSSL, 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
@@ -63,6 +66,15 @@ class MacServiceTests(unittest.TestCase):
                 try:
                     self.helper('install', f'https://localhost:{server.server_port}/dns-query', '127.0.0.1', str(cert))
                     installed = True
+                    log = Path('/var/log/dnsp-modern.log').stat()
+                    self.assertEqual(log.st_uid, 0)
+                    self.assertEqual(log.st_gid, grp.getgrnam('nobody').gr_gid)
+                    self.assertEqual(stat.S_IMODE(log.st_mode), 0o660)
+                    opened = subprocess.run([
+                        'sudo', '-u', 'nobody', '/bin/sh', '-c',
+                        'set -e; exec 3<>/var/log/dnsp-modern.log; exec 3>&-',
+                    ], capture_output=True, text=True, timeout=10)
+                    self.assertEqual(opened.returncode, 0, opened.stderr)
                     self.assert_dns()
                     pid = self.pid()
                     self.assertGreater(pid, 0)
