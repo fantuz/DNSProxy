@@ -39,9 +39,20 @@ PHASES = ('queue', 'tls', 'first_byte')
 
 
 def free_port():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(('127.0.0.1', 0))
-        return s.getsockname()[1]
+    # DNS and QUIC fixtures need UDP as well as TCP at the selected port.
+    # Windows can allow a TCP bind while reserving that same port for UDP.
+    for attempt in range(100):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp, \
+             socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
+            udp.bind(('127.0.0.1', 0))
+            port = udp.getsockname()[1]
+            try:
+                tcp.bind(('127.0.0.1', port))
+            except OSError:
+                if attempt == 99:
+                    raise
+                continue
+            return port
 
 
 def make_certificate(directory):

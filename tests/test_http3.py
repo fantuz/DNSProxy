@@ -136,7 +136,7 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(blackhole=blackhole), \
                      socket.socket() as closed, socket.socket(type=socket.SOCK_DGRAM) as udp:
                     # Reserve the port without listening so TCP refuses the connection.
-                    closed.bind(('127.0.0.1', 0))
+                    closed.bind(('127.0.0.1', free_port()))
                     port = closed.getsockname()[1]
                     if blackhole:
                         udp.bind(('127.0.0.1', port))
