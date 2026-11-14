@@ -55,6 +55,7 @@ jobs:
           $archive = (Get-ChildItem dist/dnsp-modern-*-windows-amd64-poc.zip).FullName
           Expand-Archive -Path $archive -DestinationPath $portable
           Copy-Item dist/platform-probe.exe $portable
+          Copy-Item dist/service-fixture.exe $portable
           $env:DNSP_TEST_BINARY = Join-Path $portable 'dnsp-modern.exe'
           $env:Path = "$(Split-Path $python);$env:SystemRoot\System32;$env:SystemRoot"
           & (Join-Path $portable 'platform-probe.exe')

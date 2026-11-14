@@ -12,7 +12,7 @@ if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne 'https' -or $Upstream -match '[\
 }
 $null = [Net.IPAddress]::Parse($BootstrapAddress)
 $binary = Join-Path $PSScriptRoot 'dnsp-modern.exe'
-$arguments = @('-l', '127.0.0.1', '-p', "$Port", '-s', $Upstream,
+$arguments = @('-l', '127.0.0.1', '-l', '::1', '-p', "$Port", '-s', $Upstream,
                '--bootstrap-address', $BootstrapAddress, '--cache-entries', '256', '-m', '9090')
 if ($RunAsAdministrator) {
     $process = Start-Process -FilePath $binary -ArgumentList $arguments -Verb RunAs -Wait -PassThru
