@@ -1101,8 +1101,9 @@ static dnsp_socket_t launchd_listener(int type,const char *ip,int port) {
     int error=launch_activate_socket(name,&fds,&count);
     int fd=-1;
     if(!error && count==1) {
+        errno=0;
         struct sockaddr_storage addr={0};socklen_t len=sizeof(addr),size=sizeof(int);
-        int actual=0,accepting=0;
+        int actual=0;
         bool ok=getsockname(fds[0],(struct sockaddr*)&addr,&len)==0 &&
             getsockopt(fds[0],SOL_SOCKET,SO_TYPE,&actual,&size)==0 && actual==type;
         if(ipv6) ok=ok && addr.ss_family==AF_INET6 &&
@@ -1111,10 +1112,14 @@ static dnsp_socket_t launchd_listener(int type,const char *ip,int port) {
         else ok=ok && addr.ss_family==AF_INET &&
             ((struct sockaddr_in*)&addr)->sin_port==htons(53) &&
             ((struct sockaddr_in*)&addr)->sin_addr.s_addr==htonl(INADDR_LOOPBACK);
-        if(type==SOCK_STREAM) ok=ok && getsockopt(fds[0],SOL_SOCKET,SO_ACCEPTCONN,&accepting,&size)==0 && accepting;
+        /* Darwin defines SO_ACCEPTCONN but does not expose it via getsockopt.
+         * Re-listening on the validated bound socket is supported and ensures
+         * the same backlog as a foreground listener without rebinding port 53. */
+        if(type==SOCK_STREAM) ok=ok && listen(fds[0],128)==0;
         if(ok && nonblock(fds[0])==0 && dnsp_listener_options(fds[0]) &&
            (type!=SOCK_DGRAM || dnsp_udp_prepare(fds[0],addr.ss_family,false))) {fd=fds[0];fds[0]=-1;}
-    }
+        if(fd<0) error=errno?errno:EINVAL;
+    } else if(!error) error=EINVAL;
     for(size_t i=0;i<count;i++) if(fds[i]>=0) close(fds[i]);
     free(fds);
     if(fd<0) fprintf(stderr,"level=error event=launchd_socket name=%s error=%d\n",name,error);
