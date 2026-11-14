@@ -14,13 +14,19 @@ bundle="dist/macos-$arch"
 rm -rf -- "$bundle"
 mkdir -p "$bundle"
 "$compiler" "${flags[@]}" -DDNSP_VERSION="\"$version\"" -o "$bundle/dnsp-modern" dnsp-modern.c -L"$sdk/usr/lib" -lcurl
+"$compiler" -isysroot "$sdk" -mmacosx-version-min=15.0 -fobjc-arc -fblocks -O2 -Wall -Wextra -Werror \
+    -o "$bundle/dnsp-macos" packaging/macos/dnsp-macos.m -framework Foundation -framework SystemConfiguration
+"$compiler" -isysroot "$sdk" -mmacosx-version-min=15.0 -fobjc-arc -fblocks -O2 -Wall -Wextra -Werror -Wno-unused-function \
+    -o dist/macos-dns-tests tests/test_macos_dns.m -framework Foundation -framework SystemConfiguration
 for probe in platform curl_callbacks; do
     "$compiler" "${flags[@]}" -o "dist/macos-$probe" "tests/test_$probe.c" -L"$sdk/usr/lib" -lcurl
 done
 # Reject accidental dependencies on the builder's Homebrew or workspace paths.
-otool -L "$bundle/dnsp-modern"
-otool -L "$bundle/dnsp-modern" | tail -n +2 | awk '{print $1}' | while read -r dependency; do
-    case "$dependency" in /usr/lib/*|/System/Library/*) ;; *) echo "Non-system dependency: $dependency" >&2; exit 1 ;; esac
+for executable in dnsp-modern dnsp-macos; do
+    otool -L "$bundle/$executable"
+    otool -L "$bundle/$executable" | tail -n +2 | awk '{print $1}' | while read -r dependency; do
+        case "$dependency" in /usr/lib/*|/System/Library/*) ;; *) echo "Non-system dependency: $dependency" >&2; exit 1 ;; esac
+    done
 done
 cp LICENSE "$bundle/"
 cp docs/MACOS.md "$bundle/"
@@ -33,7 +39,7 @@ chmod 755 "$bundle/Start-DNSProxy.command"
     "$compiler" --version
     otool -L "$bundle/dnsp-modern"
 } > "$bundle/BUILD-INFO.txt"
-(cd "$bundle" && shasum -a 256 dnsp-modern Start-DNSProxy.command LICENSE MACOS.md BUILD-INFO.txt > SHA256SUMS)
+(cd "$bundle" && shasum -a 256 dnsp-modern dnsp-macos Start-DNSProxy.command LICENSE MACOS.md BUILD-INFO.txt > SHA256SUMS)
 archive="dist/dnsp-modern-$version-macos-$arch.tar.gz"
 COPYFILE_DISABLE=1 tar -czf "$archive" -C "$bundle" .
 (cd dist && shasum -a 256 "$(basename "$archive")" > "$(basename "$archive").sha256")
