@@ -18,3 +18,6 @@ gcc -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -o dist/platform-probe.exe \
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     printf 'openssl=%s\n' "$(cygpath -w "$MINGW_PREFIX/bin/openssl.exe")" >> "$GITHUB_OUTPUT"
 fi
+# Test-only executable: the real service adapter reporting a nonzero exit.
+gcc -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -o dist/service-fixture.exe \
+    tests/test_windows_service_fixture.c -ladvapi32

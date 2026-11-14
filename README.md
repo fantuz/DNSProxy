@@ -136,7 +136,7 @@ Run as an unprivileged process; UDP and TCP DNS both listen on port 5300:
 ```
 
 Do not replace your system resolver or bind port 53 until the proxy is tested.
-The DNS listeners are IPv4; `-l` expects an IPv4 bind address. Metrics always
+DNS UDP/TCP listeners accept IPv4 or IPv6 addresses; repeat `-l` to enable both. Metrics always
 bind **127.0.0.1** regardless of `-l`.
 
 ### Quick tests
@@ -197,7 +197,7 @@ Run `./dnsp-modern --help` for the options available in your build.
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
-| `-l IPv4` | DNS UDP/TCP bind address | `127.0.0.1` |
+| `-l IP` | DNS UDP/TCP bind address (repeatable) | `127.0.0.1` |
 | `-p PORT` | DNS listener port, 1–65535 | `5300` |
 | `-s URL` | Upstream DoH endpoint | `https://cloudflare-dns.com/dns-query` |
 | `--backup-upstream URL` | Backup DoH endpoint for eligible transport failures | Disabled |
@@ -208,7 +208,7 @@ Run `./dnsp-modern --help` for the options available in your build.
 | `--ca-file PEM` | CA certificate bundle for upstream TLS verification | libcurl's default CA bundle |
 | `--upstream-http MODE` | `auto` for HTTP/2 with HTTP/1.1 fallback, or `prefer-h3` for HTTP/3 with TCP fallback | `auto` |
 | `--max-host-connections N` | Maximum upstream connections per host, 1–16 | `8` |
-| `--tcp-max-per-source N` | Maximum concurrent DNS/TCP connections per IPv4 source, 1–128 | `32` |
+| `--tcp-max-per-source N` | Maximum concurrent DNS/TCP connections per source address, 1–128 | `32` |
 | `--tcp-idle-ms MS` | How long a TCP session can wait idle for its next query, 100–600000 ms | `15000` |
 | `--tcp-io-ms MS` | Separate deadlines to read a TCP request frame and write a response frame, 100–600000 ms | `15000` |
 | `--doh-connect-ms MS` | Deadline for the upstream connection phase, 100–60000 ms | `1500` |

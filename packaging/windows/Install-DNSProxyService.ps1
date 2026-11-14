@@ -67,7 +67,7 @@ try {
     $controller.Dispose()
     & sc.exe failure $ServiceName reset= 86400 actions= 'restart/3000/restart/10000/none/0'
     if ($LASTEXITCODE) { throw "Recovery configuration failed: $LASTEXITCODE" }
-    & sc.exe failureflag $ServiceName 0
+    & sc.exe failureflag $ServiceName 1
     if ($LASTEXITCODE) { throw "Failure flag configuration failed: $LASTEXITCODE" }
     # State is not service-writable and is used to verify ownership on uninstall.
     @{ SchemaVersion=1; ServiceName=$ServiceName; BinaryPath=$binary; Command=$command; Port=$Port;

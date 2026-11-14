@@ -123,6 +123,8 @@ class ServiceTests(unittest.TestCase):
             self.assertNotEqual(duplicate.returncode, 0)
             self.assert_dns()
             self.ps(f"Stop-Service {name}; (Get-Service {name}).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(10))")
+            time.sleep(4)  # Past the first recovery delay: intentional stop stays stopped.
+            self.assertEqual(self.ps(f"(Get-Service {name}).Status").stdout.strip(), 'Stopped')
             for family, host in ((socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1')):
                 for kind in (socket.SOCK_DGRAM, socket.SOCK_STREAM):
                     with socket.socket(family, kind) as sock:
@@ -149,6 +151,56 @@ class ServiceTests(unittest.TestCase):
         self.assertFalse((Path(os.environ['ProgramFiles'])/name).exists())
         self.assertFalse((Path(os.environ['ProgramData'])/name).exists())
         self.assertEqual(self.ps(f"@(Get-Service {name} -ErrorAction SilentlyContinue).Count").stdout.strip(), '0')
+
+    def test_log_rotation_failure_keeps_dns_running_and_recovers(self):
+        with self.installed() as (name, source):
+            pid = self.ps(f"(Get-CimInstance Win32_Service -Filter \"Name='{name}'\").ProcessId").stdout.strip()
+            log = Path(os.environ['ProgramData'])/name/'logs/service.log'
+            previous = log.with_name('service.log.1')
+            previous.mkdir()  # Deliberately deny replacement without altering service ACLs.
+            try:
+                with log.open('ab') as stream:
+                    stream.write(b'x' * (4 * 1024 * 1024))
+                time.sleep(3)
+                self.assert_dns()
+                self.assertEqual(self.ps(f"(Get-CimInstance Win32_Service -Filter \"Name='{name}'\").ProcessId").stdout.strip(), pid)
+            finally:
+                previous.rmdir()
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if previous.is_file() and 'event=service_log_resumed' in log.read_text():
+                    break
+                time.sleep(.2)
+            else:
+                self.fail('Logging did not resume after the rotation obstruction was removed')
+            self.assert_dns()
+
+    def test_reported_nonzero_exit_recovers_but_normal_stop_does_not(self):
+        name = 'DNSProxy-CI-' + uuid.uuid4().hex[:10]
+        with tempfile.TemporaryDirectory() as directory:
+            log, marker = Path(directory)/'service.log', Path(directory)/'failed-once'
+            binary = fixtures.BINARY.parent/'service-fixture.exe'
+            command = f'"{binary}" --service {name} --service-log "{log}" "{marker}"'
+            try:
+                self.ps(f"New-Service -Name {name} -BinaryPathName {self.quoted(command)} | Out-Null; "
+                        f"sc.exe failure {name} reset= 86400 actions= restart/3000/restart/10000/none/0; "
+                        f"if ($LASTEXITCODE) {{ throw 'failure actions failed' }}; "
+                        f"sc.exe failureflag {name} 1; "
+                        f"if ($LASTEXITCODE) {{ throw 'failure flag failed' }}; Start-Service {name}")
+                first = self.ps(f"(Get-CimInstance Win32_Service -Filter \"Name='{name}'\").ProcessId").stdout.strip()
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    current = self.ps(f"(Get-CimInstance Win32_Service -Filter \"Name='{name}'\").ProcessId").stdout.strip()
+                    if current not in ('0', first) and marker.exists():
+                        break
+                    time.sleep(.2)
+                else:
+                    self.fail('SCM did not recover a reported service-specific error')
+                self.ps(f'Stop-Service {name}')
+                time.sleep(4)
+                self.assertEqual(self.ps(f"(Get-Service {name}).Status").stdout.strip(), 'Stopped')
+            finally:
+                self.ps(f"Stop-Service {name} -ErrorAction SilentlyContinue; sc.exe delete {name}", check=False)
 
     def test_startup_conflict_rolls_back_installation(self):
         name = 'DNSProxy-CI-' + uuid.uuid4().hex[:10]

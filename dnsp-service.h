@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <io.h>
+#include <fcntl.h>
 
 static bool dnsp_as_service;
 static SERVICE_STATUS_HANDLE dnsp_service_handle;
@@ -56,25 +57,57 @@ static bool dnsp_service_ready(void) {
     ReleaseSRWLockExclusive(&dnsp_service_lock);
     return ok;
 }
-/* stderr is owned by the resolver thread. Keep one 4 MiB previous log and
- * rotate at most once per second. Never write logs into the executable folder. */
+/* Open with delete sharing so rotation never needs to close the live stream.
+ * A failed dup2 leaves stderr usable. Only the resolver thread writes it. */
+static FILE *dnsp_service_open_log(void) {
+    HANDLE handle=CreateFileW(dnsp_service_log,GENERIC_WRITE,
+        FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
+    if(handle==INVALID_HANDLE_VALUE) return NULL;
+    int fd=_open_osfhandle((intptr_t)handle,_O_WRONLY|_O_APPEND|_O_BINARY);
+    if(fd<0) {CloseHandle(handle);return NULL;}
+    FILE *file=_fdopen(fd,"ab");
+    if(!file) _close(fd);
+    return file;
+}
+static bool dnsp_service_redirect(FILE *file) {
+    if(!file) return false;
+    bool ok=_dup2(_fileno(file),_fileno(stderr))==0;
+    fclose(file);
+    if(ok) clearerr(stderr);
+    return ok;
+}
+/* Target one current and one previous 4 MiB log, checked once per second.
+ * On a rotation/write failure, discard new logs until the path is writable
+ * again. Logging must not take DNS offline or grow the old log indefinitely. */
 static bool dnsp_service_tick(void) {
     if(!dnsp_as_service) return true;
     static ULONGLONG next;
+    static bool suspended;
     ULONGLONG now=GetTickCount64();
     if(now<next) return true;
     next=now+1000;
-    if(_ftelli64(stderr)<4*1024*1024) return true;
-    size_t size=wcslen(dnsp_service_log)+3;
-    wchar_t *old=calloc(size,sizeof(*old));
-    if(!old) return false;
-    swprintf(old,size,L"%ls.1",dnsp_service_log);
-    bool ok=_wfreopen(L"NUL",L"a",stderr)!=NULL;
-    if(ok) ok=MoveFileExW(dnsp_service_log,old,MOVEFILE_REPLACE_EXISTING)!=0;
-    if(!_wfreopen(dnsp_service_log,L"ab",stderr)) ok=false;
-    else setvbuf(stderr,NULL,_IONBF,0);
-    free(old);
-    return ok;
+    if(!suspended && !ferror(stderr) && _filelengthi64(_fileno(stderr))<4*1024*1024) return true;
+    FILE *candidate=dnsp_service_open_log();
+    if(candidate && _filelengthi64(_fileno(candidate))>=4*1024*1024) {
+        size_t size=wcslen(dnsp_service_log)+3;
+        wchar_t *old=calloc(size,sizeof(*old));
+        bool moved=false;
+        if(old) {
+            swprintf(old,size,L"%ls.1",dnsp_service_log);
+            moved=MoveFileExW(dnsp_service_log,old,MOVEFILE_REPLACE_EXISTING)!=0;
+            free(old);
+        }
+        fclose(candidate);
+        candidate=moved?dnsp_service_open_log():NULL;
+    }
+    if(dnsp_service_redirect(candidate)) {
+        if(suspended) fprintf(stderr,"event=service_log_resumed\n");
+        suspended=false;
+    } else if(!suspended) {
+        fprintf(stderr,"event=service_log_suspended reason=rotation_or_write_failure\n");
+        suspended=dnsp_service_redirect(_wfopen(L"NUL",L"ab"));
+    }
+    return true;
 }
 static void WINAPI dnsp_service_main(DWORD argc,wchar_t **argv) {
     (void)argc;(void)argv;
@@ -83,7 +116,7 @@ static void WINAPI dnsp_service_main(DWORD argc,wchar_t **argv) {
     AcquireSRWLockExclusive(&dnsp_service_lock);
     bool ok=dnsp_service_status_locked(SERVICE_START_PENDING,0);
     ReleaseSRWLockExclusive(&dnsp_service_lock);
-    if(ok && _wfreopen(dnsp_service_log,L"ab",stderr)) {
+    if(ok && _wfreopen(L"NUL",L"ab",stderr) && dnsp_service_redirect(dnsp_service_open_log())) {
         setvbuf(stderr,NULL,_IONBF,0);
         dnsp_service_result=dnsp_service_tick()?dnsp_service_run(dnsp_service_argc,dnsp_service_argv):1;
     }

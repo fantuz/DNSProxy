@@ -63,6 +63,58 @@ class WindowsTests(unittest.TestCase):
                 server.shutdown()
                 worker.join(timeout=3)
 
+    def test_actual_portable_launchers_dual_stack_and_clean_stop(self):
+        # FORMERR is produced locally, so launcher defaults need no Internet.
+        packet = b'\x12\x34\x01\x00\x00\x01' + b'\0' * 6
+        shell = Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe'
+        commands = [
+            [os.environ['COMSPEC'], '/d', '/c', str(BINARY.parent/'Start-DNSProxy.cmd')],
+            [str(shell), '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+             '-File', str(BINARY.parent/'Start-DNSProxy.ps1')],
+        ]
+        for command in commands:
+            with self.subTest(launcher=command[-1]), tempfile.TemporaryDirectory() as cwd, tempfile.TemporaryFile() as log:
+                process = fixtures.spawn_proxy(command, cwd=cwd, stdout=log, stderr=log)
+                try:
+                    deadline = time.monotonic() + 15
+                    while time.monotonic() < deadline and process.poll() is None:
+                        try:
+                            for address in ('127.0.0.1', '::1'):
+                                with socket.create_connection((address, 53), timeout=.2):
+                                    pass
+                            break
+                        except OSError:
+                            time.sleep(.05)
+                    else:
+                        log.seek(0)
+                        self.fail(f'Launcher failed: {log.read()!r}')
+                    for family, address in ((socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1')):
+                        with socket.socket(family, socket.SOCK_DGRAM) as client:
+                            client.settimeout(3)
+                            client.sendto(packet, (address, 53))
+                            answer = client.recv(4096)
+                        self.assertEqual(answer[:2], packet[:2])
+                        self.assertEqual(answer[3] & 15, 1)
+                        with socket.create_connection((address, 53), timeout=3) as client:
+                            client.sendall(struct.pack('!H', len(packet)) + packet)
+                            self.assertEqual(fixtures.Tests.tcp_frame(client), answer)
+                    process.send_signal(signal.CTRL_BREAK_EVENT)
+                    process.wait(timeout=5)
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline:
+                        try:
+                            with socket.create_connection(('127.0.0.1', 53), timeout=.2):
+                                pass
+                        except OSError:
+                            break
+                        time.sleep(.05)
+                    else:
+                        self.fail('Launcher left the resolver running after console stop')
+                finally:
+                    if process.poll() is None:
+                        subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True)
+                        process.wait(timeout=5)
+
     def test_relocated_default_ca_and_hostname_verification(self):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)/'DNSProxy portable with spaces'
