@@ -235,10 +235,9 @@ adapter address (`DNSP_TEST_SECOND_ADDRESS`), without changing adapter settings.
 
 Next decisions: signed installer and broader desktop acceptance. New releases
 include both Windows PoC ZIPs alongside eight Linux packages and two native
-macOS archives. Publication waits for native
-Windows/macOS builds, portable bundle tests, Linux packages, and sanitizers; all
-twelve downloads
-are included in the release's `SHA256SUMS`. Distribution in a regular release
+macOS archives. Publication waits for native Windows/macOS builds, portable
+bundle tests, Linux packages and sanitizers; all twelve downloads are included
+in the release's `SHA256SUMS`. Distribution in a regular release
 does not change the Windows PoC support status described above.
 
 ## Build from source
