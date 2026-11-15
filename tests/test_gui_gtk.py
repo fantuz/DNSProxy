@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import unittest
+import uuid
 
 from test_gui_monitor import BASE, live_resolver, metrics_endpoint, send_query
 
@@ -25,6 +26,7 @@ class GuiTests(unittest.TestCase):
 
     def setUp(self):
         self.app = gui.build_application(gui.arguments(["--demo", "--interval", ".5"]))
+        self.app.set_application_id("org.dnsproxy.LinuxMonitor.Test" + uuid.uuid4().hex)
         self.app.register(None)
         self.app.activate()
         self.window = self.app.window
@@ -120,6 +122,9 @@ class GuiTests(unittest.TestCase):
             self.pump(0.05)
             self.app = gui.build_application(
                 gui.arguments(["--pid", str(process.pid), "--interval", ".5"])
+            )
+            self.app.set_application_id(
+                "org.dnsproxy.LinuxMonitor.Test" + uuid.uuid4().hex
             )
             self.app.register(None)
             self.app.activate()

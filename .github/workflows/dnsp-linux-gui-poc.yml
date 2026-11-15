@@ -59,7 +59,7 @@ jobs:
           /usr/bin/python3 tests/test_gui_monitor.py
       - name: Test GTK with real incoming DNS queries and save screenshots
         env:
-          GUI_SCREENSHOTS: ${{ runner.temp }}/gui-screenshots
+          GUI_SCREENSHOTS: ${{ github.workspace }}/dist/gui-screenshots
           GDK_BACKEND: x11
           GSK_RENDERER: cairo
           GTK_A11Y: none
@@ -67,6 +67,7 @@ jobs:
           dbus-run-session -- xvfb-run -a -s '-screen 0 1280x960x24' \
             /usr/bin/python3 tests/test_gui_gtk.py
       - name: Bundle the standalone PoC sources
+        if: always()
         run: |
           mkdir -p dist
           tar -czf dist/dnsp-linux-gui-poc.tar.gz --exclude=__pycache__ \
@@ -77,5 +78,5 @@ jobs:
           name: linux-gui-poc-${{ matrix.runner }}
           path: |
             dist/dnsp-linux-gui-poc.tar.gz
-            ${{ runner.temp }}/gui-screenshots/*.png
+            dist/gui-screenshots/*.png
           if-no-files-found: error
