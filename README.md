@@ -41,6 +41,12 @@ multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
   <a href="https://github.com/fantuz/DNSProxy/releases/latest#downloads"><img src="https://img.shields.io/badge/Download%20for%20Linux-DEB%20%2F%20RPM-2e7d32?style=for-the-badge" alt="Download for Linux — DEB and RPM packages" height="28"></a>
 </p>
 
+**Linux desktop PoC:** an optional [GTK 4 monitor](docs/LINUX-GUI.md) shows
+read-only startup options, live query activity, upstream/cache/blocklist counters
+and daemon resource use. Try `/usr/bin/python3 tools/linux-gui/dnsp-gui.py --demo`
+after installing the optional GTK dependencies. The C resolver remains independent
+of the GUI; this PoC is being evaluated on its own branch.
+
 [Windows setup guide](docs/WINDOWS.md)
 · [macOS setup guide](docs/MACOS.md)
 · [Linux installation guide](packaging/README-packaging.md)
