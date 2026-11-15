@@ -26,7 +26,7 @@ uses RFC 8484 `application/dns-message` POST requests, libcurl's event-driven
 multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
 
 <p align="center">
-  <a href="https://github.com/fantuz/DNSProxy/releases/latest#downloads"><img src="https://img.shields.io/badge/Download%20for%20Windows-64--bit%20portable%20ZIP-0078D4?style=for-the-badge" alt="Download for Windows — 64-bit portable ZIP" height="28"></a>
+  <a href="https://github.com/fantuz/DNSProxy/releases/latest#downloads"><img src="https://img.shields.io/badge/Download%20for%20Windows-AMD64%20%2F%20ARM64%20ZIPs-0078D4?style=for-the-badge" alt="Download for Windows — AMD64 or ARM64 portable ZIP" height="28"></a>
 </p>
 
 <p align="center">
@@ -540,8 +540,10 @@ GitHub Actions builds DEBs for Debian 13 and Ubuntu 22.04/24.04, and RPMs for
 Rocky Linux 9. Each distribution has native x86-64 and ARM64 builds. Download
 the matching package and `SHA256SUMS` from
 [GitHub Releases](https://github.com/fantuz/DNSProxy/releases).
-From v4.0.3 onward, releases also include the native Windows x86-64 PoC ZIP;
-see the [Windows guide](docs/WINDOWS.md) for launch and DNS setup instructions.
+Windows PoC builds offer native AMD64 and Windows 11 ARM64 portable ZIPs from
+the same C resolver. ARM64 is introduced after v4.4.0; successful CI runs offer
+both architecture artifacts before the next release. See the
+[Windows guide](docs/WINDOWS.md) for architecture selection, launch and DNS setup.
 
 Set the next version in `VERSION` and merge to `master` to publish once the
 Linux package matrix, sanitizer job, and native Windows build and tests pass.

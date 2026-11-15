@@ -1,6 +1,6 @@
 # Native Windows proof of concept
 
-This build runs `dnsp-modern.c` directly on Windows x86-64. DNS parsing, cache,
+This build runs `dnsp-modern.c` directly on Windows x86-64 and ARM64. DNS parsing, cache,
 failover, EDNS, limits, metrics, and libcurl connection management are shared
 with Linux. There is no second resolver tree, Cygwin runtime, WSL requirement,
 or protocol rewrite. `dnsp-platform.h` adapts the OS interfaces.
@@ -8,15 +8,24 @@ or protocol rewrite. `dnsp-platform.h` adapts the OS interfaces.
 ## Download and start
 
 From v4.0.3 onward, open [GitHub Releases](https://github.com/fantuz/DNSProxy/releases)
-and download **dnsp-modern-VERSION-windows-amd64-poc.zip** and **SHA256SUMS**
-from the same release. Check the ZIP's hash against its entry in `SHA256SUMS`:
+and choose the ZIP for your **Settings → System → About → System type**:
+
+| System type | Download |
+| --- | --- |
+| x64-based processor (Intel/AMD) | `dnsp-modern-VERSION-windows-amd64-poc.zip` |
+| ARM-based processor (Windows 11 ARM64) | `dnsp-modern-VERSION-windows-arm64-poc.zip` |
+
+ARM64 is introduced after v4.4.0; older releases contain only the AMD64 ZIP.
+Until the first release containing this change, use the ARM64 CI artifact below.
+Download **SHA256SUMS** from the same release as the ZIP. Check the ZIP's hash against its entry in `SHA256SUMS`:
 
 ```powershell
 Get-FileHash .\dnsp-modern-4.0.3-windows-amd64-poc.zip -Algorithm SHA256
 ```
 
 For an unreleased build, open a successful **DNSProxy modern - test and package**
-Actions run and download the **dnsp-modern-windows-amd64-poc** artifact. It
+Actions run and download **dnsp-modern-windows-amd64-poc** or
+**dnsp-modern-windows-arm64-poc**, matching your processor. Each artifact
 contains the portable ZIP and its `.zip.sha256` checksum file. Release v4.0.2
 published only Linux packages; its Windows ZIP was uploaded to the corresponding
 Actions run. CI artifacts are retained for 14 days.
@@ -192,9 +201,13 @@ for formats, reply modes, automatic reloads, SCM control and the optional Python
 | Statistics | Shared loopback `/metrics`; POSIX `SIGUSR1` is available on Linux/macOS |
 | Upstream transport | Packaged libcurl/OpenSSL with HTTP/2 and HTTP/3 |
 
-GitHub's `windows-2022` runner builds with MSYS2 UCRT64 GCC and bundles the
-recursive PE DLL imports, licenses, CA certificates, source SHA, build package
-versions, and checksums. It runs the shared DNS integration suite (only the
+GitHub builds AMD64 on `windows-2022` with MSYS2 UCRT64 GCC, and ARM64 on
+`windows-11-arm` with MSYS2 CLANGARM64 Clang. Both compile the same C resolver
+and use the same launchers, service adapter and DNS configuration scripts.
+The package builder checks the PE machine type of the resolver and every
+bundled third-party DLL, rejecting mixed architectures. It bundles recursive
+PE DLL imports, licenses, CA certificates, source SHA, build package versions
+and checksums. It runs the shared DNS integration suite (only the
 POSIX signal test is skipped), local TLS HTTP/2 and HTTP/3 tests, and native
 Windows acceptance on UDP/TCP port 53, `Resolve-DnsName`, exclusive binding,
 and console shutdown. Runtime tests extract the ZIP into a path with spaces,
@@ -203,9 +216,11 @@ discovery with both valid and invalid TLS hostnames. The required
 **DNSProxy PR checks** status includes Windows when applicable.
 The Linux packages and tests also validate changes to the shared core.
 
-The artifact is a Windows **x86-64 PoC**, unsigned, without an MSI/MSIX installer
-or signed installer. CI uses Windows Server 2022; desktop
-Windows 10/11, non-administrator accounts, ARM64, Unicode/long paths,
+Both architecture bundles are unsigned Windows **PoCs**, without an MSI/MSIX
+installer. CI executes the resolver, native Python protocol fixtures, platform
+probes, and service acceptance on Windows Server 2022 AMD64 and Windows 11 ARM64.
+It also verifies the extracted bundle's checksums and PE architecture.
+Other desktop Windows 10/11 configurations, non-administrator accounts, Unicode/long paths,
 suspend/resume, and VPN policies need a broader acceptance matrix before a
 supported Windows release. The shared resolver supports IPv4 and IPv6 DNS listeners. Repeat `-l` to enable
 both, for example `-l 127.0.0.1 -l ::1 -p 53`. Both portable launchers enable
@@ -218,17 +233,17 @@ loopback aliases such as `127.0.0.2` are not supported for wildcard replies via
 `IP_PKTINFO`. CI tests source preservation using `127.0.0.1` and an actual
 adapter address (`DNSP_TEST_SECOND_ADDRESS`), without changing adapter settings.
 
-Next decisions: signed installer, ARM64 builds,
-and broader desktop acceptance. Releases include the PoC ZIP alongside the
-eight Linux packages and two native macOS archives. Publication waits for native
+Next decisions: signed installer and broader desktop acceptance. New releases
+include both Windows PoC ZIPs alongside eight Linux packages and two native
+macOS archives. Publication waits for native
 Windows/macOS builds, portable bundle tests, Linux packages, and sanitizers; all
-eleven downloads
+twelve downloads
 are included in the release's `SHA256SUMS`. Distribution in a regular release
 does not change the Windows PoC support status described above.
 
 ## Build from source
 
-Install MSYS2 and open a **UCRT64** shell:
+For AMD64, install MSYS2 and open a **UCRT64** shell:
 
 ```sh
 pacman -Syu
@@ -237,8 +252,23 @@ pacman -S --needed git mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-curl \
 bash scripts/build-windows.sh
 ```
 
+For ARM64, use Windows 11 ARM64 and open MSYS2's **CLANGARM64** shell:
+
+```sh
+pacman -Syu
+pacman -S --needed git mingw-w64-clang-aarch64-clang mingw-w64-clang-aarch64-curl \
+  mingw-w64-clang-aarch64-pkgconf mingw-w64-clang-aarch64-python
+bash scripts/build-windows.sh
+```
+
+MSYS2's Unix build tools currently use x64 emulation on ARM hosts; the Clang
+compiler, resolver and bundled third-party DLLs are ARM64-native. The packaged
+resolver needs neither emulation nor MSYS2 at runtime. ARM64 Windows 10 is not
+in this acceptance matrix.
+
 If MSYS2 asks to restart the shell during its update, do so and finish updating
-first. Output: `dist/dnsp-modern-VERSION-windows-amd64-poc.zip`. Use the regular
+first. Output is `dist/dnsp-modern-VERSION-windows-ARCH-poc.zip`, with `ARCH`
+`amd64` or `arm64`. Keep the two architecture bundles in separate folders. Use the regular
 OpenSSL curl package: MSYS2 `curl-winssl` currently disables HTTP/2. The existing
 Linux `make modern` flow remains available.
 

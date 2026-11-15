@@ -80,7 +80,7 @@ do not replace its stub listener or symlink as part of service setup.
 | Ubuntu 24.04 | DEB | amd64 | arm64 |
 | Debian 13 | DEB | amd64 | arm64 |
 | Rocky Linux 9 | RPM | x86_64 | aarch64 |
-| Windows PoC | Portable ZIP | amd64 | — |
+| Windows PoC | Portable ZIP | amd64 | arm64 (Windows 11) |
 | macOS 15+ | Portable tar.gz | x86_64 (Intel) | arm64 (Apple Silicon) |
 
 The [macOS archives](../docs/MACOS.md) use Apple's system libcurl and include a
@@ -159,13 +159,15 @@ matching package and `SHA256SUMS` to the same directory and run
 source for both files.
 
 Windows downloads are available from v4.0.3 onward as
-`dnsp-modern-VERSION-windows-amd64-poc.zip`, also covered by `SHA256SUMS`.
+`dnsp-modern-VERSION-windows-amd64-poc.zip`. New builds also produce
+`dnsp-modern-VERSION-windows-arm64-poc.zip` for Windows 11 ARM64; releases through
+v4.4.0 have only the AMD64 ZIP. Both architectures are covered by `SHA256SUMS`.
 See the [Windows guide](../docs/WINDOWS.md) for PowerShell verification and setup.
 macOS downloads are available from v4.2.0 onward as
 `dnsp-modern-VERSION-macos-x86_64.tar.gz` and
 `dnsp-modern-VERSION-macos-arm64.tar.gz`, also covered by `SHA256SUMS`.
 The publisher rejects missing, empty, extra, or wrong-version packages, including
-the Windows ZIP and either macOS archive, before creating a release tag.
+either Windows ZIP or macOS archive, before creating a release tag.
 Existing package assets remain unchanged.
 
 ## Protocol and performance limitations

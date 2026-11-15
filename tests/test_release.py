@@ -75,7 +75,8 @@ class ReleaseTests(unittest.TestCase):
                 (directory / f"dnsp-modern_0.3.8+{distro}_{arch}.deb").write_text(arch)
         for arch in ("x86_64", "aarch64"):
             (directory / f"dnsp-modern-0.3.8-1.el9.{arch}.rpm").write_text(arch)
-        (directory / "dnsp-modern-0.3.8-windows-amd64-poc.zip").write_text("Windows bundle")
+        for arch in ("amd64", "arm64"):
+            (directory / f"dnsp-modern-0.3.8-windows-{arch}-poc.zip").write_text("Windows bundle")
         for arch in ("x86_64", "arm64"):
             (directory / f"dnsp-modern-0.3.8-macos-{arch}.tar.gz").write_text(arch)
         return directory
@@ -150,7 +151,7 @@ esac
         for package in expected_packages:
             self.assertEqual(arguments.count(package), 2)
         checksums = (assets / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(checksums), 11)
+        self.assertEqual(len(checksums), 12)
         self.assertEqual(sorted(line.split("  ", 1)[1] for line in checksums), expected_packages)
         self.script("publish-modern.sh", assets, FAIL_PUBLICATION="true", **publish)
         self.assertEqual(create_args.read_text(), attempts)
@@ -179,6 +180,7 @@ esac
         self.assertIn("/blob/v0.3.8-modern/docs/WINDOWS.md", result.stdout)
         self.assertIn("dnsp-modern-0.3.8-macos-arm64.tar.gz", result.stdout)
         self.assertIn("dnsp-modern-0.3.8-macos-x86_64.tar.gz", result.stdout)
+        self.assertIn("dnsp-modern-0.3.8-windows-arm64-poc.zip", result.stdout)
         release["body"] = result.stdout
         again = render()
         self.assertEqual(again.returncode, 0, again.stderr)
@@ -207,13 +209,31 @@ esac
         self.assertNotEqual(incomplete.returncode, 0)
         self.assertEqual(incomplete.stdout, "")
 
+    def test_refresh_old_release_does_not_add_an_arm64_windows_link(self):
+        assets = self.packages(self.root / "legacy-windows")
+        (assets / "dnsp-modern-0.3.8-windows-arm64-poc.zip").unlink()
+        release = {
+            "tag_name": "v0.3.8-modern", "draft": False, "prerelease": False,
+            "assets": [{"name": path.name} for path in assets.iterdir()] + [{"name": "SHA256SUMS"}],
+            "body": "Existing changelog.",
+        }
+        path = self.root / "old-release.json"
+        path.write_text(json.dumps(release))
+        result = subprocess.run(["python3", str(SCRIPTS / "release-downloads.py"),
+                                 "--release-json", str(path)], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("windows-arm64-poc.zip", result.stdout)
+        self.assertIn("Not available", result.stdout)
+        self.assertIn("Existing changelog.", result.stdout)
+
     def test_incomplete_package_sets_never_tag_or_publish(self):
         prepared = self.script("prepare-release.sh")["commit"]
         gh_calls = self.root / "gh-calls"
         gh = self.root / "gh"
         gh.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$TEST_GH_CALLS"\nexit 1\n')
         gh.chmod(0o755)
-        for case in ("missing-windows", "empty-windows", "wrong-version", "extra-zip", "missing-linux",
+        for case in ("missing-windows", "empty-windows", "wrong-version", "missing-windows-arm64",
+                     "empty-windows-arm64", "wrong-windows-arm64-version", "extra-zip", "missing-linux",
                      "missing-macos", "empty-macos", "extra-macos"):
             with self.subTest(case=case):
                 assets = self.packages(self.root / case)
@@ -224,6 +244,13 @@ esac
                     windows.write_bytes(b"")
                 elif case == "wrong-version":
                     windows.rename(assets / "dnsp-modern-0.3.7-windows-amd64-poc.zip")
+                elif case == "missing-windows-arm64":
+                    (assets / "dnsp-modern-0.3.8-windows-arm64-poc.zip").unlink()
+                elif case == "empty-windows-arm64":
+                    (assets / "dnsp-modern-0.3.8-windows-arm64-poc.zip").write_bytes(b'')
+                elif case == "wrong-windows-arm64-version":
+                    (assets / "dnsp-modern-0.3.8-windows-arm64-poc.zip").rename(
+                        assets / "dnsp-modern-0.3.7-windows-arm64-poc.zip")
                 elif case == "extra-zip":
                     (assets / "stale-build.zip").write_text("old build")
                 elif case == "missing-linux":
