@@ -56,7 +56,8 @@ a label cannot turn a binary DNS name into a different dotted list entry.
 
 ## Replies and protocol behaviour
 
-Policy applies to supported ordinary `IN` queries, independent of QTYPE,
+Policy applies to supported ordinary `IN` queries and `QCLASS=ANY` queries that
+can also return Internet-class data, independent of QTYPE,
 including A, AAAA, MX, TXT, DNSSEC, HTTPS/SVCB, ANY and unknown/private types.
 IPv4/IPv6 UDP and TCP use the same policy. Other QCLASS values retain their
 normal forwarding behaviour; malformed/unsupported requests retain the

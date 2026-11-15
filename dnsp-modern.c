@@ -326,7 +326,8 @@ typedef struct {
 } PolicyAlias;
 static int policy_aliases(const unsigned char *wire,size_t length,const DnsInfo *request,
                           const DnsInfo *response) {
-    if(!domain_policy || !domain_policy->deny.count || request->qclass!=1 || !request->qname_len) return 0;
+    if(!domain_policy || !domain_policy->deny.count ||
+       (request->qclass!=1 && request->qclass!=255) || !request->qname_len) return 0;
     PolicyAlias *aliases=NULL;
     size_t count=0,pos=response->question_end;
     DnsNames names={.remaining_pointers=length};
@@ -386,7 +387,8 @@ done:
     free(aliases);return result;
 }
 static bool policy_query_blocked(const DnsInfo *info) {
-    return info->qclass==1 && policy_blocked(domain_policy,info->qname,info->qname_len);
+    /* QCLASS ANY can return IN data too; it must not bypass Internet policy. */
+    return (info->qclass==1 || info->qclass==255) && policy_blocked(domain_policy,info->qname,info->qname_len);
 }
 static void policy_tick(uint64_t now) {
     if(!domain_policy) return;

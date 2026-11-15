@@ -246,6 +246,16 @@ class PolicyTests(unittest.TestCase):
                         self.assert_blocked(answer, packet, rcode)
                 self.assertEqual(upstream.received, [])
 
+    def test_any_class_cannot_bypass_internet_domain_policy(self):
+        with self.proxy() as (port, metric, upstream, _):
+            packet = question(klass=255)
+            self.assert_blocked(exchange(port, packet), packet)
+            self.assertEqual(upstream.received, [])
+            upstream.answer = lambda packet: response(packet, [record('ok.example', 5, wire_name('ads.example'))])
+            packet = question('ok.example', klass=255)
+            self.assert_blocked(exchange(port, packet, tcp=True), packet)
+            self.assertEqual(self.stats(metric)['dnsp_blocked_aliases_total'], 1)
+
     def test_binary_labels_do_not_become_dotted_or_nul_terminated_strings(self):
         with self.proxy() as (port, _, upstream, _):
             for label in (b'ads.example', b'ads\0example', b'ads\xffexample'):

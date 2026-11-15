@@ -345,7 +345,7 @@ message signatures are preserved.
 ## Optional domain filtering
 
 Optional domain/hosts blocklists and allowlists are available with `--blocklist`
-and `--allowlist`. Filtering covers UDP/TCP and all supported IN query types,
+and `--allowlist`. Filtering covers UDP/TCP and all supported IN/ANY-class query types,
 checks reachable aliases, and reloads lists in the background while keeping the
 previous rules on failure. See [domain filtering and safe updates](docs/BLOCKLISTS.md)
 for reply modes, DNSSEC behaviour, packaged-service setup and CI performance comparisons.
