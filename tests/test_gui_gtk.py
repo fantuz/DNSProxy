@@ -23,6 +23,12 @@ class GuiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.Gio, cls.GLib, cls.Gtk = gui.load_gtk()
+        import gi
+
+        gi.require_version("GdkX11", "4.0")
+        from gi.repository import GdkX11
+
+        cls.GdkX11 = GdkX11
 
     def setUp(self):
         self.app = gui.build_application(gui.arguments(["--demo", "--interval", ".5"]))
@@ -59,8 +65,9 @@ class GuiTests(unittest.TestCase):
             target = Path(directory)
             target.mkdir(parents=True, exist_ok=True)
             self.pump(0.2)
+            window_id = self.GdkX11.X11Surface.get_xid(self.window.get_surface())
             subprocess.run(
-                ["import", "-window", "root", str(target / name)],
+                ["import", "-window", str(window_id), str(target / name)],
                 check=True,
                 timeout=10,
             )
@@ -167,6 +174,16 @@ class GuiTests(unittest.TestCase):
         self.window.apply(DemoCollector().collect())
         self.assertEqual(self.window.values["rate"].get_text(), "—")
         self.assertIn("Receiving metrics", self.window.status.get_text())
+
+    def test_startup_origin_refreshes_when_explicit_value_equals_default(self):
+        from monitor import parse_invocation
+
+        self.window.show_settings(parse_invocation(["dnsp-modern"]))
+        values = self.window.startup.get_last_child()
+        self.assertEqual(values.get_child_at(2, 1).get_text(), "Default")
+        self.window.show_settings(parse_invocation(["dnsp-modern", "-p", "5300"]))
+        values = self.window.startup.get_last_child()
+        self.assertEqual(values.get_child_at(2, 1).get_text(), "Explicit")
 
 
 if __name__ == "__main__":

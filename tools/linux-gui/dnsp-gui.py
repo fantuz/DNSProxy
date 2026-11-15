@@ -3,6 +3,7 @@
 
 import argparse
 from collections import deque
+import math
 import queue
 import sys
 import threading
@@ -67,7 +68,7 @@ def build_application(options):
     class Window(Gtk.ApplicationWindow):
         def __init__(self, app):
             super().__init__(application=app, title="DNSProxy · Linux monitor PoC")
-            self.set_default_size(1040, 820)
+            self.set_default_size(1040, 880)
             self.collector = (
                 DemoCollector()
                 if options.demo
@@ -463,7 +464,15 @@ def build_application(options):
             )
 
         def show_settings(self, invocation):
-            signature = tuple(invocation.values.items()) if invocation else None
+            signature = (
+                (
+                    tuple(invocation.values.items()),
+                    frozenset(invocation.explicit),
+                    bool(invocation.unknown),
+                )
+                if invocation
+                else None
+            )
             if (
                 signature == self.signature
                 and self.startup.get_first_child() is not None
@@ -545,13 +554,24 @@ def build_application(options):
                         cr.stroke()
                     drawing = False
                     continue
-                x, y = i * width / 59, height - 5 - value / peak * (height - 10)
+                x, y = (
+                    3 + i * (width - 6) / 59,
+                    height - 5 - value / peak * (height - 10),
+                )
                 if drawing:
                     cr.line_to(x, y)
                 else:
                     cr.move_to(x, y)
                 drawing = True
             cr.stroke()
+            # A single rate sample has no segment yet. Keep incoming activity
+            # visible immediately instead of showing an empty chart at startup.
+            for i, value in enumerate(self.history):
+                if value is not None:
+                    x = 3 + i * (width - 6) / 59
+                    y = height - 5 - value / peak * (height - 10)
+                    cr.arc(x, y, 2, 0, math.tau)
+                    cr.fill()
 
         def close_monitor(self, *_):
             self.closed = True
@@ -570,6 +590,7 @@ def build_application(options):
             if self.window is None:
                 self.window = Window(self)
             self.window.present()
+            self.window.refresh.grab_focus()
 
     return Application()
 
