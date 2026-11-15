@@ -10,7 +10,24 @@ PyGObject bindings. There is no browser, embedded web server, Electron runtime,
 privileged helper or second implementation of DNS/DoH. macOS and Windows GUI
 support is outside this PoC.
 
+## Preview
+
+These are actual Linux CI screenshots in demo mode; all displayed values are
+synthetic. Live integration tests separately exercise the running C resolver.
+
+![Overview with query activity and daemon counters](images/linux-gui-poc-demo-overview.png)
+
+![Read-only startup options represented by On/Off controls](images/linux-gui-poc-demo-startup-options.png)
+
 ## Try the interface
+
+To try the branch without switching your existing checkout, use a separate folder:
+
+```sh
+git fetch origin codex/linux-gui-poc
+git worktree add --detach ../DNSProxy-linux-gui FETCH_HEAD
+cd ../DNSProxy-linux-gui
+```
 
 On Debian or Ubuntu, install the optional desktop dependencies:
 
@@ -44,7 +61,7 @@ make dnsp-modern
 In a second terminal:
 
 ```sh
-/usr/bin/python3 tools/linux-gui/dnsp-gui.py
+/usr/bin/python3 tools/linux-gui/dnsp-gui.py &
 # Send a query to exercise the activity indicator:
 dig @127.0.0.1 -p 5300 example.org A
 ```

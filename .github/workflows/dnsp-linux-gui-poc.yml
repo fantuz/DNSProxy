@@ -71,7 +71,7 @@ jobs:
         run: |
           mkdir -p dist
           tar -czf dist/dnsp-linux-gui-poc.tar.gz --exclude=__pycache__ \
-            tools/linux-gui docs/LINUX-GUI.md
+            tools/linux-gui docs/LINUX-GUI.md docs/images/linux-gui-poc-*.png
       - uses: actions/upload-artifact@v6
         if: always()
         with:
