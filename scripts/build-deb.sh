@@ -17,6 +17,8 @@ STAGE="$WORK/stage"
 mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/lib/systemd/system" \
          "$STAGE/usr/share/doc/dnsp-modern" "$STAGE/usr/sbin" "$WORK/deps/debian"
 install -m 0755 dnsp-modern "$STAGE/usr/bin/dnsp-modern"
+install -m 0755 scripts/update-blocklist.py "$STAGE/usr/sbin/dnsp-update-blocklist"
+install -m 0644 docs/BLOCKLISTS.md "$STAGE/usr/share/doc/dnsp-modern/BLOCKLISTS.md"
 install -m 0644 packaging/systemd/dnsp-modern.service "$STAGE/lib/systemd/system/dnsp-modern.service"
 install -m 0755 packaging/linux/dnsp-configure-dns "$STAGE/usr/sbin/dnsp-configure-dns"
 for unit in packaging/systemd/dnsp-modern-dns-recovery.*; do

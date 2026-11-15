@@ -8,6 +8,7 @@ Wants=network-online.target
 Type=simple
 DynamicUser=yes
 ExecStart=/usr/bin/dnsp-modern -l 127.0.0.1 -p 5300 -s https://cloudflare-dns.com/dns-query -m 9153
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=3s
 RestartPreventExitStatus=2

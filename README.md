@@ -214,6 +214,10 @@ Run `./dnsp-modern --help` for the options available in your build.
 | `--doh-connect-ms MS` | Deadline for the upstream connection phase, 100–60000 ms | `1500` |
 | `--doh-timeout-ms MS` | Total deadline for an upstream request, 100–60000 ms | `3000` |
 | `--cache-entries N` | In-memory DNS answer cache slots, 0–1024 | `0` (disabled) |
+| `--blocklist FILE` / `--allowlist FILE` | Repeatable domain/hosts policy files; allow rules override denies for the same name | Filtering disabled |
+| `--block-response MODE` | `refused`, `nxdomain`, `nodata` or `null` | `refused` |
+| `--blocklist-reload-ms MS` | Background file checks, 100–86400000 ms; 0 disables automatic checks | `5000` |
+| `--check-blocklists` | Validate configured policy files and exit without listeners | |
 | `--udp-reply-max BYTES` | Maximum UDP reply size with EDNS, 512–4096 | `1232` |
 | `-V`, `--version` | Print DNSProxy and libcurl versions, the TLS backend, and HTTP capabilities | |
 | `-h`, `--help` | Print options and exit | |
@@ -338,7 +342,16 @@ Forwarded unsigned DNS replies have their record TTLs reduced by the DoH
 `Age` header, including when the answer cache is disabled. OPT fields and
 message signatures are preserved.
 
+## Optional domain filtering
+
+Optional domain/hosts blocklists and allowlists are available with `--blocklist`
+and `--allowlist`. Filtering covers UDP/TCP and all supported IN/ANY-class query types,
+checks reachable aliases, and reloads lists in the background while keeping the
+previous rules on failure. See [domain filtering and safe updates](docs/BLOCKLISTS.md)
+for reply modes, DNSSEC behaviour, packaged-service setup and CI performance comparisons.
+
 ## Optional in-memory answer cache
+
 
 ```sh
 ./dnsp-modern --cache-entries 512 -m 9153

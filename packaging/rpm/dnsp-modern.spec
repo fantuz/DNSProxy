@@ -36,6 +36,8 @@ install -Dpm 0755 packaging/linux/dnsp-configure-dns %{buildroot}%{_sbindir}/dns
 install -Dpm 0644 packaging/systemd/dnsp-modern-dns-recovery.service %{buildroot}%{_unitdir}/dnsp-modern-dns-recovery.service
 install -Dpm 0644 packaging/systemd/dnsp-modern-dns-recovery.timer %{buildroot}%{_unitdir}/dnsp-modern-dns-recovery.timer
 
+install -Dpm 0755 scripts/update-blocklist.py %{buildroot}%{_sbindir}/dnsp-update-blocklist
+
 %check
 %make_build -f modern.mk modern-check
 
@@ -53,8 +55,9 @@ fi
 
 %files
 %license LICENSE
-%doc packaging/README-packaging.md packaging/systemd/port-53.conf
+%doc docs/BLOCKLISTS.md packaging/README-packaging.md packaging/systemd/port-53.conf
 %{_bindir}/dnsp-modern
+%{_sbindir}/dnsp-update-blocklist
 %{_unitdir}/dnsp-modern.service
 %{_sbindir}/dnsp-configure-dns
 %{_unitdir}/dnsp-modern-dns-recovery.service

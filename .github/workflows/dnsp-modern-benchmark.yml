@@ -44,6 +44,17 @@ jobs:
             --protocol h2 --concurrency 16 --warmup 0.5 --duration 2 \
             --h2-max-streams 8 --max-host-connections 2 --assert-h2-multiplex \
             --output dist/bench-ci-netem.json
+      - name: Compare blocklist performance against the PR base
+        env:
+          POLICY_BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$POLICY_BASE_SHA"
+          baseline="$RUNNER_TEMP/dnsp-policy-baseline"
+          git worktree add --detach "$baseline" "$POLICY_BASE_SHA"
+          make -C "$baseline" -f modern.mk dnsp-modern
+          .bench-venv/bin/python bench/bench_policy.py --binary "$PWD/dnsp-modern" \
+            --baseline-binary "$baseline/dnsp-modern" --baseline-commit "$POLICY_BASE_SHA" \
+            --output dist/bench-ci-policy.json
       - uses: actions/upload-artifact@v6
         if: always()
         with:
@@ -67,7 +78,7 @@ jobs:
           RUN python3 -m venv /opt/bench && /opt/bench/bin/python -m pip install \
               'hypercorn==0.18.0' 'h2==4.3.0' 'aioquic==1.3.0'
           WORKDIR /src
-          COPY dnsp-modern.c dnsp-platform.h dnsp-service.h modern.mk VERSION ./
+          COPY dnsp-modern.c dnsp-platform.h dnsp-service.h dnsp-policy.h modern.mk VERSION ./
           COPY bench/ bench/
           COPY tests/ tests/
           RUN make -f modern.mk dnsp-modern

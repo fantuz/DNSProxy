@@ -333,6 +333,22 @@ static void copyExecutable(NSString *source,NSString *destination) {
     close(input);close(output);require(ok,@"Cannot copy/protect installed executable");
 }
 static void install(NSArray *arguments,NSString *source) {
+    NSMutableArray *connection=[NSMutableArray new],*policies=[NSMutableArray new];
+    NSString *blockMode=@"refused";BOOL hasDeny=NO;
+    for(NSUInteger i=0;i<arguments.count;i++) {
+        NSString *argument=arguments[i];
+        if([argument isEqual:@"--blocklist"] || [argument isEqual:@"--allowlist"] || [argument isEqual:@"--block-response"]) {
+            require(++i<arguments.count,@"Policy option requires a value");
+            if([argument isEqual:@"--block-response"]) blockMode=arguments[i];
+            else {
+                [policies addObject:@{@"Flag":argument,@"Path":arguments[i]}];
+                if([argument isEqual:@"--blocklist"])hasDeny=YES;
+            }
+        } else {require(![argument hasPrefix:@"--"],@"Unknown install option");[connection addObject:argument];}
+    }
+    require(policies.count<=64 && (!policies.count || hasDeny),@"Use a blocklist and at most 64 policy files");
+    require([@[@"refused",@"nxdomain",@"nodata",@"null"] containsObject:blockMode],@"Unknown block response mode");
+    arguments=connection;
     require(arguments.count==0 || arguments.count==2 || arguments.count==3,@"Usage: install [HTTPS_UPSTREAM NUMERIC_BOOTSTRAP [CA_FILE]]");
     NSString *upstream=arguments.count?arguments[0]:@"https://cloudflare-dns.com/dns-query";
     NSString *bootstrap=arguments.count?arguments[1]:@"1.1.1.1";
@@ -361,7 +377,25 @@ static void install(NSArray *arguments,NSString *source) {
         // Retain root ownership and grant both permissions to its service group.
         BOOL logOK=fchown(fd,0,logGroup())==0 && fchmod(fd,0660)==0;
         close(fd);require(logOK,@"Cannot grant the service access to its log");
-        NSDictionary *service=serviceJob(upstream,bootstrap,arguments.count==3);
+        NSMutableDictionary *service=[serviceJob(upstream,bootstrap,arguments.count==3) mutableCopy];
+        NSMutableArray *policyArgs=[NSMutableArray new];NSUInteger total=0;
+        for(NSUInteger i=0;i<policies.count;i++) {
+            NSDictionary *entry=policies[i];NSString *path=entry[@"Path"];struct stat info;
+            require(stat(path.fileSystemRepresentation,&info)==0 && S_ISREG(info.st_mode) &&
+                info.st_size>=0 && info.st_size<=64*1024*1024,@"Policy must be a regular file (maximum 64 MiB)");
+            NSData *data=[NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:NULL];
+            require(data && data.length<=64*1024*1024-total,@"Policy files exceed 64 MiB in total");total+=data.length;
+            NSString *target=inside([NSString stringWithFormat:@"policy-%lu.txt",(unsigned long)i]);
+            require([data writeToFile:target options:NSDataWritingAtomic error:NULL] &&
+                chmod(target.fileSystemRepresentation,0644)==0,@"Cannot copy/protect policy file");
+            [policyArgs addObjectsFromArray:@[entry[@"Flag"],target]];
+        }
+        if(policyArgs.count) {
+            execute(inside(@"dnsp-modern"),[policyArgs arrayByAddingObject:@"--check-blocklists"],YES);
+            NSMutableArray *program=[service[@"ProgramArguments"] mutableCopy];
+            [program addObjectsFromArray:policyArgs];[program addObjectsFromArray:@[@"--block-response",blockMode]];
+            service[@"ProgramArguments"]=program;
+        }
         save(service,plist(Label));save(recoveryJob(),plist(Recovery));
         save(@{@"Version":@1,@"Service":service},inside(@"installation.plist"));
         launch(@"bootstrap",Label,YES);

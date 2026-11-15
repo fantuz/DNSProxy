@@ -13,6 +13,7 @@
 #include <string.h>
 #include <time.h>
 #include "dnsp-service.h"
+#include "dnsp-policy.h"
 
 #ifndef DNSP_VERSION
 #define DNSP_VERSION "dev"
@@ -35,6 +36,11 @@ static atomic_bool stopping;
 /* A process signal can be delivered to a libcurl resolver thread. */
 _Static_assert(ATOMIC_BOOL_LOCK_FREE==2,"SIGUSR1 requires a lock-free atomic flag");
 static atomic_bool report_requested;
+static atomic_bool reload_requested;
+static void request_reload(int sig) {
+    (void)sig;
+    atomic_store_explicit(&reload_requested,true,memory_order_relaxed);
+}
 static void stop_now(int sig) { (void)sig; stopping=1; }
 static void request_report(int sig) {
     (void)sig;
@@ -141,7 +147,7 @@ typedef struct {
     uint16_t udp_limit;
     uint16_t qtype,qclass;
     unsigned char qname[256]; size_t qname_len;
-    unsigned char opcode,opt_ext_rcode;
+    unsigned char opcode,opt_ext_rcode,opt_version;
     bool has_opt,opt_do,message_signature;
 } DnsInfo;
 typedef enum { DNS_OK, DNS_DROP, DNS_FORMERR, DNS_NOTIMP } DnsResult;
@@ -193,7 +199,7 @@ static DnsResult dns_parse(const unsigned char *p,size_t n,const DnsInfo *reques
             if(type==41) {
                 if(section!=2 || info->has_opt) return DNS_FORMERR;
                 info->has_opt=true; /* retain a minimal OPT even for malformed option data */
-                info->opt_ext_rcode=ext_rcode;info->opt_do=opt_do;
+                info->opt_ext_rcode=ext_rcode;info->opt_do=opt_do;info->opt_version=p[pos-5];
                 if(!response) {
                     unsigned sz=klass<512?512:klass;
                     info->udp_limit=(uint16_t)(sz>udp_reply_max?udp_reply_max:sz);
@@ -301,11 +307,124 @@ static size_t tcp_max_per_source=TCP_MAX_PER_SOURCE;
 static long doh_connect_ms=DOH_CONNECT_MS,doh_timeout_ms=DOH_TIMEOUT_MS;
 static CacheEntry *answer_cache;
 static size_t cache_entries;
+static PolicyConfig policy_config;
+static Policy *domain_policy;
+static PolicyWorker policy_worker;
+static uint64_t policy_reload_ms=5000,policy_next_check;
+static uint64_t policy_blocked_queries,policy_blocked_aliases,policy_reload_ok,policy_reload_failed;
+typedef enum { BLOCK_REFUSED, BLOCK_NXDOMAIN, BLOCK_NODATA, BLOCK_NULL } BlockMode;
+static BlockMode block_mode;
+
+/* Inspect only aliases reachable from the question, never unrelated records in
+ * authority/additional sections. A bounded graph also covers DNAME synthesis
+ * and HTTPS/SVCB targets (including endpoints with address hints). */
+enum { POLICY_ALIAS_MAX=128 };
+typedef struct {
+    unsigned char owner[256],target[256];
+    size_t owner_len,target_len;
+    bool dname;
+} PolicyAlias;
+static int policy_aliases(const unsigned char *wire,size_t length,const DnsInfo *request,
+                          const DnsInfo *response) {
+    if(!domain_policy || !domain_policy->deny.count ||
+       (request->qclass!=1 && request->qclass!=255) || !request->qname_len) return 0;
+    PolicyAlias *aliases=NULL;
+    size_t count=0,pos=response->question_end;
+    DnsNames names={.remaining_pointers=length};
+    int result=-1;
+    for(size_t i=0;i<be16(wire+6);i++) {
+        PolicyAlias entry={0};
+        if(!dns_name(wire,length,&pos,entry.owner,&entry.owner_len,true,&names) || length-pos<10) goto done;
+        uint16_t type=be16(wire+pos),klass=be16(wire+pos+2),rdlen=be16(wire+pos+8);
+        pos+=10;
+        if(rdlen>length-pos) goto done;
+        size_t end=pos+rdlen;
+        if(klass==1 && (type==5 || type==39 || type==64 || type==65)) {
+            if(type==64 || type==65) {if(end-pos<3) goto done;pos+=2;}
+            if(!dns_name(wire,end,&pos,entry.target,&entry.target_len,type==5,&names)) goto done;
+            if((type==5 || type==39) && pos!=end) goto done;
+            entry.dname=type==39;
+            if(count==POLICY_ALIAS_MAX) goto done;
+            if(!aliases && !(aliases=malloc(POLICY_ALIAS_MAX*sizeof(*aliases)))) goto done;
+            aliases[count++]=entry;
+        }
+        pos=end;
+    }
+    if(!count) {result=0;goto done;}
+    unsigned char reachable[POLICY_ALIAS_MAX+1][256];
+    size_t lengths[POLICY_ALIAS_MAX+1],used=1;
+    memcpy(reachable[0],request->qname,request->qname_len);lengths[0]=request->qname_len;
+    for(size_t current=0;current<used;current++) {
+        for(size_t i=0;i<count;i++) {
+            const PolicyAlias *alias=&aliases[i];
+            size_t prefix=0;
+            if(alias->dname) {
+                size_t offset=0;
+                while(offset<lengths[current] && reachable[current][offset]) {
+                    offset+=1+reachable[current][offset];
+                    if(offset<lengths[current] && lengths[current]-offset==alias->owner_len &&
+                       !memcmp(reachable[current]+offset,alias->owner,alias->owner_len)) {prefix=offset;break;}
+                }
+                if(!prefix) continue; /* DNAME does not redirect its owner. */
+            } else if(lengths[current]!=alias->owner_len ||
+                      memcmp(reachable[current],alias->owner,alias->owner_len)) continue;
+            if(alias->target_len==1 && !alias->dname) continue; /* SVCB '.' is not a new name. */
+            size_t n=prefix+alias->target_len;
+            if(n>255) goto done;
+            unsigned char target[256];
+            memcpy(target,reachable[current],prefix);memcpy(target+prefix,alias->target,alias->target_len);
+            if(policy_blocked(domain_policy,target,n)) {result=1;goto done;}
+            bool seen=false;
+            for(size_t j=0;j<used;j++) if(lengths[j]==n && !memcmp(reachable[j],target,n)) {seen=true;break;}
+            if(!seen) {
+                if(used==POLICY_ALIAS_MAX+1) goto done;
+                memcpy(reachable[used],target,n);lengths[used++]=n;
+            }
+        }
+    }
+    result=0;
+done:
+    free(aliases);return result;
+}
+static bool policy_query_blocked(const DnsInfo *info) {
+    /* QCLASS ANY can return IN data too; it must not bypass Internet policy. */
+    return (info->qclass==1 || info->qclass==255) && policy_blocked(domain_policy,info->qname,info->qname_len);
+}
+static void policy_tick(uint64_t now) {
+    if(!domain_policy) return;
+    if(policy_worker.running && atomic_load_explicit(&policy_worker.done,memory_order_acquire)) {
+        policy_worker_join(&policy_worker);
+        if(policy_worker.changed) {
+            if(policy_worker.candidate) {
+                Policy *old=domain_policy;
+                domain_policy=policy_worker.candidate;policy_worker.candidate=NULL;
+                domain_policy->generation=old->generation+1;domain_policy->loaded_ms=dnsp_clock_ms(true);
+                /* Completions also inspect the current policy before storing. */
+                if(answer_cache) memset(answer_cache,0,cache_entries*sizeof(*answer_cache));
+                policy_free(old);policy_reload_ok++;
+                fprintf(stderr,"level=info event=blocklist_reload generation=%" PRIu64 " deny=%zu allow=%zu bytes=%zu\n",
+                    domain_policy->generation,domain_policy->deny.count,domain_policy->allow.count,domain_policy->bytes);
+            } else {
+                policy_reload_failed++;
+                fprintf(stderr,"level=warning event=blocklist_reload_failed message=%s\n",policy_worker.error);
+            }
+        }
+        policy_next_check=now+policy_reload_ms;
+    }
+    if(policy_worker.running) return;
+    bool forced=atomic_exchange_explicit(&reload_requested,false,memory_order_relaxed);
+    if(!forced && (!policy_reload_ms || now<policy_next_check)) return;
+    policy_next_check=now+policy_reload_ms;
+    if(!policy_worker_start(&policy_worker,&policy_config,domain_policy,forced)) {
+        policy_reload_failed++;
+        fprintf(stderr,"level=warning event=blocklist_reload_failed message=thread_creation\n");
+    }
+}
 
 typedef struct {
     dnsp_socket_t fd;uint64_t generation,last_ms;
     char request[512];size_t have;
-    char reply[4608];size_t reply_len,sent;
+    char reply[6144];size_t reply_len,sent;
 } MetricClient;
 static MetricClient metric_clients[MAX_METRICS_CLIENTS];
 
@@ -506,6 +625,37 @@ static void send_error(Query *q,const unsigned char *request,unsigned char rcode
     if(length==DNS_HEADER) p[4]=p[5]=0;
     memset(p+6,0,6);
     reply_dns(q,p,append_local_opt(q,p,length,0),false);
+}
+static void send_policy_block(Query *q,const unsigned char *request,bool alias) {
+    size_t n=q->info.question_end;
+    unsigned char p[512];
+    if(n<DNS_HEADER || n>q->req_len || n>sizeof(p)-64) return;
+    memcpy(p,request,n);
+    p[2]=(unsigned char)((p[2]&0x79)|0x80); /* QR, original RD/opcode; no AA/TC. */
+    p[3]=(unsigned char)((p[3]&0x10)|0x80); /* CD/RA; never assert AD. */
+    memset(p+6,0,6);
+    if(q->info.has_opt && q->info.opt_version) {
+        /* RFC 6891: negotiate EDNS(0), even when the name is locally denied. */
+        reply_dns(q,p,append_local_opt(q,p,n,1),false);return;
+    }
+    if(block_mode==BLOCK_REFUSED) p[3]|=5;
+    else if(block_mode==BLOCK_NXDOMAIN) p[3]|=3;
+    else if(block_mode==BLOCK_NULL && (q->info.qtype==1 || q->info.qtype==28)) {
+        size_t size=q->info.qtype==1?4:16;
+        unsigned char rr[12]={0xc0,0x0c,0,0,0,1,0,0,0,0,0,0};
+        rr[3]=(unsigned char)q->info.qtype;rr[11]=(unsigned char)size;
+        memcpy(p+n,rr,sizeof(rr));n+=sizeof(rr);
+        memset(p+n,0,size);n+=size;p[7]=1; /* TTL zero, no fabricated signatures/SOA. */
+    }
+    n=append_local_opt(q,p,n,0);
+    if(q->info.has_opt) {
+        p[n-1]=6; /* OPT RDLEN: EDE option header and two-byte INFO-CODE. */
+        static const unsigned char ede[]={0,15,0,2,0,15}; /* RFC 8914: Blocked. */
+        memcpy(p+n,ede,sizeof(ede));n+=sizeof(ede);
+    }
+    policy_blocked_queries+=1+q->udp_waiter_count;
+    if(alias) policy_blocked_aliases+=1+q->udp_waiter_count;
+    reply_dns(q,p,n,false);
 }
 static void send_truncated(Query *q,const DnsInfo *response) {
     size_t n=q->info.question_end;
@@ -980,8 +1130,21 @@ static void complete(Query *q,CURLcode code) {
     else if(!dns_content_type(content_type)) failure=LOG_CONTENT;
     else if(q->resp_len<DNS_HEADER || be16(q->response)!=be16(q->request) ||
             dns_parse(q->response,q->resp_len,&q->info,&response)!=DNS_OK) failure=LOG_DNS;
+    bool denied_name=policy_query_blocked(&q->info);
+    int filtered=denied_name?1:0;
+    if(!filtered && failure==LOG_COUNT) {
+        filtered=policy_aliases(q->response,q->resp_len,&q->info,&response);
+        if(filtered<0) failure=LOG_DNS;
+    }
     size_t retries=0;
-    if(failure==LOG_COUNT) {
+    if(filtered>0) {
+        if(failure==LOG_COUNT) {metrics.upstream_ok++;q->upstream->replies++;}
+        else {
+            metrics.upstream_failed++;q->upstream->failures++;
+            if(failure==LOG_TIMEOUT) metrics.upstream_timeouts++;
+        }
+        send_policy_block(q,q->request,!denied_name);
+    } else if(failure==LOG_COUNT) {
         strip_doh_padding(q,&response);
         metrics.upstream_ok++;q->upstream->replies++;
         uint64_t age_ms=doh_response_age_ms(&q->cache_headers,seconds);
@@ -1028,6 +1191,11 @@ static bool submit_until(const unsigned char *data,size_t len,Client *client,dns
     if(result!=DNS_OK) {
         if(result==DNS_FORMERR) metrics.invalid_queries++;
         send_error(&pending,data,result==DNS_NOTIMP?4:1);
+        return true;
+    }
+    if(policy_query_blocked(&info)) {
+        record_client_query(client);
+        send_policy_block(&pending,data,false);
         return true;
     }
     long timeout_ms=doh_timeout_ms;
@@ -1289,7 +1457,9 @@ static void report_status(uint64_t uptime_ms,const char *bindip,int port,int met
             " new_connections=%" PRIu64 " reused_requests=%" PRIu64 " easy_handles_reused=%" PRIu64
             " cache_entries=%zu cache_hits=%" PRIu64 " cache_misses=%" PRIu64
             " inflight=%zu max_inflight=%d tcp_clients=%zu max_tcp_clients=%d max_tcp_per_source=%zu"
-            " tcp_rejected_source=%" PRIu64 " tcp_rejected_capacity=%" PRIu64 "\n",
+            " tcp_rejected_source=%" PRIu64 " tcp_rejected_capacity=%" PRIu64
+            " blocked_queries=%" PRIu64 " blocked_aliases=%" PRIu64 " blocklist_generation=%" PRIu64
+            " blocklist_entries=%zu allowlist_entries=%zu blocklist_bytes=%zu reload_failures=%" PRIu64 "\n",
             uptime_ms,bindip,port,metrics_port,primary.loopback_http?"http":"https",http_preference,
             primary.bootstrap?"enabled":"disabled",backup.url?"enabled":"disabled",
             max_host_connections,doh_connect_ms,doh_timeout_ms,
@@ -1301,13 +1471,19 @@ static void report_status(uint64_t uptime_ms,const char *bindip,int port,int met
             metrics.requests_reused_connections,metrics.easy_handles_reused,
             cache_entries,metrics.cache_hits,metrics.cache_misses,
             active_count,MAX_ACTIVE,tcp_open_count(),MAX_CLIENTS,tcp_max_per_source,
-            metrics.tcp_rejected_source,metrics.tcp_rejected_capacity);
+            metrics.tcp_rejected_source,metrics.tcp_rejected_capacity,
+            policy_blocked_queries,policy_blocked_aliases,domain_policy?domain_policy->generation:0,
+            domain_policy?domain_policy->deny.count:0,domain_policy?domain_policy->allow.count:0,
+            domain_policy?domain_policy->bytes:0,policy_reload_failed);
 }
 static void metric_response(MetricClient *c) {
 #define METRIC(...) do {int z=snprintf(c->reply+c->reply_len,sizeof(c->reply)-c->reply_len,__VA_ARGS__); \
     if(z<0 || (size_t)z>=sizeof(c->reply)-c->reply_len) {close_metric(c);return;} \
     c->reply_len+=(size_t)z;} while(0)
-    char body[4096];int n=snprintf(body,sizeof(body),
+    uint64_t policy_now=dnsp_clock_ms(true);
+    uint64_t policy_age=domain_policy && policy_now>=domain_policy->loaded_ms?
+                        (policy_now-domain_policy->loaded_ms)/1000u:0;
+    char body[5632];int n=snprintf(body,sizeof(body),
         "# TYPE dnsp_queries_total counter\n"
         "dnsp_queries_total{transport=\"udp\"} %llu\n"
         "dnsp_queries_total{transport=\"tcp\"} %llu\n"
@@ -1377,7 +1553,19 @@ static void metric_response(MetricClient *c) {
         "# TYPE dnsp_queries_inflight gauge\n"
         "dnsp_queries_inflight %zu\n"
         "dnsp_tcp_clients %zu\n"
-        "dnsp_curl_socket_watches %zu\n",
+        "dnsp_curl_socket_watches %zu\n"
+        "# TYPE dnsp_blocked_queries_total counter\n"
+        "dnsp_blocked_queries_total %" PRIu64 "\n"
+        "# TYPE dnsp_blocked_aliases_total counter\n"
+        "dnsp_blocked_aliases_total %" PRIu64 "\n"
+        "# TYPE dnsp_blocklist_entries gauge\n"
+        "dnsp_blocklist_entries{action=\"deny\"} %zu\n"
+        "dnsp_blocklist_entries{action=\"allow\"} %zu\n"
+        "dnsp_blocklist_generation %" PRIu64 "\n"
+        "dnsp_blocklist_memory_bytes %zu\n"
+        "dnsp_blocklist_age_seconds %" PRIu64 "\n"
+        "dnsp_blocklist_reload_success_total %" PRIu64 "\n"
+        "dnsp_blocklist_reload_failures_total %" PRIu64 "\n",
         (unsigned long long)metrics.udp_queries,(unsigned long long)metrics.tcp_queries,
         metrics.queries_satisfied,metrics.cache_hits,metrics.cache_misses,metrics.udp_queries_coalesced,
         (unsigned long long)metrics.tcp_accepted,metrics.tcp_rejected_source,metrics.tcp_rejected_capacity,
@@ -1404,7 +1592,11 @@ static void metric_response(MetricClient *c) {
         (double)metrics.upstream_phase[PHASE_QUEUE].usec/1e6,metrics.upstream_phase[PHASE_QUEUE].count,
         (double)metrics.upstream_phase[PHASE_TLS].usec/1e6,metrics.upstream_phase[PHASE_TLS].count,
         (double)metrics.upstream_phase[PHASE_FIRST_BYTE].usec/1e6,metrics.upstream_phase[PHASE_FIRST_BYTE].count,
-        active_count,tcp_open_count(),curl_socket_count);
+        active_count,tcp_open_count(),curl_socket_count,
+        policy_blocked_queries,policy_blocked_aliases,
+        domain_policy?domain_policy->deny.count:0,domain_policy?domain_policy->allow.count:0,
+        domain_policy?domain_policy->generation:0,domain_policy?domain_policy->bytes:0,
+        policy_age,policy_reload_ok,policy_reload_failed);
     if(n<0 || (size_t)n>=sizeof(body)) {close_metric(c);return;}
     METRIC("HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\n"
            "Connection: close\r\nContent-Length: %d\r\n\r\n",n);
@@ -1574,6 +1766,11 @@ static void usage(FILE *stream,const char *program) {
             "  --doh-connect-ms MS          Upstream connection deadline, %d..%d (default %d)\n"
             "  --doh-timeout-ms MS          Total upstream deadline, %d..%d (default %d)\n"
             "  --cache-entries N            In-memory DNS cache slots, 0..%d (default disabled)\n"
+            "  --blocklist FILE             Domain/hosts denylist; repeat up to 64 total files\n"
+            "  --allowlist FILE             Domain/hosts exceptions; repeatable\n"
+            "  --block-response MODE        refused (default), nxdomain, nodata or null\n"
+            "  --blocklist-reload-ms MS     Background file checks, 0 disables (default 5000)\n"
+            "  --check-blocklists           Validate lists and exit without opening listeners\n"
             "  --udp-reply-max BYTES        UDP reply cap, 512..%d (default %d)\n"
             "  -V, --version                Show DNSProxy version and libcurl capabilities\n"
             "  -h, --help                   Show this help\n",
@@ -1586,7 +1783,7 @@ static int dnsp_run(int argc,char **argv) {
     const char *bindips[MAX_LISTENERS]={"127.0.0.1"},*bootstrap_address=NULL;
     size_t bind_count=0;
     const char *backup_address=NULL;
-    bool prefer_h3=false;
+    bool prefer_h3=false,check_policy=false,policy_options=false,has_deny=false;
     int port=5300,metrics_port=0;
     int max_host_connections=8;
     primary.url="https://cloudflare-dns.com/dns-query";
@@ -1608,6 +1805,26 @@ static int dnsp_run(int argc,char **argv) {
         else if(!strcmp(argv[i],"-m") && i+1<argc) metrics_port=(int)parse_range(argv[++i],1,65535);
         else if(!strcmp(argv[i],"--ca-file") && i+1<argc) ca_file=argv[++i];
         else if(!strcmp(argv[i],"--edns-padding")) edns_padding=true;
+        else if((!strcmp(argv[i],"--blocklist") || !strcmp(argv[i],"--allowlist")) && i+1<argc) {
+            bool allow=!strcmp(argv[i],"--allowlist");
+            if(policy_config.count==POLICY_MAX_FILES) {fprintf(stderr,"too many policy files (maximum 64)\n");return 2;}
+            policy_config.file[policy_config.count++]=(PolicySource){.path=argv[++i],.allow=allow};
+            if(!allow) has_deny=true;
+        }
+        else if(!strcmp(argv[i],"--check-blocklists")) check_policy=true;
+        else if(!strcmp(argv[i],"--block-response") && i+1<argc) {
+            const char *mode=argv[++i];policy_options=true;
+            if(!strcmp(mode,"refused")) block_mode=BLOCK_REFUSED;
+            else if(!strcmp(mode,"nxdomain")) block_mode=BLOCK_NXDOMAIN;
+            else if(!strcmp(mode,"nodata")) block_mode=BLOCK_NODATA;
+            else if(!strcmp(mode,"null")) block_mode=BLOCK_NULL;
+            else {fprintf(stderr,"invalid --block-response\n");return 2;}
+        }
+        else if(!strcmp(argv[i],"--blocklist-reload-ms") && i+1<argc) {
+            long ms=parse_range(argv[++i],0,86400000);policy_options=true;
+            if(ms<0 || (ms>0 && ms<100)) {fprintf(stderr,"--blocklist-reload-ms requires 0 or 100..86400000\n");return 2;}
+            policy_reload_ms=(uint64_t)ms;
+        }
         else if(!strcmp(argv[i],"--upstream-http") ||
                 !strncmp(argv[i],"--upstream-http=",sizeof("--upstream-http=")-1)) {
             const char *mode=strchr(argv[i],'=');
@@ -1650,6 +1867,18 @@ static int dnsp_run(int argc,char **argv) {
         else {usage(stderr,argv[0]);return 2;}
     }
     if(!bind_count) bind_count=1;
+    if(!has_deny && (policy_config.count || check_policy || policy_options)) {
+        fprintf(stderr,"policy options require at least one --blocklist\n");return 2;
+    }
+    if(check_policy) {
+        char error[256];atomic_bool cancel=false;
+        if(!init_curl()) return 1;
+        Policy *checked=policy_load(&policy_config,&cancel,error);
+        if(checked) printf("blocklist_entries=%zu allowlist_entries=%zu memory_bytes=%zu input_entries=%zu\n",
+            checked->deny.count,checked->allow.count,checked->bytes,checked->parsed);
+        else fprintf(stderr,"blocklist validation failed: %s\n",error);
+        int result=checked?0:2;policy_free(checked);curl_global_cleanup();return result;
+    }
     if(port<0 || metrics_port<0 || metrics_port==port) {
         fprintf(stderr,"invalid port\n");return 2;
     }
@@ -1665,6 +1894,11 @@ static int dnsp_run(int argc,char **argv) {
     if(!dnsp_service_active() && !dnsp_install_handlers(stop_now,request_report)) {
         fprintf(stderr,"level=error event=control_handler\n");return 1;
     }
+#ifndef _WIN32
+    struct sigaction reload_action={.sa_handler=request_reload,.sa_flags=SA_RESTART};
+    sigemptyset(&reload_action.sa_mask);
+    if(sigaction(SIGHUP,&reload_action,NULL)!=0) {fprintf(stderr,"cannot install reload handler\n");return 1;}
+#endif
     if(!init_curl()) return 1;
     const curl_version_info_data *curl_info=curl_version_info(CURLVERSION_NOW);
     upstream_http_version=select_http_version(curl_info?curl_info->features:0,
@@ -1701,6 +1935,15 @@ static int dnsp_run(int argc,char **argv) {
     if(cache_entries && !(answer_cache=calloc(cache_entries,sizeof(*answer_cache)))) {
         fprintf(stderr,"level=error event=cache_allocation\n");
         goto cleanup;
+    }
+    if(policy_config.count) {
+        char error[256];atomic_bool cancel=false;
+        domain_policy=policy_load(&policy_config,&cancel,error);
+        if(!domain_policy) {fprintf(stderr,"level=error event=blocklist_load message=%s\n",error);exitcode=2;goto cleanup;}
+        domain_policy->generation=1;domain_policy->loaded_ms=dnsp_clock_ms(true);
+        policy_next_check=clock_ms()+policy_reload_ms;
+        fprintf(stderr,"level=info event=blocklist_load generation=1 deny=%zu allow=%zu bytes=%zu\n",
+            domain_policy->deny.count,domain_policy->allow.count,domain_policy->bytes);
     }
 #define MULTI_OPT(key,val) do { \
     CURLMcode code=curl_multi_setopt(multi,key,val); \
@@ -1745,6 +1988,7 @@ static int dnsp_run(int argc,char **argv) {
     while(!stopping) {
         if(!dnsp_service_tick()) {exitcode=1;break;}
         uint64_t now=clock_ms();
+        policy_tick(now);
         if(atomic_load_explicit(&report_requested,memory_order_relaxed)) {
             atomic_store_explicit(&report_requested,false,memory_order_relaxed);
             for(size_t i=0;i<bind_count;i++)
@@ -1779,6 +2023,11 @@ static int dnsp_run(int argc,char **argv) {
         }
 #undef ADD
         int timeout=1000; /* signals and client idle expiry */
+        if(policy_worker.running) timeout=25;
+        else if(domain_policy && policy_reload_ms) {
+            uint64_t left=now>=policy_next_check?0:policy_next_check-now;
+            if(left<(uint64_t)timeout) timeout=(int)left;
+        }
         if(curl_deadline>=0) {
             int64_t left=curl_deadline-(int64_t)now;
             if(left<0) left=0;
@@ -1835,6 +2084,12 @@ static int dnsp_run(int argc,char **argv) {
         }
     }
 cleanup:
+    if(policy_worker.running) {
+        atomic_store_explicit(&policy_worker.cancel,true,memory_order_relaxed);
+        policy_worker_join(&policy_worker);
+    }
+    policy_free(policy_worker.candidate);policy_worker.candidate=NULL;
+    policy_free(domain_policy);domain_policy=NULL;
     free(items);free(pfds);
     for(size_t i=0;i<MAX_CLIENTS;i++) close_client(&clients[i]);
     for(size_t i=0;i<MAX_METRICS_CLIENTS;i++) close_metric(&metric_clients[i]);
@@ -1863,6 +2118,7 @@ int wmain(int argc,wchar_t **wide) {
         if(!size || !(argv[i]=malloc((size_t)size)) ||
            !WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,wide[i],-1,argv[i],size,NULL,NULL)) goto done;
     }
+    dnsp_service_reload=request_reload;
     result=argc>1 && !strcmp(argv[1],"--service") ? dnsp_service_dispatch(argc,argv,dnsp_run,stop_now) : dnsp_run(argc,argv);
 done:
     for(int i=0;i<argc;i++) free(argv[i]);

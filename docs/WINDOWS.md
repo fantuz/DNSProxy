@@ -172,6 +172,12 @@ intentional stops, port conflicts, both portable launchers, and uninstall.
 
 ## Portability and validation overview
 
+Optional domain/hosts filtering uses the shared C implementation. Install with
+`-BlocklistFile` and optional `-AllowlistFile`; the installer copies and validates
+the lists inside its protected `policy` directory. See [blocklists](BLOCKLISTS.md)
+for formats, reply modes, automatic reloads, SCM control and the optional Python updater.
+
+
 | Area | Windows PoC |
 | --- | --- |
 | DNS wire parsing, all RR types, EDNS, padding and reply limits | Shared C implementation |
