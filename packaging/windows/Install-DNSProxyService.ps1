@@ -10,6 +10,7 @@ param(
     [string[]]$BlocklistFile = @(),
     [string[]]$AllowlistFile = @(),
     [ValidateSet('refused','nxdomain','nodata','null')][string]$BlockResponse = 'refused',
+    [ValidateRange(0,86400000)][ValidateScript({ $_ -eq 0 -or $_ -ge 100 })][int]$BlocklistReloadMs = 5000,
     [switch]$NoStart
 )
 $ErrorActionPreference = 'Stop'
@@ -88,7 +89,7 @@ try {
     $command = '"{0}" --service {1} --service-log "{2}" -p {3} -s {4} --bootstrap-address {5} --cache-entries 256' -f $binary,$ServiceName,$log,$Port,$Upstream,$BootstrapAddress
     foreach ($address in $ListenAddress) { $command += ' -l ' + $address }
     foreach ($argument in $policyArgs) { $command += ' "' + $argument + '"' }
-    if ($sources.Count) { $command += ' --block-response ' + $BlockResponse }
+    if ($sources.Count) { $command += ' --block-response ' + $BlockResponse + ' --blocklist-reload-ms ' + $BlocklistReloadMs }
     $credential = New-Object Management.Automation.PSCredential('NT AUTHORITY\LocalService', (New-Object Security.SecureString))
     $controller = New-Service -Name $ServiceName -BinaryPathName $command -StartupType Automatic -Credential $credential -DisplayName "DNSProxy ($ServiceName)"
     $created = $true

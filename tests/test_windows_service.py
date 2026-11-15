@@ -57,7 +57,7 @@ class ServiceTests(unittest.TestCase):
                     if policy:
                         blocklist = source.parent/'domains.txt'
                         blocklist.write_text('ads.example\n')
-                        args += f' -BlocklistFile {self.quoted(blocklist)}'
+                        args += f' -BlocklistFile {self.quoted(blocklist)} -BlocklistReloadMs 0'
                     self.ps(f'& {script} {args}')
                     yield name, source
                 finally:
@@ -83,7 +83,8 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(exchange(53, question())[3] & 15, 5)
             before = self.ps(f"(Get-CimInstance Win32_Service -Filter \"Name='{name}'\").ProcessId").stdout.strip()
             path = Path(os.environ['ProgramFiles'])/name/'policy/list-0.txt'
-            self.ps(f"[IO.File]::WriteAllText({self.quoted(path)}, 'different.example'); (Get-Service {name}).ExecuteCommand(6)")
+            self.ps(f"[IO.File]::WriteAllText({self.quoted(path)}, 'different.example'); "
+                    f"& sc.exe control {name} paramchange; if ($LASTEXITCODE) {{ throw 'SCM reload request failed' }}")
             deadline = time.monotonic() + 8
             while time.monotonic() < deadline:
                 if exchange(53, question())[3] & 15 == 0:

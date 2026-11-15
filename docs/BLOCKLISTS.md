@@ -133,7 +133,7 @@ Linux unit also supports `systemctl reload dnsp-modern`. Reloading a process
 without filtering enabled is harmless. For an installed Windows service:
 
 ```powershell
-(Get-Service DNSProxy).ExecuteCommand(6) # SERVICE_CONTROL_PARAMCHANGE
+sc.exe control DNSProxy paramchange
 ```
 
 These commands acknowledge a request, not successful publication. Confirm the
@@ -203,6 +203,11 @@ them; administrators update those installed copies. Example:
 ```powershell
 .\Install-DNSProxyService.ps1 -BlocklistFile 'C:\Lists\domains.txt' -AllowlistFile 'C:\Lists\allow.txt'
 ```
+
+`-BlocklistReloadMs 0` disables automatic checks while retaining manual service
+reloads. Use `sc.exe` for PARAMCHANGE: .NET `ServiceController.ExecuteCommand`
+requests a user-defined-control handle, which lacks the access right needed
+for this standard service control.
 
 macOS: append policy options to the existing native helper installation:
 
