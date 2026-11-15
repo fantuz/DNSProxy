@@ -20,6 +20,9 @@ name: DNSProxy modern - test and package
 permissions:
   contents: read
 
+env:
+  DNSP_REQUIRE_IPV6: '1'
+
 jobs:
   prepare-release:
     name: Prepare the manual release commit
