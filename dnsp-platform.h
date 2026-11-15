@@ -27,6 +27,13 @@
 #include <mswsock.h>
 #include <windows.h>
 #include <wchar.h>
+#if defined(__clang__) && defined(__MINGW32__)
+/* MinGW's offsetof-based TYPE_ALIGNMENT defines an anonymous type, which
+ * recent Clang diagnoses as a C23 extension at WSA_CMSG_* expansion sites.
+ * Use C11's alignment operator with the same native Winsock layout. */
+#undef TYPE_ALIGNMENT
+#define TYPE_ALIGNMENT(type) _Alignof(type)
+#endif
 #define strcasecmp _stricmp
 #define strncasecmp _strnicmp
 typedef int dnsp_socklen_t;

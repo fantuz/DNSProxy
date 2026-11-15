@@ -597,7 +597,9 @@ class Tests(unittest.TestCase):
                             break
                         except socket.timeout:
                             continue
-                        except ConnectionResetError:
+                        # Winsock may report WSAECONNABORTED instead of reset
+                        # when the peer closes a partially assembled frame.
+                        except (ConnectionResetError, ConnectionAbortedError):
                             break
                     else:
                         self.fail('partial reads kept the frame assembly deadline alive')

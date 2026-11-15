@@ -5,14 +5,37 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import zipfile
+
+
+MACHINES = {'amd64': 0x8664, 'arm64': 0xaa64}
+
+
+def check_machine(path, architecture):
+    """Reject mislabeled EXEs and mixed-architecture third-party DLLs."""
+    with path.open('rb') as stream:
+        dos = stream.read(64)
+        if len(dos) != 64 or dos[:2] != b'MZ':
+            raise ValueError(f'Invalid DOS/PE header: {path.name}')
+        offset = struct.unpack_from('<I', dos, 60)[0]
+        if offset < 64 or offset > path.stat().st_size - 26:
+            raise ValueError(f'Invalid PE offset: {path.name}')
+        stream.seek(offset)
+        pe = stream.read(26)
+    if pe[:4] != b'PE\0\0' or struct.unpack_from('<H', pe, 24)[0] != 0x20b:
+        raise ValueError(f'Expected a PE32+ executable: {path.name}')
+    machine = struct.unpack_from('<H', pe, 4)[0]
+    if machine != MACHINES[architecture]:
+        raise ValueError(f'{path.name}: expected {architecture}, found PE machine 0x{machine:04x}')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prefix', type=Path, required=True)
     parser.add_argument('--directory', type=Path, required=True)
+    parser.add_argument('--arch', choices=MACHINES, required=True)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     dest = args.directory.resolve()
@@ -22,6 +45,7 @@ def main():
     seen = set()
     while pending:
         binary = pending.pop()
+        check_machine(binary, args.arch)
         imports = subprocess.check_output(['objdump', '-p', str(binary)], text=True)
         for name in re.findall(r'DLL Name:\s*(\S+)', imports):
             key = name.lower()
@@ -47,8 +71,9 @@ def main():
     packages = subprocess.check_output(['pacman', '-Q'], text=True)
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
     version = (root/'VERSION').read_text().strip()
+    target = 'x86-64 / UCRT64' if args.arch == 'amd64' else 'ARM64 / CLANGARM64'
     (dest/'BUILD-INFO.txt').write_text(
-        f'DNSProxy {version}\nSource commit: {commit}\nTarget: native Windows x86-64 / UCRT64\n'
+        f'DNSProxy {version}\nSource commit: {commit}\nTarget: native Windows {target}\n'
         'Build package versions (MSYS2):\n' + packages +
         '\nDependency source packages and build recipes:\n'
         'https://packages.msys2.org/\nhttps://repo.msys2.org/mingw/sources/\n'
@@ -57,7 +82,7 @@ def main():
     (dest/'SHA256SUMS').write_text(''.join(
         f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(dest).as_posix()}\n'
         for p in files), encoding='utf-8')
-    archive = dest.parent/f'dnsp-modern-{version}-windows-amd64-poc.zip'
+    archive = dest.parent/f'dnsp-modern-{version}-windows-{args.arch}-poc.zip'
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as package:
         for path in sorted(dest.rglob('*')):
             if path.is_file():

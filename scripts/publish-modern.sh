@@ -41,7 +41,9 @@ done
 for arch in x86_64 aarch64; do
     packages+=("dnsp-modern-${version}-1.el9.${arch}.rpm")
 done
-packages+=("dnsp-modern-${version}-windows-amd64-poc.zip")
+for arch in amd64 arm64; do
+    packages+=("dnsp-modern-${version}-windows-${arch}-poc.zip")
+done
 for arch in x86_64 arm64; do
     packages+=("dnsp-modern-${version}-macos-${arch}.tar.gz")
 done

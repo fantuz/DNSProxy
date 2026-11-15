@@ -12,7 +12,7 @@ END = "<!-- dnsp-downloads:end -->"
 VERSION = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 
 
-def downloads(version, repository, *, macos=True):
+def downloads(version, repository, *, macos=True, windows_arm64=True):
     if not re.fullmatch(VERSION, version):
         raise ValueError("Expected a MAJOR.MINOR.PATCH release version")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
@@ -29,7 +29,8 @@ def downloads(version, repository, *, macos=True):
              "Choose your operating system and processor architecture:", "",
              "| Platform | x86-64 / amd64 | ARM64 / aarch64 |",
              "| --- | --- | --- |",
-             "| Windows (PoC) | " + asset("**Portable ZIP**", f"dnsp-modern-{version}-windows-amd64-poc.zip") + " | Not available |"]
+             "| Windows (PoC) | " + asset("**Portable ZIP**", f"dnsp-modern-{version}-windows-amd64-poc.zip") + " | " +
+             (asset("**ARM64 ZIP**", f"dnsp-modern-{version}-windows-arm64-poc.zip") if windows_arm64 else "Not available") + " |"]
     if macos:
         links = [asset(label, f"dnsp-modern-{version}-macos-{arch}.tar.gz")
                  for label, arch in (("**Intel archive**", "x86_64"), ("**Apple Silicon archive**", "arm64"))]
@@ -45,7 +46,8 @@ def downloads(version, repository, *, macos=True):
     lines.append(f"| Rocky Linux 9 | {' | '.join(links)} |")
     checksums = asset("SHA256SUMS", "SHA256SUMS")
     lines.extend(["",
-                  "**Windows:** extract the entire ZIP and double-click **Start-DNSProxy.cmd**. "
+                  "**Windows:** choose the ZIP matching your system type (amd64 or ARM64), "
+                  "extract the entire ZIP and double-click **Start-DNSProxy.cmd**. "
                   "Keep the EXE, DLLs and certificate bundle together."])
     if macos:
         lines.extend(["", "**macOS:** extract the archive into its own folder and run **Start-DNSProxy.command**. "
@@ -67,7 +69,8 @@ def refresh(release, repository):
     # Older releases have no macOS packages. Never add broken links to them;
     # if either architecture is present, require the complete pair.
     macos = any(name.endswith(("-macos-x86_64.tar.gz", "-macos-arm64.tar.gz")) for name in available)
-    block, expected = downloads(match.group(1), repository, macos=macos)
+    windows_arm64 = any(name.endswith('-windows-arm64-poc.zip') for name in available)
+    block, expected = downloads(match.group(1), repository, macos=macos, windows_arm64=windows_arm64)
     missing = expected - available
     if missing:
         raise ValueError("Release is missing downloads: " + ", ".join(sorted(missing)))
