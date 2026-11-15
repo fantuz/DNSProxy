@@ -34,6 +34,10 @@ class ReleaseTests(unittest.TestCase):
         self.git("add", ".")
         self.git("commit", "-qm", "Base commit")
         self.base = self.git("rev-parse", "HEAD")
+        # A manual release changes VERSION on a detached child of master.
+        self.git("checkout", "-q", "--detach", self.base)
+        (self.repo / "VERSION").write_text("0.3.7\n")
+        self.git("commit", "-qm", "Previous manual release", "--", "VERSION")
         self.git("tag", "--no-sign", "-a", "-m", "Previous tag", "v0.3.7-modern")
         self.git("push", "-q", "origin", "master", "v0.3.7-modern")
         self.git("checkout", "-q", "--detach", self.base)
@@ -99,6 +103,7 @@ class ReleaseTests(unittest.TestCase):
         gh.write_text('''#!/bin/sh
 case "$2" in
     view) test -f "$TEST_RELEASE" && printf 'false\\n' ;;
+    list) printf 'v0.3.7-modern\\n' ;;
     create)
         printf '%s\\n' "$@" >> "$TEST_CREATE_ARGS"
         previous=
@@ -141,6 +146,8 @@ esac
         self.assertEqual(arguments.count("create"), 2)
         self.assertEqual(arguments.count("--prerelease=false"), 2)
         self.assertEqual(arguments.count("--generate-notes"), 2)
+        self.assertEqual(arguments.count("--notes-start-tag"), 2)
+        self.assertEqual(arguments.count("v0.3.7-modern"), 2)
         self.assertEqual(arguments.count("--notes-file"), 2)
         notes = (self.root / "notes.md").read_text()
         self.assertTrue(notes.startswith("<!-- dnsp-downloads:start -->\n## Downloads\n"))
@@ -155,6 +162,55 @@ esac
         self.assertEqual(sorted(line.split("  ", 1)[1] for line in checksums), expected_packages)
         self.script("publish-modern.sh", assets, FAIL_PUBLICATION="true", **publish)
         self.assertEqual(create_args.read_text(), attempts)
+
+    def test_first_published_release_needs_no_changelog_baseline(self):
+        prepared = self.script("prepare-release.sh")["commit"]
+        gh = self.root / "gh"
+        gh.write_text('''#!/bin/sh
+case "$2" in
+    view) exit 1 ;;
+    list) exit 0 ;;
+    create) printf '%s\\n' "$@" > "$TEST_CREATE_ARGS" ;;
+    *) exit 2 ;;
+esac
+''')
+        gh.chmod(0o755)
+        args = self.root / "create-args"
+        self.script("publish-modern.sh", self.packages(self.root / "packages"),
+                    PATH=f"{self.root}:{os.environ['PATH']}", TEST_CREATE_ARGS=str(args),
+                    RELEASE_MODE="manual", RELEASE_TAG="v0.3.8-modern", RELEASE_COMMIT=prepared)
+        arguments = args.read_text().splitlines()
+        self.assertIn("--generate-notes", arguments)
+        self.assertNotIn("--notes-start-tag", arguments)
+        self.assertEqual(self.ref(self.tag), prepared)
+
+    def test_baseline_lookup_errors_never_tag_or_publish(self):
+        prepared = self.script("prepare-release.sh")["commit"]
+        gh = self.root / "gh"
+        gh.write_text('''#!/bin/sh
+case "$2" in
+    view) exit 1 ;;
+    list)
+        test "$TEST_LIST_FAILURE" = false || exit 42
+        printf '%s\\n' "$TEST_PREVIOUS_TAG"
+        ;;
+    *) touch "$TEST_UNEXPECTED_CALL" ;;
+esac
+''')
+        gh.chmod(0o755)
+        unexpected = self.root / "unexpected-call"
+        assets = self.packages(self.root / "packages")
+        for previous, failure in (("v0.3.7-modern", "true"), ("v0.3.5-modern", "false"),
+                                  ("not-a-release", "false"), ("v0.3.8-modern", "false"),
+                                  ("v0.3.9-modern", "false")):
+            with self.subTest(previous=previous, failure=failure):
+                self.script("publish-modern.sh", assets, succeeds=False,
+                            PATH=f"{self.root}:{os.environ['PATH']}", TEST_PREVIOUS_TAG=previous,
+                            TEST_LIST_FAILURE=failure, TEST_UNEXPECTED_CALL=str(unexpected),
+                            RELEASE_MODE="manual", RELEASE_TAG="v0.3.8-modern", RELEASE_COMMIT=prepared)
+                self.assertIsNone(self.ref(self.tag))
+                self.assertEqual(self.ref(self.stage), prepared)
+                self.assertFalse(unexpected.exists())
 
     def test_refresh_download_table_preserves_changelog(self):
         packages = self.packages(self.root / "packages")

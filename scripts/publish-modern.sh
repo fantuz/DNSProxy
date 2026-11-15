@@ -72,6 +72,23 @@ if draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null); the
     fi
 else
     draft=
+    # Manual version commits are siblings of master, so ancestry-based release
+    # note discovery can skip the previous release. Select the published baseline.
+    previous_tag=$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 \
+        --json tagName --jq '.[0].tagName // empty')
+    notes_args=(--generate-notes)
+    if [[ -n "$previous_tag" ]]; then
+        previous_version=${previous_tag#v}
+        previous_version=${previous_version%-modern}
+        if [[ "$previous_tag" != "v${previous_version}-modern" ]] ||
+           ! valid_release_version "$previous_version" ||
+           ! dpkg --compare-versions "$previous_version" lt "$version" ||
+           [[ -z "$(release_ref_commit "refs/tags/$previous_tag" <<< "$refs")" ]]; then
+            echo "Invalid published release baseline: $previous_tag" >&2
+            exit 1
+        fi
+        notes_args+=(--notes-start-tag "$previous_tag")
+    fi
     if [[ -z "$target" && "$RELEASE_MODE" != tag ]]; then
         if [[ "$RELEASE_MODE" == manual ]]; then
             latest=$(latest_release_version <<< "$refs")
@@ -106,7 +123,7 @@ else
     (
         cd "$assets"
         gh release create "$tag" "${packages[@]}" SHA256SUMS --verify-tag \
-            --title "DNSProxy Modern $version" --prerelease=false --generate-notes \
+            --title "DNSProxy Modern $version" --prerelease=false "${notes_args[@]}" \
             --notes-file "$notes"
     )
 fi
