@@ -64,7 +64,10 @@ class MacServiceTests(unittest.TestCase):
                 worker.start()
                 installed = False
                 try:
-                    self.helper('install', f'https://localhost:{server.server_port}/dns-query', '127.0.0.1', str(cert))
+                    blocklist = Path(directory)/'domains.txt'
+                    blocklist.write_text('ads.example\n')
+                    self.helper('install', f'https://localhost:{server.server_port}/dns-query', '127.0.0.1', str(cert),
+                                '--blocklist', str(blocklist))
                     installed = True
                     log = Path('/var/log/dnsp-modern.log').stat()
                     self.assertEqual(log.st_uid, 0)
@@ -78,6 +81,21 @@ class MacServiceTests(unittest.TestCase):
                     self.assert_dns()
                     pid = self.pid()
                     self.assertGreater(pid, 0)
+                    from test_policy import question, exchange
+                    self.assertEqual(exchange(53, question())[3] & 15, 5)
+                    copied = ROOT/'policy-0.txt'
+                    self.assertEqual(stat.S_IMODE(copied.stat().st_mode), 0o644)
+                    blocklist.write_text('different.example\n')
+                    subprocess.run(['sudo', 'cp', str(blocklist), str(copied)], check=True)
+                    subprocess.run(['sudo', 'kill', '-HUP', str(pid)], check=True)
+                    deadline = time.monotonic() + 8
+                    while time.monotonic() < deadline:
+                        if exchange(53, question())[3] & 15 == 0:
+                            break
+                        time.sleep(0.05)
+                    else:
+                        self.fail('launchd service policy did not reload')
+                    self.assertEqual(self.pid(), pid)
                     identity = subprocess.check_output(['ps', '-o', 'user=', '-p', str(pid)], text=True).strip()
                     self.assertEqual(identity, 'nobody')
                     self.assertNotEqual(self.helper('install', check=False).returncode, 0)

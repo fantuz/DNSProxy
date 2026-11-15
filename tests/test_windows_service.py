@@ -36,7 +36,7 @@ class ServiceTests(unittest.TestCase):
         return "'" + str(path).replace("'", "''") + "'"
 
     @contextmanager
-    def installed(self):
+    def installed(self, policy=False):
         name = 'DNSProxy-CI-' + uuid.uuid4().hex[:10]
         source = Path(tempfile.mkdtemp())/'portable bundle'
         shutil.copytree(fixtures.BINARY.parent, source)
@@ -54,6 +54,10 @@ class ServiceTests(unittest.TestCase):
                 try:
                     script = self.quoted(source/'Install-DNSProxyService.ps1')
                     args = f"-ServiceName {name} -Upstream https://localhost:{server.server_port}/dns-query -BootstrapAddress 127.0.0.1"
+                    if policy:
+                        blocklist = source.parent/'domains.txt'
+                        blocklist.write_text('ads.example\n')
+                        args += f' -BlocklistFile {self.quoted(blocklist)}'
                     self.ps(f'& {script} {args}')
                     yield name, source
                 finally:
@@ -71,6 +75,25 @@ class ServiceTests(unittest.TestCase):
                     worker.join(timeout=3)
         finally:
             shutil.rmtree(source.parent)
+
+    def test_service_policy_copies_and_reloads_without_restart(self):
+        from test_policy import question, exchange
+
+        with self.installed(policy=True) as (name, _):
+            self.assertEqual(exchange(53, question())[3] & 15, 5)
+            before = self.ps(f"(Get-CimInstance Win32_Service -Filter \"Name='{name}'\").ProcessId").stdout.strip()
+            path = Path(os.environ['ProgramFiles'])/name/'policy/list-0.txt'
+            self.ps(f"[IO.File]::WriteAllText({self.quoted(path)}, 'different.example'); (Get-Service {name}).ExecuteCommand(6)")
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                if exchange(53, question())[3] & 15 == 0:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail('SCM policy reload did not take effect')
+            after = self.ps(f"(Get-CimInstance Win32_Service -Filter \"Name='{name}'\").ProcessId").stdout.strip()
+            self.assertEqual(after, before)
+            self.assert_dns()
 
     def assert_dns(self):
         packet = fixtures.query(28)

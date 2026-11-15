@@ -17,6 +17,7 @@ static char **dnsp_service_argv;
 static int dnsp_service_argc,dnsp_service_result=1;
 static int (*dnsp_service_run)(int,char**);
 static void (*dnsp_service_stop)(int);
+static void (*dnsp_service_reload)(int);
 
 static wchar_t *dnsp_utf16(const char *text) {
     int count=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text,-1,NULL,0);
@@ -28,7 +29,8 @@ static bool dnsp_service_active(void) {return dnsp_as_service;}
 static bool dnsp_service_status_locked(DWORD state,DWORD error) {
     dnsp_service_status.dwServiceType=SERVICE_WIN32_OWN_PROCESS;
     dnsp_service_status.dwCurrentState=state;
-    dnsp_service_status.dwControlsAccepted=state==SERVICE_RUNNING?SERVICE_ACCEPT_STOP|SERVICE_ACCEPT_SHUTDOWN:0;
+    dnsp_service_status.dwControlsAccepted=state==SERVICE_RUNNING?
+        SERVICE_ACCEPT_STOP|SERVICE_ACCEPT_SHUTDOWN|(dnsp_service_reload?SERVICE_ACCEPT_PARAMCHANGE:0):0;
     dnsp_service_status.dwWin32ExitCode=error?ERROR_SERVICE_SPECIFIC_ERROR:NO_ERROR;
     dnsp_service_status.dwServiceSpecificExitCode=error;
     dnsp_service_status.dwWaitHint=(state==SERVICE_START_PENDING || state==SERVICE_STOP_PENDING)?10000:0;
@@ -43,6 +45,8 @@ static DWORD WINAPI dnsp_service_control(DWORD control,DWORD type,void *data,voi
         dnsp_service_stop(0);
         if(dnsp_service_status.dwCurrentState==SERVICE_RUNNING)
             (void)dnsp_service_status_locked(SERVICE_STOP_PENDING,0);
+    } else if(control==SERVICE_CONTROL_PARAMCHANGE && dnsp_service_reload) {
+        dnsp_service_reload(0);
     } else if(control==SERVICE_CONTROL_INTERROGATE) {
         if(dnsp_service_status.dwCurrentState!=SERVICE_STOPPED)
             (void)SetServiceStatus(dnsp_service_handle,&dnsp_service_status);

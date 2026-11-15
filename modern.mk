@@ -2,23 +2,26 @@ CC ?= cc
 CFLAGS ?= -O2 -g
 PKG_CONFIG ?= pkg-config
 CURL_FLAGS := $(shell $(PKG_CONFIG) --cflags --libs libcurl)
+THREAD_FLAGS ?= -pthread
 DNSP_BUILD_VERSION := $(shell sed -nE '/^[0-9]+\.[0-9]+\.[0-9]+$$/p' VERSION)
 
 .PHONY: all modern-check clean
 all: dnsp-modern
 
-dnsp-modern: dnsp-modern.c dnsp-platform.h dnsp-service.h modern.mk VERSION
-	$(CC) $(CPPFLAGS) -DDNSP_VERSION='"$(DNSP_BUILD_VERSION)"' -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic $(LDFLAGS) -o $@ $< $(CURL_FLAGS) $(LDLIBS)
+dnsp-modern: dnsp-modern.c dnsp-platform.h dnsp-service.h dnsp-policy.h modern.mk VERSION
+	$(CC) $(CPPFLAGS) -DDNSP_VERSION='"$(DNSP_BUILD_VERSION)"' -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic $(LDFLAGS) -o $@ $< $(CURL_FLAGS) $(THREAD_FLAGS) $(LDLIBS)
 
 modern-check: dnsp-modern
 	@set -e; probe=$$(mktemp); trap 'rm -f "$$probe"' 0; \
-	$(CC) $(CPPFLAGS) -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic $(LDFLAGS) -o "$$probe" tests/test_curl_callbacks.c $(CURL_FLAGS) $(LDLIBS); \
+	$(CC) $(CPPFLAGS) -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic $(LDFLAGS) -o "$$probe" tests/test_curl_callbacks.c $(CURL_FLAGS) $(THREAD_FLAGS) $(LDLIBS); \
 	"$$probe"; \
-	$(CC) $(CPPFLAGS) -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic $(LDFLAGS) -o "$$probe" tests/test_platform.c $(CURL_FLAGS) $(LDLIBS); \
+	$(CC) $(CPPFLAGS) -std=c11 $(CFLAGS) -Wall -Wextra -Wpedantic $(LDFLAGS) -o "$$probe" tests/test_platform.c $(CURL_FLAGS) $(THREAD_FLAGS) $(LDLIBS); \
 	"$$probe"
 	python3 tests/test_modern.py
 	python3 tests/test_ipv6.py
 	python3 tests/test_linux_dns.py
+	python3 tests/test_policy.py
+	python3 tests/test_policy_updater.py
 
 clean:
 	rm -f dnsp-modern
@@ -36,7 +39,7 @@ modern-fuzz:
 	@set -eu; run=$$(mktemp -d); trap 'rm -rf "$$run"' 0; \
 	$(FUZZ_CC) $(CPPFLAGS) -std=c11 -O1 -g -Wall -Wextra -Wpedantic \
 		-fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer \
-		$(LDFLAGS) -o "$$run/fuzz-dns" tests/fuzz_dns.c $(CURL_FLAGS) $(LDLIBS); \
+		$(LDFLAGS) -o "$$run/fuzz-dns" tests/fuzz_dns.c $(CURL_FLAGS) $(THREAD_FLAGS) $(LDLIBS); \
 	python3 tests/make_fuzz_corpus.py "$$run/corpus"; \
 	"$$run/fuzz-dns" "$$run/corpus" -max_total_time=$(FUZZ_SECONDS) -max_len=65536 -timeout=5
 

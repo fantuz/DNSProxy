@@ -85,16 +85,16 @@ jobs:
             esac
           }
 
-          common=(dnsp-modern.c dnsp-platform.h dnsp-service.h modern.mk VERSION .github/workflows/dnsp-modern.yml)
+          common=(dnsp-modern.c dnsp-platform.h dnsp-service.h dnsp-policy.h modern.mk VERSION .github/workflows/dnsp-modern.yml)
           check_paths codeql "${common[@]}" .github/workflows/codeql.yml
           check_paths fuzz "${common[@]}" tests/fuzz_dns.c tests/make_fuzz_corpus.py \
             tests/test_modern.py .github/workflows/dnsp-modern-fuzz.yml
           check_paths protocols "${common[@]}" bench/ tests/test_benchmark.py tests/test_http3.py \
             tests/test_modern.py .github/workflows/dnsp-modern-benchmark.yml
           check_paths windows "${common[@]}" bench/ tests/ packaging/windows/ docs/WINDOWS.md \
-            scripts/build-windows.sh scripts/bundle-windows.py .github/workflows/dnsp-modern-windows.yml
+            scripts/build-windows.sh scripts/bundle-windows.py scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-windows.yml
           check_paths macos "${common[@]}" bench/ tests/ packaging/macos/ docs/MACOS.md \
-            scripts/build-macos.sh .github/workflows/dnsp-modern-macos.yml
+            scripts/build-macos.sh scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-macos.yml
 
   deb:
     needs: plan

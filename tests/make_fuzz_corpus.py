@@ -19,6 +19,14 @@ def main():
         'response': b'R' + response,
         'response-negative': b'R' + negative,
         'response-padded': b'R' + padded_response,
+        'policy-domain': b'Pads.example\n',
+        'policy-hosts': b'P0.0.0.0 ads.example other.example # comment\n',
+        'policy-suffix': b'P.blocked.example',
+        'policy-wildcard': b'P*.blocked.example',
+        'response-cname-policy': b'R' + QUERY[:2] + bytes.fromhex('81800001000100000000') +
+            QUERY[12:] + rr(5, b'\x03ads\x07example\0'),
+        'response-https-policy': b'R' + QUERY[:2] + bytes.fromhex('81800001000100000000') +
+            QUERY[12:] + rr(65, b'\0\x01\x03ads\x07example\0'),
         'headers-public': b'HHTTP/2 200\r\nAge: 7\r\nCache-Control: public, max-age=30\r\n'
         b'Date: Sun, 06 Nov 1994 08:49:37 GMT\r\nVary: Accept\r\n\r\n',
         'headers-private': b'HHTTP/1.1 200 OK\r\nCache-Control: private, no-store\r\n'

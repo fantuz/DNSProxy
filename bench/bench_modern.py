@@ -134,7 +134,7 @@ def percentile(sorted_values, percentile_value):
     return round(float(sorted_values[low]), 3)
 
 
-def one_load(port, concurrency, seconds):
+def one_load(port, concurrency, seconds, *, expected_rcode=0):
     """Closed-loop N-client UDP load using selectors, not N OS threads.
 
     One outstanding request per connected socket. All clients start together;
@@ -194,7 +194,7 @@ def one_load(port, concurrency, seconds):
                         errors += 1
                     elif answer[2]&0x02:
                         truncated += 1
-                    elif answer[3]&15:
+                    elif (answer[3]&15) != expected_rcode:
                         errors += 1
                     else:
                         samples.append(elapsed_us)

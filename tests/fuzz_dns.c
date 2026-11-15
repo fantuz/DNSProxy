@@ -20,6 +20,7 @@ static void fuzz_reply(const uint8_t *data,size_t size) {
                            .qtype=1,.qclass=1,.has_opt=true};
     DnsInfo info;
     if(dns_parse(data,size,&request,&info)!=DNS_OK) return;
+    (void)policy_aliases(data,size,&request,&info);
 
     unsigned char *wire=malloc(size);
     if(!wire) abort();
@@ -50,11 +51,29 @@ static void fuzz_headers(const uint8_t *data,size_t size) {
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data,size_t size) {
+    if(!domain_policy) {
+        domain_policy=calloc(1,sizeof(*domain_policy));
+        if(!domain_policy) abort();
+        char name[]="ads.example",error[128];
+        if(!policy_add(domain_policy,false,name,error,sizeof(error))) abort();
+    }
     if(!size) return 0;
     switch(data[0]) {
         case 'Q': fuzz_query(data+1,size-1);break;
         case 'R': fuzz_reply(data+1,size-1);break;
         case 'H': fuzz_headers(data+1,size-1);break;
+        case 'P': {
+            Policy *policy=calloc(1,sizeof(*policy));
+            if(!policy) abort();
+            char line[POLICY_LINE_MAX+1],error[128];
+            size_t n=size-1<sizeof(line)-1?size-1:sizeof(line)-1;
+            memcpy(line,data+1,n);line[n]=0;
+            char *newline=strchr(line,'\n');if(newline) *newline=0;
+            (void)policy_line(policy,false,line,error,sizeof(error));
+            policy_sort(&policy->deny);
+            (void)policy_blocked(policy,data+1,size-1);
+            policy_free(policy);break;
+        }
     }
     return 0;
 }

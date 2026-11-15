@@ -7,6 +7,9 @@ param(
     [string[]]$ListenAddress = @('127.0.0.1', '::1'),
     [string]$Upstream = 'https://cloudflare-dns.com/dns-query',
     [string]$BootstrapAddress = '1.1.1.1',
+    [string[]]$BlocklistFile = @(),
+    [string[]]$AllowlistFile = @(),
+    [ValidateSet('refused','nxdomain','nodata','null')][string]$BlockResponse = 'refused',
     [switch]$NoStart
 )
 $ErrorActionPreference = 'Stop'
@@ -21,6 +24,17 @@ foreach ($address in $ListenAddress) {
     if (-not [Net.IPAddress]::IsLoopback([Net.IPAddress]::Parse($address))) {
         throw 'The managed local service accepts loopback listeners only.'
     }
+}
+$sources = @($BlocklistFile) + @($AllowlistFile)
+if ($sources.Count -gt 64 -or ($AllowlistFile.Count -and -not $BlocklistFile.Count)) {
+    throw 'Use at least one blocklist and at most 64 policy files in total.'
+}
+$total = 0L
+foreach ($path in $sources) {
+    $item = Get-Item -LiteralPath $path
+    if ($item.PSIsContainer -or $item.PSProvider.Name -ne 'FileSystem') { throw 'Policy inputs must be regular files.' }
+    $total += $item.Length
+    if ($total -gt 64MB) { throw 'Policy files exceed 64 MiB in total.' }
 }
 $program = Join-Path $env:ProgramFiles $ServiceName
 $state = Join-Path $env:ProgramData $ServiceName
@@ -57,10 +71,24 @@ try {
     Protect-Directory $logs -ServiceWrite
     Get-ChildItem -LiteralPath $PSScriptRoot | Copy-Item -Destination $program -Recurse
     $binary = Join-Path $program 'dnsp-modern.exe'
+    $policyArgs = @()
+    if ($sources.Count) {
+        $policyDirectory = Join-Path $program 'policy'
+        $null = New-Item -ItemType Directory -Path $policyDirectory
+        for ($i=0; $i -lt $sources.Count; $i++) {
+            $target = Join-Path $policyDirectory "list-$i.txt"
+            Copy-Item -LiteralPath $sources[$i] -Destination $target
+            $policyArgs += $(if ($i -lt $BlocklistFile.Count) {'--blocklist'} else {'--allowlist'}), $target
+        }
+        & $binary @policyArgs --check-blocklists
+        if ($LASTEXITCODE) { throw 'Policy validation failed; no service was installed.' }
+    }
     $log = Join-Path $logs 'service.log'
     # Every configurable argument is validated above; paths are quoted separately.
     $command = '"{0}" --service {1} --service-log "{2}" -p {3} -s {4} --bootstrap-address {5} --cache-entries 256' -f $binary,$ServiceName,$log,$Port,$Upstream,$BootstrapAddress
     foreach ($address in $ListenAddress) { $command += ' -l ' + $address }
+    foreach ($argument in $policyArgs) { $command += ' "' + $argument + '"' }
+    if ($sources.Count) { $command += ' --block-response ' + $BlockResponse }
     $credential = New-Object Management.Automation.PSCredential('NT AUTHORITY\LocalService', (New-Object Security.SecureString))
     $controller = New-Service -Name $ServiceName -BinaryPathName $command -StartupType Automatic -Credential $credential -DisplayName "DNSProxy ($ServiceName)"
     $created = $true

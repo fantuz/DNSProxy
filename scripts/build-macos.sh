@@ -30,6 +30,7 @@ for executable in dnsp-modern dnsp-macos; do
 done
 cp LICENSE "$bundle/"
 cp docs/MACOS.md "$bundle/"
+cp docs/BLOCKLISTS.md scripts/update-blocklist.py "$bundle/"
 cp packaging/macos/Start-DNSProxy.command "$bundle/"
 chmod 755 "$bundle/Start-DNSProxy.command"
 {
@@ -39,7 +40,7 @@ chmod 755 "$bundle/Start-DNSProxy.command"
     "$compiler" --version
     otool -L "$bundle/dnsp-modern"
 } > "$bundle/BUILD-INFO.txt"
-(cd "$bundle" && shasum -a 256 dnsp-modern dnsp-macos Start-DNSProxy.command LICENSE MACOS.md BUILD-INFO.txt > SHA256SUMS)
+(cd "$bundle" && shasum -a 256 dnsp-modern dnsp-macos Start-DNSProxy.command LICENSE MACOS.md BLOCKLISTS.md update-blocklist.py BUILD-INFO.txt > SHA256SUMS)
 archive="dist/dnsp-modern-$version-macos-$arch.tar.gz"
 COPYFILE_DISABLE=1 tar -czf "$archive" -C "$bundle" .
 (cd dist && shasum -a 256 "$(basename "$archive")" > "$(basename "$archive").sha256")

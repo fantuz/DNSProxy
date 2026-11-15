@@ -131,6 +131,12 @@ case. The helper does not remove profiles or disable VPNs.
 
 ## Download approval and signing
 
+The native helper accepts `install --blocklist FILE --allowlist FILE` alongside
+the existing upstream/bootstrap/CA arguments. It copies and validates policy
+files for the unprivileged resolver. See [blocklists](BLOCKLISTS.md) for syntax,
+DNSSEC behaviour, automatic reloads and the optional Python update helper.
+
+
 These packages are not Developer ID signed or notarized. macOS may request
 approval before running a downloaded executable or command file. Follow
 [Apple's guidance for opening downloaded apps](https://support.apple.com/102445)
