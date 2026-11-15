@@ -55,6 +55,7 @@ jobs:
       protocols: ${{ steps.pr.outputs.protocols }}
       windows: ${{ steps.pr.outputs.windows }}
       macos: ${{ steps.pr.outputs.macos }}
+      gui: ${{ steps.pr.outputs.gui }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -95,6 +96,8 @@ jobs:
             scripts/build-windows.sh scripts/bundle-windows.py scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-windows.yml
           check_paths macos "${common[@]}" bench/ tests/ packaging/macos/ docs/MACOS.md \
             scripts/build-macos.sh scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-macos.yml
+          check_paths gui "${common[@]}" tools/linux-gui/ tests/test_gui_monitor.py tests/test_gui_gtk.py \
+            docs/LINUX-GUI.md docs/images/ .github/workflows/dnsp-linux-gui-poc.yml
 
   deb:
     needs: plan
@@ -298,10 +301,19 @@ jobs:
     with:
       ref: ${{ needs.plan.outputs.commit }}
 
+  gui:
+    needs: plan
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      github.event_name == 'pull_request' && needs.plan.outputs.gui == 'true'
+    uses: ./.github/workflows/dnsp-linux-gui-poc.yml
+    with:
+      ref: ${{ needs.plan.outputs.commit }}
+
   pr-checks:
     name: DNSProxy PR checks
     if: ${{ always() && github.event_name == 'pull_request' }}
-    needs: [plan, deb, debian, rpm, sanitizers, codeql, fuzz, protocols, windows, macos]
+    needs: [plan, deb, debian, rpm, sanitizers, codeql, fuzz, protocols, windows, macos, gui]
     runs-on: ubuntu-24.04
     permissions: {}
     steps:
@@ -316,7 +328,7 @@ jobs:
 
           jobs = json.loads(os.environ["JOB_RESULTS"])
           planned = jobs["plan"]["outputs"]
-          optional = {"codeql", "fuzz", "protocols", "windows", "macos"}
+          optional = {"codeql", "fuzz", "protocols", "windows", "macos", "gui"}
           failed = []
           for name, job in sorted(jobs.items()):
               expected = "skipped" if name in optional and planned.get(name) == "false" else "success"

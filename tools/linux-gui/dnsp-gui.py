@@ -223,7 +223,8 @@ def build_application(options):
                 "The HTTP version preference is a startup setting. Actual HTTP/1, HTTP/2 and HTTP/3 reply "
                 "counters show what libcurl used; preferring HTTP/3 does not prove that HTTP/3 was negotiated.",
                 "Mean upstream time is the lifetime mean across completed attempts, including failures. "
-                "Satisfied queries include responses the proxy delivered successfully; this is not a NOERROR-only count. "
+                "Satisfied queries count complete NOERROR or NXDOMAIN replies written to client sockets; "
+                "truncated replies, other DNS errors and local policy blocks are excluded. "
                 "Attempts, client queries, coalesced queries and cache hits have different denominators.",
                 "Traffic bytes and system interface throughput are not exposed by the daemon. They are not estimated "
                 "from query counts. An unavailable metric is shown as a dash, rather than a zero.",

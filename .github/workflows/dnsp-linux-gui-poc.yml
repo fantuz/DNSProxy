@@ -12,14 +12,12 @@ name: DNSProxy Linux GUI PoC
       - dnsp-platform.h
       - dnsp-policy.h
       - modern.mk
-  pull_request:
-    paths:
-      - tools/linux-gui/**
-      - tests/test_gui_*.py
-      - docs/LINUX-GUI.md
-      - .github/workflows/dnsp-linux-gui-poc.yml
-      - dnsp-modern.c
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -39,6 +37,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - name: Install native Linux dependencies
         run: |
           sudo apt-get update

@@ -1,6 +1,6 @@
 # Linux GUI proof of concept
 
-This branch contains an optional **read-only GTK 4 monitor** for `dnsp-modern`.
+This source tree includes an optional **read-only GTK 4 monitor** for `dnsp-modern`.
 It helps explain a running resolver's configuration and activity. The C resolver
 keeps its existing event loop, dependencies and packages. GTK and Python are
 needed only on machines where you choose to open the monitor.
@@ -21,14 +21,7 @@ synthetic. Live integration tests separately exercise the running C resolver.
 
 ## Try the interface
 
-To try the branch without switching your existing checkout, use a separate folder:
-
-```sh
-git fetch origin codex/linux-gui-poc
-git worktree add --detach ../DNSProxy-linux-gui FETCH_HEAD
-cd ../DNSProxy-linux-gui
-```
-
+Run the following commands from a source checkout containing `tools/linux-gui/`.
 On Debian or Ubuntu, install the optional desktop dependencies:
 
 ```sh
@@ -146,7 +139,9 @@ activation design, especially for UDP and privileged port 53.
   fall back; reply counters show actual use. The daemon does not expose a
   libcurl capability flag through metrics, so the GUI does not infer HTTP/3
   support from the invocation alone.
-- Satisfied queries are delivered responses, including policy/error responses.
+- Satisfied queries count complete `NOERROR` or `NXDOMAIN` responses written to
+  client sockets. Truncated replies, other DNS errors and locally synthesized
+  policy blocks are excluded.
   Upstream attempts can differ from client query counts because of caching,
   coalescing and failover. The displayed upstream mean includes failed completed
   attempts and is a lifetime mean, not a latency percentile.
@@ -172,7 +167,7 @@ dbus-run-session -- xvfb-run -a -s '-screen 0 1280x960x24' \
   /usr/bin/python3 tests/test_gui_gtk.py
 ```
 
-A GUI makes most sense as a troubleshooting companion. After trying this branch,
+A GUI makes most sense as a troubleshooting companion. After trying this PoC,
 we can decide whether discoverability justifies maintaining a desktop package.
 Useful next steps would be a separate optional DEB/RPM GUI package with a desktop
 launcher, a measured overhead comparison, native Wayland tests and an explicit
