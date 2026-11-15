@@ -41,6 +41,9 @@ multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
   <a href="https://github.com/fantuz/DNSProxy/releases/latest#downloads"><img src="https://img.shields.io/badge/Download%20for%20Linux-DEB%20%2F%20RPM-2e7d32?style=for-the-badge" alt="Download for Linux — DEB and RPM packages" height="28"></a>
 </p>
 
+An optional [Linux desktop monitor (PoC)](#optional-linux-desktop-monitor-poc)
+shows startup settings, live query activity and daemon statistics.
+
 [Windows setup guide](docs/WINDOWS.md)
 · [macOS setup guide](docs/MACOS.md)
 · [Linux installation guide](packaging/README-packaging.md)
@@ -456,6 +459,49 @@ Metrics reset when the process restarts. They do not expose query names or
 client addresses. The HTTP version and connection reuse counters **do not
 measure simultaneous HTTP/2 streams**; use the bundled benchmark for
 that measurement.
+
+### Optional Linux desktop monitor (PoC)
+
+The Linux-only GTK 4 monitor provides a read-only view of `dnsp-modern`:
+startup options as On/Off radio buttons, incoming-query activity and history,
+upstream HTTP/1/2/3 counters, cache and blocklist statistics, CPU, memory and
+uptime. Invocation values distinguish explicit settings from defaults. The GUI
+runs as an ordinary desktop user and reads the existing process and metrics
+listener. The C resolver runs independently of the monitor.
+
+![Linux GUI demo receiving metrics, with synthetic statistics](docs/images/linux-gui-poc-demo-overview.png)
+
+The screenshot shows **demo mode with synthetic values**. From a source
+checkout, install the optional desktop dependencies and try the demo:
+
+```sh
+sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0
+/usr/bin/python3 tools/linux-gui/dnsp-gui.py --demo
+```
+
+For live traffic, enable metrics when starting the resolver, for example:
+
+```sh
+./dnsp-modern -l 127.0.0.1 -p 5300 -m 9153
+```
+
+Then open the monitor in another terminal:
+
+```sh
+/usr/bin/python3 tools/linux-gui/dnsp-gui.py
+```
+
+It auto-detects a single readable resolver. Use `--pid PID` to select among
+multiple instances, or `--metrics-port 9153` for traffic-only monitoring when
+process details are inaccessible. The packaged systemd service already enables
+metrics on port `9153`.
+
+**Pause** switches to on-demand sampling with **Refresh now**. Incoming-query
+activity appears on the next sample; closing the window leaves DNSProxy running.
+The GUI PoC currently runs from source, with desktop packaging as a follow-up.
+X11 is tested in GitHub CI on Linux x86-64 and ARM64; native Wayland testing is
+a follow-up. See the [Linux GUI guide](docs/LINUX-GUI.md) for the startup-options
+preview, counter definitions, polling limits and troubleshooting.
 
 ## Debian packaging and systemd
 
