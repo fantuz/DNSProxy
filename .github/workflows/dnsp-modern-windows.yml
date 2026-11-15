@@ -88,6 +88,8 @@ jobs:
             if ($errors) { throw $errors }
           }
           $failed = $false
+          & $python tests/test_host_capabilities.py -v
+          if ($LASTEXITCODE) { $failed = $true }
           & $python tests/test_windows_bundle.py -v
           if ($LASTEXITCODE) { $failed = $true }
           & $python tests/test_modern.py -v

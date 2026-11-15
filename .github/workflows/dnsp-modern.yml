@@ -20,6 +20,9 @@ name: DNSProxy modern - test and package
 permissions:
   contents: read
 
+env:
+  DNSP_REQUIRE_IPV6: '1'
+
 jobs:
   prepare-release:
     name: Prepare the manual release commit
@@ -259,6 +262,41 @@ jobs:
         run: |
           make -B -f modern.mk modern-check CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
 
+  ipv4-only:
+    name: IPv4-only host regression
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev python3 iproute2 util-linux
+      - name: Build the portable resolver
+        run: make -f modern.mk dnsp-modern
+      - name: Exercise an IPv4-only host and strict IPv6 rejection
+        run: |
+          # These network settings apply only inside this temporary namespace.
+          sudo unshare --net sh -eu <<'SH'
+          sysctl -qw net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1
+          ip link set lo up
+          unset DNSP_REQUIRE_IPV6
+          python3 tests/test_host_capabilities.py
+          python3 tests/test_modern.py Tests.test_udp Tests.test_tcp
+          python3 tests/test_policy.py
+          python3 tests/test_ipv6.py
+          strict_log=$(mktemp)
+          trap 'rm -f "$strict_log"' 0
+          if DNSP_REQUIRE_IPV6=1 python3 tests/test_ipv6.py >"$strict_log" 2>&1; then
+              echo 'Required IPv6 unexpectedly passed on an IPv4-only host' >&2
+              exit 1
+          fi
+          grep -F 'IPv6 loopback is required by DNSP_REQUIRE_IPV6=1' "$strict_log"
+          SH
+
   codeql:
     needs: plan
     if: >-
@@ -313,7 +351,7 @@ jobs:
   pr-checks:
     name: DNSProxy PR checks
     if: ${{ always() && github.event_name == 'pull_request' }}
-    needs: [plan, deb, debian, rpm, sanitizers, codeql, fuzz, protocols, windows, macos, gui]
+    needs: [plan, deb, debian, rpm, sanitizers, ipv4-only, codeql, fuzz, protocols, windows, macos, gui]
     runs-on: ubuntu-24.04
     permissions: {}
     steps:
@@ -346,9 +384,10 @@ jobs:
       !cancelled() && github.event_name != 'pull_request' &&
       needs.plan.result == 'success' && needs.deb.result == 'success' &&
       needs.debian.result == 'success' && needs.rpm.result == 'success' &&
-      needs.sanitizers.result == 'success' && needs.windows.result == 'success' && needs.macos.result == 'success' &&
+      needs.sanitizers.result == 'success' && needs.ipv4-only.result == 'success' &&
+      needs.windows.result == 'success' && needs.macos.result == 'success' &&
       (needs.plan.outputs.mode == 'master' || needs.plan.outputs.mode == 'tag' || needs.plan.outputs.mode == 'manual')
-    needs: [plan, deb, debian, rpm, sanitizers, windows, macos]
+    needs: [plan, deb, debian, rpm, sanitizers, ipv4-only, windows, macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

@@ -127,6 +127,19 @@ make
 make modern-check
 ```
 
+Tests probe IPv6 loopback over UDP and TCP at runtime. If IPv6 is disabled
+(for example with `ipv6.disable=1`), IPv4 tests still run and IPv6-only cases
+report a skip. The compiled resolver retains IPv6 support for deployment on
+other hosts; requesting an unavailable listener with `-l ::1` remains an error.
+To require IPv6 coverage, as CI does, run:
+
+```sh
+DNSP_REQUIRE_IPV6=1 make modern-check
+```
+
+CI also tests IPv4-only operation in an isolated Linux network namespace and
+checks that requiring IPv6 there fails with a clear diagnostic.
+
 With Clang and its sanitizer runtime installed, `make modern-fuzz` runs the
 DNS wire and HTTP cache parser fuzzer for 30 seconds. Set `FUZZ_SECONDS` for
 longer runs.
