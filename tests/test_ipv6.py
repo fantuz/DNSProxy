@@ -1,6 +1,5 @@
 """Exercise the shared DNS core over native IPv4 and IPv6 sockets."""
 from contextlib import contextmanager, ExitStack
-import os
 import socket
 import random
 import struct
@@ -10,6 +9,7 @@ import time
 import unittest
 
 import test_modern as fixtures
+from host_capabilities import require_ipv6_loopback
 from test_modern import (BINARY, HTTP, CacheDoH, DoH, query,
                          spawn_proxy, terminate_proxy, sized_query)
 
@@ -49,13 +49,7 @@ def listener_ports():
 class IPv6Tests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        try:
-            with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as sock:
-                sock.bind(('::1', 0))
-        except OSError:
-            if os.environ.get('DNSP_REQUIRE_IPV6') == '1':
-                raise
-            raise unittest.SkipTest('IPv6 loopback is disabled on this host')
+        require_ipv6_loopback()
 
     @contextmanager
     def proxy(self, *args, addresses=('127.0.0.1', '::1'), handler=CountingDoH):

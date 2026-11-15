@@ -15,6 +15,7 @@ import time
 import unittest
 
 import test_modern as dns
+from host_capabilities import require_ipv6_loopback
 
 
 def wire_name(name):
@@ -183,10 +184,10 @@ class PolicyTests(unittest.TestCase):
         else:
             self.assertEqual(reply[10:12], bytes(2))
 
-    def test_all_types_both_transports_and_address_families(self):
-        with self.proxy(ipv6=True) as (port, metric, upstream, _):
+    def check_all_types(self, hosts, *, ipv6=False):
+        with self.proxy(ipv6=ipv6) as (port, metric, upstream, _):
             count = 0
-            for host in ('127.0.0.1', '::1'):
+            for host in hosts:
                 for tcp in (False, True):
                     for typ in (1, 28, 2, 5, 15, 16, 33, 48, 64, 65, 255, 65400):
                         packet = question('AdS.ExAmPlE.', typ, ident=count, flags=0x0130)
@@ -195,6 +196,13 @@ class PolicyTests(unittest.TestCase):
             self.assertEqual(upstream.received, [])
             self.assertEqual(self.stats(metric)['dnsp_blocked_queries_total'], count)
             self.assertEqual(self.stats(metric)['dnsp_upstream_requests_total'], 0)
+
+    def test_all_types_both_transports_ipv4(self):
+        self.check_all_types(('127.0.0.1',))
+
+    def test_all_types_both_transports_and_address_families(self):
+        require_ipv6_loopback()
+        self.check_all_types(('127.0.0.1', '::1'), ipv6=True)
 
     def test_formats_allowlist_and_label_boundaries(self):
         self.deny.write_bytes(b'\xef\xbb\xbf# list\r\n0.0.0.0 AdS.ExAmPlE. extra.example # aliases\r\n'
