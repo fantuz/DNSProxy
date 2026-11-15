@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import runpy
 import struct
-import sys
 import tempfile
 import unittest
 
@@ -53,11 +52,10 @@ class PEMachineTests(unittest.TestCase):
 @unittest.skipUnless(os.name == 'nt' and os.environ.get('DNSP_TEST_WINDOWS_ARCH'),
                      'Requires an extracted Windows CI bundle and its target architecture')
 class NativeBundleTests(unittest.TestCase):
-    def test_resolver_dependencies_probes_and_python_are_native(self):
+    def test_resolver_dependencies_and_probes_are_native(self):
         arch = os.environ['DNSP_TEST_WINDOWS_ARCH']
         binary = Path(os.environ['DNSP_TEST_BINARY'])
         directory = binary.parent
-        check_machine(Path(sys.executable), arch)
         for name in ('dnsp-modern.exe', 'platform-probe.exe', 'service-fixture.exe'):
             check_machine(directory / name, arch)
         libraries = list(directory.glob('*.dll'))

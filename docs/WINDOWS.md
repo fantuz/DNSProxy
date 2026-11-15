@@ -217,9 +217,14 @@ discovery with both valid and invalid TLS hostnames. The required
 The Linux packages and tests also validate changes to the shared core.
 
 Both architecture bundles are unsigned Windows **PoCs**, without an MSI/MSIX
-installer. CI executes the resolver, native Python protocol fixtures, platform
+installer. CI executes the resolver, Python protocol fixtures, platform
 probes, and service acceptance on Windows Server 2022 AMD64 and Windows 11 ARM64.
 It also verifies the extracted bundle's checksums and PE architecture.
+On the ARM64 runner, the Python test driver uses x64 emulation because the QUIC
+fixture's Python dependencies do not all supply compatible ARM64 wheels. The
+resolver, platform probes, service fixture and bundled DLLs are ARM64-native;
+their PE machine types are checked and the full product tests execute them on
+the ARM64 host. The Python driver is a CI dependency, outside the portable ZIP.
 Other desktop Windows 10/11 configurations, non-administrator accounts, Unicode/long paths,
 suspend/resume, and VPN policies need a broader acceptance matrix before a
 supported Windows release. The shared resolver supports IPv4 and IPv6 DNS listeners. Repeat `-l` to enable
