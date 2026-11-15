@@ -107,7 +107,7 @@ helpers.
    `master`.
 2. The first successful build for the new version creates the matching
    `vVERSION-modern` tag at the tested commit and publishes a regular GitHub release
-   with eight Linux packages, the Windows x86-64 PoC ZIP, two native macOS
+   with eight Linux packages, Windows AMD64/ARM64 PoC ZIPs, two native macOS
    archives, and `SHA256SUMS`. Publication waits for the native Windows and both
    macOS builds and extracted-package tests, as well as Linux packaging and
    sanitizers. Other commits at the published version
@@ -125,7 +125,10 @@ helpers.
 Release notes begin with a download table for Windows, macOS Intel/Apple Silicon
 and each Linux package target, followed by the generated changelog. README
 download buttons point to the latest release's table, so they do not need
-version-specific URLs.
+version-specific URLs. The changelog starts at the previous published regular
+release explicitly: manual version commits can sit outside `master` history,
+which can confuse automatic starting-tag discovery. A failed release-metadata
+lookup stops publication before a new tag is created.
 The **Refresh release download table** workflow updates the latest release's
 table when its renderer changes on `master`, or when run manually from `master`.
 It verifies that every linked asset exists and preserves the existing changelog;
