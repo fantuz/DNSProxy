@@ -153,6 +153,7 @@ class HedgingTests(unittest.TestCase):
                 for i in range(30):
                     client.sendto(dns.query(62000 + i, ident=i), ('127.0.0.1', port))
                 self.wait_metric(metric, 'dnsp_upstream_hedges_started_total', 16)
+                self.wait_metric(metric, 'dnsp_upstream_hedges_suppressed_total', 14)
                 self.assertEqual(self.metric(metric, 'dnsp_upstream_hedges_suppressed_total'), 14)
                 self.assertEqual(self.metric(metric, 'dnsp_upstream_hedges_inflight'), 16)
                 self.assertEqual(self.metric(metric, 'dnsp_queries_inflight'), 30)

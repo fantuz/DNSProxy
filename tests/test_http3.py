@@ -28,6 +28,7 @@ async def quic_upstream(upstream, cert, key):
         yield
     finally:
         server.close()
+        await asyncio.sleep(0)  # Finish datagram transport close callbacks in this loop.
 
 
 class Http3Tests(unittest.IsolatedAsyncioTestCase):
@@ -127,16 +128,21 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
                 with self.proxy(primary.port, cert, backup_port=backup.port, hedge_ms=60) as (dns, metrics):
                     warm = await asyncio.to_thread(one_load, dns, 1, 0)
                     self.assertEqual(warm['successful_queries'], 1)
+                    before = metric_snapshot(metrics)
                     primary.app.delay = 1
                     result = await asyncio.to_thread(one_load, dns, 1, 0)
                     self.assertEqual(result['successful_queries'], 1)
                     stats = metric_snapshot(metrics)
-                    self.assertEqual(stats['dnsp_upstream_hedges_started_total'], 1)
-                    self.assertEqual(stats['dnsp_upstream_hedge_wins_total{role="backup"}'], 1)
-                    self.assertEqual(stats['dnsp_upstream_hedges_cancelled_total'], 1)
-                    self.assertEqual(stats['dnsp_upstream_http_responses_total{version="3"}'], 2)
+                    for counter in ('dnsp_upstream_hedges_started_total',
+                                    'dnsp_upstream_hedge_wins_total{role="backup"}',
+                                    'dnsp_upstream_hedges_cancelled_total',
+                                    'dnsp_upstream_http_responses_total{version="3"}'):
+                        self.assertEqual(stats[counter] - before[counter], 1)
                     self.assertEqual(stats['dnsp_queries_inflight'], 0)
                     self.assertEqual(primary.app.snapshot()['upstream_http_versions'], {'3': 2})
+            for upstream in (primary, backup):
+                self.assertEqual(upstream.app.snapshot()['upstream_inflight'], 0)
+                self.assertEqual(upstream.app.snapshot()['upstream_invalid'], 0)
 
     async def test_fallback_when_udp_gets_no_response(self):
         async with self.upstream() as (upstream, cert, _):

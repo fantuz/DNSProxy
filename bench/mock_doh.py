@@ -62,7 +62,7 @@ class DohApp:
         with self.lock:
             if valid:
                 self.completed += 1
-            else:
+            elif valid is not None:  # A cancelled QUIC reply is not invalid DNS.
                 self.invalid += 1
             self.inflight -= 1
             self.active[peer] -= 1

@@ -112,12 +112,14 @@ class BenchmarkIntegrationTests(unittest.TestCase):
                 try:
                     await_ready(metrics, process, 'DNSProxy metrics')
                     self.assertEqual(one_load(port, 1, 0)['successful_queries'], 1)
+                    before = metric_snapshot(metrics)
                     primary.app.delay = 1
                     self.assertEqual(one_load(port, 1, 0)['successful_queries'], 1)
                     stats = metric_snapshot(metrics)
-                    self.assertEqual(stats['dnsp_upstream_hedge_wins_total{role="backup"}'], 1)
-                    self.assertEqual(stats['dnsp_upstream_hedges_cancelled_total'], 1)
-                    self.assertEqual(stats['dnsp_upstream_http_responses_total{version="2"}'], 2)
+                    for counter in ('dnsp_upstream_hedge_wins_total{role="backup"}',
+                                    'dnsp_upstream_hedges_cancelled_total',
+                                    'dnsp_upstream_http_responses_total{version="2"}'):
+                        self.assertEqual(stats[counter] - before[counter], 1)
                     self.assertEqual(stats['dnsp_queries_inflight'], 0)
                     self.assertEqual(primary.app.snapshot()['upstream_http_versions'], {'2': 2})
                 finally:
