@@ -90,6 +90,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          docker run --rm --network none dnsp-modern-h3-ci \
+            /opt/bench/bin/python tests/test_http3.py Http3Tests.test_h3_opt_in_and_multiplex || true
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
           baseline="$RUNNER_TEMP/dnsp-h3-baseline"
           git worktree add --detach "$baseline" "$BASE_SHA"
