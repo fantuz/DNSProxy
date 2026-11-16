@@ -31,6 +31,9 @@ class ReleaseTests(unittest.TestCase):
                      "release-downloads.py"):
             shutil.copy(SCRIPTS / name, self.repo / "scripts")
         (self.repo / "VERSION").write_text("0.3.6\n")
+        highlights = self.repo / "docs/releases/0.3.8.md"
+        highlights.parent.mkdir(parents=True)
+        highlights.write_text("## Release highlights\n\nDesktop monitoring and bounded latency reporting.\n")
         self.git("add", ".")
         self.git("commit", "-qm", "Base commit")
         self.base = self.git("rev-parse", "HEAD")
@@ -153,6 +156,8 @@ esac
         self.assertEqual(arguments.count("--notes-file"), 2)
         notes = (self.root / "notes.md").read_text()
         self.assertTrue(notes.startswith("<!-- dnsp-downloads:start -->\n## Downloads\n"))
+        self.assertIn("## Release highlights\n\nDesktop monitoring and bounded latency reporting.", notes)
+        self.assertNotIn("Windows (PoC)", notes)
         linked = [unquote(name) for name in re.findall(r"/releases/download/v0\.3\.8-modern/([^)]*)", notes)]
         self.assertEqual(sorted(linked), sorted(expected_packages + ["SHA256SUMS"]))
         self.assertNotIn("--prerelease", arguments)

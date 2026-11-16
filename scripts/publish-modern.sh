@@ -122,6 +122,11 @@ else
     notes=$(mktemp)
     trap 'rm -f "$notes"' EXIT
     python3 scripts/release-downloads.py "$version" > "$notes"
+    highlights="docs/releases/$version.md"
+    if [[ -f "$highlights" ]]; then
+        printf '\n' >> "$notes"
+        cat "$highlights" >> "$notes"
+    fi
     (
         cd "$assets"
         gh release create "$tag" "${packages[@]}" SHA256SUMS --verify-tag \

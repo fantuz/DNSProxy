@@ -29,7 +29,7 @@ def downloads(version, repository, *, macos=True, windows_arm64=True, gui=True):
              "Choose your operating system and processor architecture:", "",
              "| Platform | x86-64 / amd64 | ARM64 / aarch64 |",
              "| --- | --- | --- |",
-             "| Windows (PoC) | " + asset("**Portable ZIP**", f"dnsp-modern-{version}-windows-amd64-poc.zip") + " | " +
+             "| Windows | " + asset("**Portable ZIP**", f"dnsp-modern-{version}-windows-amd64-poc.zip") + " | " +
              (asset("**ARM64 ZIP**", f"dnsp-modern-{version}-windows-arm64-poc.zip") if windows_arm64 else "Not available") + " |"]
     if macos:
         links = [asset(label, f"dnsp-modern-{version}-macos-{arch}.tar.gz")
