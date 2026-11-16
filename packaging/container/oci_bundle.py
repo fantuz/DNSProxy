@@ -144,6 +144,12 @@ def combine(paths, destination, revision, version):
                                          PREFIX + 'source': SOURCE}})
         root = descriptor(index, INDEX, annotations={PREFIX + 'ref.name': 'dnsproxy'})
         with tarfile.open(destination, 'w') as target:
+            # Skopeo's rootless untar must not have to create implicit parents:
+            # containers/storage otherwise tries to chown those parents to root.
+            for name in ('blobs/', 'blobs/sha256/'):
+                info = tarfile.TarInfo(name)
+                info.type, info.mode = tarfile.DIRTYPE, 0o755
+                target.addfile(info)
             add_bytes(target, 'oci-layout', encoded({'imageLayoutVersion': '1.0.0'}))
             add_bytes(target, 'index.json', encoded({'schemaVersion': 2, 'manifests': [root]}))
             add_bytes(target, blob_path(root['digest']), index)

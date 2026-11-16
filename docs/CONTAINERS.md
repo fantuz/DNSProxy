@@ -62,7 +62,7 @@ These commands do not modify the host's resolver settings.
 To serve your LAN, change the host bind address in **both** Compose port mappings
 to your chosen LAN address and restrict access to your clients at the firewall.
 The default image listens on `0.0.0.0` **inside its isolated network namespace**;
-the host mappings decide which clients can reach it. The default listener is
+host mappings control access from outside the container network. The default listener is
 IPv4, so IPv6-disabled hosts can run it. Add an IPv6 `-l ADDRESS` only when both
 the container runtime network and host support it; IPv6 upstream answers do not
 require an IPv6 listener.

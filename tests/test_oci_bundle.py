@@ -55,6 +55,14 @@ class BundleTests(unittest.TestCase):
             native.append(path)
         result = self.root/'multi.tar'
         digest = oci.combine(native, result, REVISION, VERSION)
+        # Explicit parents avoid a rootless importer trying to chown implicitly
+        # created blob directories. The registry integration exercises Skopeo.
+        with tarfile.open(result) as archive:
+            parents = {'.'}
+            for member in archive:
+                self.assertIn(str(Path(member.name).parent), parents)
+                if member.isdir():
+                    parents.add(member.name.rstrip('/'))
         with ExitStack() as stack:
             archive = oci.Archive(result, REVISION, VERSION, stack)
             self.assertEqual(archive.root['digest'], digest)
