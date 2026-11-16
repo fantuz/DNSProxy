@@ -1,0 +1,23 @@
+# Keep credentials, local binaries, historical sources and test data out of builds.
+**
+!Dockerfile
+!.dockerignore
+!dnsp-modern.c
+!dnsp-platform.h
+!dnsp-service.h
+!dnsp-policy.h
+!modern.mk
+!VERSION
+!LICENSE
+# The existing protocol CI image builds from this context as well.
+# These fixtures are never copied into the runtime stage.
+!bench/
+!bench/*.py
+!bench/*.sh
+!tests/
+!tests/*.py
+!packaging/
+packaging/**
+!packaging/container/
+packaging/container/**
+!packaging/container/healthcheck.sh
