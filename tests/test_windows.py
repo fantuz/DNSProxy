@@ -79,8 +79,10 @@ class WindowsTests(unittest.TestCase):
                 # separate from the resolver's DNS response deadlines below.
                 environment = {key: value for key, value in os.environ.items()
                                if key.lower() != 'psmodulepath'}
-                startup_timeout = 45 if command[-1].lower().endswith('.ps1') else 15
-                process = fixtures.spawn_proxy(command, cwd=cwd, stdout=log, stderr=log, env=environment)
+                powershell = command[-1].lower().endswith('.ps1')
+                startup_timeout = 45 if powershell else 15
+                process = fixtures.spawn_proxy(command, cwd=cwd, stdin=subprocess.DEVNULL,
+                                               stdout=log, stderr=log, env=environment)
                 try:
                     deadline = time.monotonic() + startup_timeout
                     while time.monotonic() < deadline and process.poll() is None:
@@ -106,7 +108,8 @@ class WindowsTests(unittest.TestCase):
                             client.sendall(struct.pack('!H', len(packet)) + packet)
                             self.assertEqual(fixtures.Tests.tcp_frame(client), answer)
                     process.send_signal(signal.CTRL_BREAK_EVENT)
-                    process.wait(timeout=5)
+                    if not powershell:
+                        process.wait(timeout=5)
                     deadline = time.monotonic() + 5
                     while time.monotonic() < deadline:
                         try:
@@ -117,6 +120,15 @@ class WindowsTests(unittest.TestCase):
                         time.sleep(.05)
                     else:
                         self.fail('Launcher left the resolver running after console stop')
+                    if powershell:
+                        # Check the daemon's five-second listener deadline
+                        # before allowing the PowerShell host to tear down.
+                        try:
+                            process.wait(timeout=15)
+                        except subprocess.TimeoutExpired:
+                            log.seek(0)
+                            self.fail('PowerShell host did not exit after DNS listeners closed: '
+                                      f'output={log.read()!r}')
                 finally:
                     if process.poll() is None:
                         subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True)

@@ -608,7 +608,8 @@ class Tests(unittest.TestCase):
                 try:
                     proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
-                    proc.kill();proc.wait(timeout=3)
+                    proc.kill()
+                    proc.wait(timeout=3)
 
     def test_reject_invalid_tcp_deadlines(self):
         for option in ('--tcp-idle-ms', '--tcp-io-ms'):
