@@ -11,10 +11,24 @@ curl-based health check and license are copied into the runtime stage. The
 compiler, Python, GTK and systemd are not installed there. HTTP/2 is the default;
 the Debian 13 libcurl also supports optional HTTP/3 with HTTP/2 fallback.
 
+## Run a release image
+
+Release images start with **4.7.0**. After the first publication, the package
+owner must [set GHCR visibility to Public](https://github.com/users/fantuz/packages/container/dnsproxy/settings)
+once to enable anonymous pulls. Then run the pinned release:
+
+```sh
+docker run -d --name dnsproxy --read-only --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  -p 127.0.0.1:5300:5300/udp -p 127.0.0.1:5300:5300/tcp \
+  ghcr.io/fantuz/dnsproxy:4.7.0
+dig @127.0.0.1 -p 5300 example.com A
+dig +tcp @127.0.0.1 -p 5300 example.com AAAA
+```
+
 ## Build and try it
 
-Registry publication starts with the first release containing the container
-workflow. You can build the image from this checkout immediately:
+To build from the source checkout:
 
 ```sh
 docker build --tag dnsproxy:local .
@@ -34,7 +48,7 @@ configuration. The process **inside** the container always runs as UID/GID
 `10001:10001` and binds port 5300 without capabilities.
 
 Published images use `ghcr.io/fantuz/dnsproxy`. Select an exact version, such as
-`ghcr.io/fantuz/dnsproxy:MAJOR.MINOR.PATCH`, or pin the index digest printed in
+`ghcr.io/fantuz/dnsproxy:4.7.0`, or pin the index digest printed in
 the publishing workflow. Other tags are `MAJOR.MINOR`, `MAJOR` and `latest`.
 Exact version tags are immutable; moving tags only advance to newer versions.
 The runtime image includes its version, source revision and license in OCI labels.
@@ -43,7 +57,7 @@ The runtime image includes its version, source revision and license in OCI label
 
 The repository's `compose.yaml` publishes **UDP and TCP**, binds the host side
 to IPv4 loopback, drops all capabilities and uses a read-only filesystem. For
-a local build before the first registry image exists:
+a local build:
 
 ```sh
 DNSP_IMAGE=dnsproxy:local docker compose up -d --build
@@ -53,7 +67,7 @@ docker compose logs --tail 50
 docker compose down
 ```
 
-Once a release image is available, use `docker compose pull` followed by
+To use a published release image, use `docker compose pull` followed by
 `docker compose up -d`. Override `DNSP_IMAGE` to pin a version or digest. If host
 port 53 is occupied, use `DNSP_PORT=5300 docker compose up -d` and test with
 `dig -p 5300`. Check existing listeners with `sudo ss -luntp '( sport = :53 )'`.
@@ -157,9 +171,9 @@ monitor or Prometheus, an optional Linux-only setup is `--network host` with
 the full command using `-l 127.0.0.1 -p 5300 -m 9153`. Omit port mappings in
 that mode. The host can then read `http://127.0.0.1:9153/metrics`, and
 `python3 tools/linux-gui/dnsp-gui.py --metrics-port 9153` displays it.
-Use distinct metrics ports for additional instances. The monitor's process
-inspection cannot discover startup options across a container's PID namespace;
-it still displays metrics. Keep the GUI on the desktop.
+Use distinct metrics ports for additional instances. This uses the monitor's
+traffic-only mode: startup options, PID, uptime and process resource use are
+unavailable in that mode. Keep the GUI on the desktop.
 
 ## CI and registry publication
 
