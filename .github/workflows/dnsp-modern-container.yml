@@ -1,0 +1,162 @@
+name: DNSProxy Debian 13 OCI image
+
+"on":
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+    outputs:
+      digest:
+        description: The tested multi-platform OCI index digest
+        value: ${{ jobs.bundle.outputs.digest }}
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: OCI linux/${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Read source metadata
+        id: source
+        run: |
+          echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "created=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
+          echo "epoch=$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
+          mkdir -p out
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Build the native OCI archive
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=oci,dest=out/image-${{ matrix.arch }}.tar
+          provenance: false
+          sbom: false
+          pull: true
+          no-cache: ${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=dnsp-oci-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=dnsp-oci-${{ matrix.arch }}
+          build-args: |
+            IMAGE_VERSION=${{ steps.source.outputs.version }}
+            IMAGE_REVISION=${{ steps.source.outputs.revision }}
+            IMAGE_CREATED=${{ steps.source.outputs.created }}
+            SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
+      - name: Install image inspection and fixture tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends skopeo python3-venv openssl
+          python3 -m venv .container-venv
+          .container-venv/bin/python -m pip install 'hypercorn==0.18.0' 'h2==4.3.0' 'aioquic==1.3.0'
+      - name: Validate and import exactly the built image
+        env:
+          IMAGE_VERSION: ${{ steps.source.outputs.version }}
+          IMAGE_REVISION: ${{ steps.source.outputs.revision }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          python3 packaging/container/oci_bundle.py --version "$IMAGE_VERSION" --revision "$IMAGE_REVISION" \
+            verify "out/image-$ARCH.tar" --architectures "$ARCH" > "out/image-$ARCH.json"
+          skopeo copy "oci-archive:out/image-$ARCH.tar" "docker-daemon:dnsp-modern:ci-$ARCH"
+          imported=$(docker image inspect --format '{{.Id}}' "dnsp-modern:ci-$ARCH")
+          expected=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["platforms"][sys.argv[2]]["config_digest"])' "out/image-$ARCH.json" "$ARCH")
+          test "$imported" = "$expected"
+          docker run --rm "dnsp-modern:ci-$ARCH" --version > "out/version-$ARCH.txt"
+          grep -Fx "dnsp-modern $IMAGE_VERSION" "out/version-$ARCH.txt"
+          docker image inspect "dnsp-modern:ci-$ARCH" > "out/runtime-$ARCH.json"
+          docker compose config --quiet
+      - name: Exercise DNS, health, policy, shutdown, HTTP2 and HTTP3 in the runtime image
+        env:
+          DNSP_CONTAINER_IMAGE: dnsp-modern:ci-${{ matrix.arch }}
+        run: .container-venv/bin/python tests/test_container.py
+      - name: Checksum the tested native archive
+        working-directory: out
+        run: sha256sum image-${{ matrix.arch }}.tar > image-${{ matrix.arch }}.tar.sha256
+      - uses: actions/upload-artifact@v6
+        with:
+          name: dnsp-oci-platform-${{ matrix.arch }}
+          path: out/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  bundle:
+    name: Assemble and verify the tested OCI index
+    needs: native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      digest: ${{ steps.bundle.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: dnsp-oci-platform-*
+          merge-multiple: true
+          path: oci-platforms
+      - name: Test artifact integrity and release tag decisions
+        run: python3 -m unittest discover -s tests -p 'test_oci_*.py' -v
+      - name: Combine without rebuilding or rewriting the tested image blobs
+        id: bundle
+        run: |
+          (cd oci-platforms && sha256sum -c image-amd64.tar.sha256 image-arm64.tar.sha256)
+          mkdir -p dist
+          digest=$(python3 packaging/container/oci_bundle.py --revision "$(git rev-parse HEAD)" --version "$(cat VERSION)" \
+            combine --output dist/dnsp-modern-linux.oci.tar oci-platforms/image-amd64.tar oci-platforms/image-arm64.tar)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          python3 packaging/container/oci_bundle.py --revision "$(git rev-parse HEAD)" --version "$(cat VERSION)" \
+            verify dist/dnsp-modern-linux.oci.tar > dist/image.json
+          (cd dist && sha256sum dnsp-modern-linux.oci.tar > dnsp-modern-linux.oci.tar.sha256)
+      - name: Test publication and idempotent retries against a local registry
+        env:
+          OCI_DIGEST: ${{ steps.bundle.outputs.digest }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends skopeo
+          docker run -d --name dnsp-oci-registry -p 127.0.0.1:5000:5000 registry:3
+          trap 'docker rm -f dnsp-oci-registry' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:5000/v2/; then break; fi
+            sleep 1
+          done
+          printf '{"auths":{}}\n' > "$RUNNER_TEMP/oci-test-auth.json"
+          for attempt in 1 2; do
+            python3 packaging/container/publish.py dist/dnsp-modern-linux.oci.tar \
+              --repository 127.0.0.1:5000/dnsproxy --local-registry \
+              --revision "$(git rev-parse HEAD)" --version "$(cat VERSION)" --digest "$OCI_DIGEST" \
+              --authfile "$RUNNER_TEMP/oci-test-auth.json" --staging-tag "build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          done
+      - name: Summarize the image artifact
+        env:
+          OCI_DIGEST: ${{ steps.bundle.outputs.digest }}
+        run: |
+          {
+            echo '### Debian 13 slim OCI image'
+            echo 'Native linux/amd64 and linux/arm64 images passed container integration tests.'
+            echo "Tested index: \`$OCI_DIGEST\`"
+            echo 'Download the dnsp-oci-image artifact to try the combined OCI archive.'
+            echo 'PRs and snapshot builds do not publish registry tags.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: dnsp-oci-image
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

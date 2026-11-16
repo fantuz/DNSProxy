@@ -1,5 +1,8 @@
 # Packaging dnsp-modern
 
+For Docker/Podman deployments, see the [Debian 13 slim OCI image guide](../docs/CONTAINERS.md).
+It uses the same C source, native AMD64/ARM64 builds and the tested release commit.
+
 `dnsp-modern` is an **opt-in** DNS-over-HTTPS forwarder. It does not replace the
 legacy `dnsp`/`dnsp-h2` binaries, modify `/etc/resolv.conf`, or take over port 53.
 Persistent TCP clients can pipeline requests. The proxy sends replies in order

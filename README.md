@@ -49,6 +49,12 @@ graphical monitor remains a future addition.
 [Windows setup guide](docs/WINDOWS.md)
 · [macOS setup guide](docs/MACOS.md)
 · [Linux installation guide](packaging/README-packaging.md)
+· [Debian 13 slim container guide](docs/CONTAINERS.md)
+
+A [Debian 13 slim OCI image](docs/CONTAINERS.md) packages the same C resolver
+for Linux AMD64 and ARM64. It runs without root privileges inside the container,
+supports read-only operation and publishes both UDP and TCP DNS ports. The guide
+covers Docker/Podman, Compose, blocklists, health checks and release images on GHCR.
 
 On the release page, choose **Portable ZIP** in the Windows row. Extract the
 entire archive and double-click **Start-DNSProxy.cmd**. Keep `dnsp-modern.exe`,

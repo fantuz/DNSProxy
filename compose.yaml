@@ -1,0 +1,15 @@
+services:
+  dnsproxy:
+    image: ${DNSP_IMAGE:-ghcr.io/fantuz/dnsproxy:latest}
+    build:
+      context: .
+    ports:
+      - "127.0.0.1:${DNSP_PORT:-53}:5300/udp"
+      - "127.0.0.1:${DNSP_PORT:-53}:5300/tcp"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 10s
