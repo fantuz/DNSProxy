@@ -5,6 +5,7 @@ from aioquic.asyncio import QuicConnectionProtocol, serve
 from aioquic.h3.connection import H3_ALPN, H3Connection
 from aioquic.h3.events import DataReceived, HeadersReceived
 from aioquic.quic.configuration import QuicConfiguration
+from aioquic.quic.events import ConnectionTerminated, StopSendingReceived, StreamReset
 
 from mock_doh import make_response
 
@@ -15,8 +16,28 @@ async def start_http3(host, port, cert, key, app):
             super().__init__(quic, **kwargs)
             self.http = H3Connection(quic)
             self.requests = {}
+            self.replies = {}
+
+        def cancel_reply(self, stream):
+            timer = self.replies.pop(stream, None)
+            if timer is not None:
+                timer.cancel()
+                app.finish(self, None)
+            self.requests.pop(stream, None)
+
+        def close(self, *args, **kwargs):
+            for stream in tuple(self.replies):
+                self.cancel_reply(stream)
+            self.requests.clear()
+            super().close(*args, **kwargs)
 
         def quic_event_received(self, event):
+            if isinstance(event, (StreamReset, StopSendingReceived)):
+                self.cancel_reply(event.stream_id)
+            elif isinstance(event, ConnectionTerminated):
+                for stream in tuple(self.replies):
+                    self.cancel_reply(stream)
+                self.requests.clear()
             for message in self.http.handle_event(event):
                 if isinstance(message, HeadersReceived):
                     headers = dict(message.headers)
@@ -27,10 +48,11 @@ async def start_http3(host, port, cert, key, app):
                     self.requests[stream].extend(message.data)
                     if message.stream_ended:
                         app.begin(self, '3')
-                        asyncio.get_running_loop().call_later(
+                        self.replies[stream] = asyncio.get_running_loop().call_later(
                             app.delay, self.reply, stream, self.requests.pop(stream))
 
         def reply(self, stream, body):
+            self.replies.pop(stream, None)
             response = make_response(bytes(body), app.answers)
             try:
                 self.http.send_headers(stream, [(b':status', b'200' if response else b'400'),

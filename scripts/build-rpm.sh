@@ -13,9 +13,10 @@ mkdir "$work/SOURCES"
 git archive --format=tar.gz --prefix="dnsp-modern-$version/" HEAD -- \
     dnsp-modern.c dnsp-platform.h dnsp-service.h dnsp-policy.h modern.mk VERSION LICENSE tests/test_modern.py tests/test_curl_callbacks.c \
     tests/test_platform.c tests/test_ipv6.py tests/test_linux_dns.py tests/test_policy.py tests/test_policy_updater.py \
-    tests/host_capabilities.py tests/test_host_capabilities.py \
+    tests/host_capabilities.py tests/test_host_capabilities.py tests/test_hedging.py \
     scripts/update-blocklist.py docs/BLOCKLISTS.md \
     packaging/README-packaging.md packaging/systemd/ packaging/linux/dnsp-configure-dns \
+    tools/linux-gui/ packaging/gui/ docs/LINUX-GUI.md docs/images/linux-gui-poc-*.png \
     > "$work/SOURCES/dnsp-modern-$version.tar.gz"
 
 rpmbuild -bb --define "_topdir $work" --define "dnsp_version $version" packaging/rpm/dnsp-modern.spec
@@ -31,7 +32,16 @@ package="dist/${1##*/}"
 cp "$1" "$package"
 rpm -qpl "$package"
 rpm -qpR "$package" | grep -Fx ca-certificates
+set -- "$work"/RPMS/noarch/dnsp-modern-gui-"$version"-*.rpm
+test "$#" -eq 1 && test -s "$1"
+gui_package="dist/${1##*/}"
+cp "$1" "$gui_package"
+test "$(rpm -qp --qf '%{ARCH}' "$gui_package")" = noarch
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
     printf 'package=%s\n' "$package" >> "$GITHUB_OUTPUT"
+    printf 'gui_package=%s\n' "$gui_package" >> "$GITHUB_OUTPUT"
+    if [ "$(rpm --eval '%{_arch}')" = x86_64 ]; then
+        printf 'gui_upload=%s\n' "$gui_package" >> "$GITHUB_OUTPUT"
+    fi
 fi
 printf 'Built %s\n' "$package"

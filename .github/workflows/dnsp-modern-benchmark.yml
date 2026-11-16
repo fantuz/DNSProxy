@@ -84,7 +84,19 @@ jobs:
           RUN make -f modern.mk dnsp-modern
           DOCKERFILE
       - name: Verify HTTP/3 negotiation and TCP fallback
-        run: docker run --rm --network none dnsp-modern-h3-ci /opt/bench/bin/python tests/test_http3.py
+        run: docker run --rm --network none dnsp-modern-h3-ci /opt/bench/bin/python tests/test_http3.py --isolated
+      - name: Diagnose HTTP/3 reuse against the PR base if integration fails
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          docker run --rm --network none dnsp-modern-h3-ci \
+            /opt/bench/bin/python tests/test_http3.py Http3Tests.test_h3_opt_in_and_multiplex || true
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          baseline="$RUNNER_TEMP/dnsp-h3-baseline"
+          git worktree add --detach "$baseline" "$BASE_SHA"
+          docker run --rm --network none -v "$baseline:/baseline" dnsp-modern-h3-ci \
+            sh -c 'make -C /baseline -f modern.mk dnsp-modern && DNSP_TEST_BINARY=/baseline/dnsp-modern /opt/bench/bin/python tests/test_http3.py Http3Tests.test_h3_opt_in_and_multiplex'
       - name: Compare HTTP/2 and HTTP/3 over an impaired upstream link
         run: |
           mkdir -p dist

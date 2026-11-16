@@ -45,7 +45,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config libcurl4-openssl-dev \
             python3-gi python3-gi-cairo gir1.2-gtk-4.0 python3-venv \
-            xvfb xauth dbus-x11 imagemagick
+            xvfb xauth dbus-x11 imagemagick desktop-file-utils
       - name: Check formatting and imports for the optional GUI
         run: |
           /usr/bin/python3 -m venv "$RUNNER_TEMP/gui-lint"
@@ -53,12 +53,17 @@ jobs:
           "$RUNNER_TEMP/gui-lint/bin/ruff" format --check tools/linux-gui tests/test_gui_*.py
           "$RUNNER_TEMP/gui-lint/bin/ruff" check --select E4,E7,E9,F tools/linux-gui tests/test_gui_*.py
           git diff --check
-      - name: Build the unchanged C resolver and test monitor integration
+      - name: Build the resolver and install the optional desktop package
         run: |
           make dnsp-modern
-          /usr/bin/python3 tests/test_gui_monitor.py
+          sh scripts/build-gui-deb.sh "$(cat VERSION)"
+          sudo apt-get install -y --no-install-recommends ./dist/dnsp-modern-gui_*_all.deb
+          /usr/bin/python3 scripts/test-gui-package.py
+          desktop-file-validate packaging/gui/org.dnsproxy.LinuxMonitor.desktop
+          DNSP_GUI_SOURCE=/usr/share/dnsp-modern-gui /usr/bin/python3 tests/test_gui_monitor.py
       - name: Test GTK with real incoming DNS queries and save screenshots
         env:
+          DNSP_GUI_SOURCE: /usr/share/dnsp-modern-gui
           GUI_SCREENSHOTS: ${{ github.workspace }}/dist/gui-screenshots
           GDK_BACKEND: x11
           GSK_RENDERER: cairo

@@ -1456,6 +1456,9 @@ class FailoverDoH(DoH):
         mode = self.server.mode
         self.server.received.append(data)
         self.server.started.set()
+        if mode.startswith('wait_'):
+            self.server.release.wait(5)
+            mode = mode[5:]
         if mode == 'stall':
             self.server.release.wait(5)
             return

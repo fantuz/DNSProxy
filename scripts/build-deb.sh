@@ -63,3 +63,4 @@ END
 OUT="dist/dnsp-modern_${VERSION}_${ARCH}.deb"
 dpkg-deb --build --root-owner-group "$STAGE" "$OUT"
 echo "Built $OUT"
+sh scripts/build-gui-deb.sh "$VERSION"

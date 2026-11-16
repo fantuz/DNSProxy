@@ -94,6 +94,8 @@ jobs:
           if ($LASTEXITCODE) { $failed = $true }
           & $python tests/test_modern.py -v
           if ($LASTEXITCODE) { $failed = $true }
+          & $python tests/test_hedging.py -v
+          if ($LASTEXITCODE) { $failed = $true }
           & $python tests/test_policy.py -v
           if ($LASTEXITCODE) { $failed = $true }
           & $python tests/test_policy_updater.py -v
@@ -111,7 +113,7 @@ jobs:
           if ($LASTEXITCODE) { $failed = $true }
           & $python -m unittest discover -s tests -p test_benchmark.py -v
           if ($LASTEXITCODE) { $failed = $true }
-          & $python tests/test_http3.py -v
+          & $python tests/test_http3.py --isolated -v
           if ($LASTEXITCODE) { $failed = $true }
           if ($failed) { exit 1 }
       - uses: actions/upload-artifact@v6

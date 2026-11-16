@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=DNSProxy Monitor
+Comment=View local DNSProxy configuration, traffic and upstream health
+Exec=dnsp-gui
+Icon=dnsp-modern
+Terminal=false
+Categories=Network;Utility;
+StartupNotify=true
+Keywords=DNS;DoH;resolver;monitor;

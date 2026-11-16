@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 
 BASE = Path(__file__).resolve().parent.parent
 BINARY = Path(os.environ.get('DNSP_TEST_BINARY', BASE/'dnsp-modern'))
@@ -19,6 +20,20 @@ from mock_doh import MockServer, make_response  # noqa: E402
 
 
 class BenchmarkUnitTests(unittest.TestCase):
+    def test_port_probe_skips_tcp_reservations_and_closes_both_sockets(self):
+        import bench_modern
+
+        sockets = [MagicMock() for _ in range(4)]
+        for sock in sockets:
+            sock.__enter__.return_value = sock
+        sockets[1].bind.side_effect = PermissionError('Reserved by Hyper-V')
+        with patch.object(bench_modern.random, 'sample', return_value=[12001, 12002]), \
+             patch.object(bench_modern.socket, 'socket', side_effect=sockets):
+            self.assertEqual(bench_modern.free_port(), 12002)
+        for index, sock in enumerate(sockets):
+            sock.bind.assert_called_once_with(('127.0.0.1', 12001 if index < 2 else 12002))
+            sock.__exit__.assert_called_once()
+
     def test_h2_initial_stream_limit_waits_for_settings_ack(self):
         from h2.config import H2Configuration
         from h2.connection import H2Connection
@@ -75,6 +90,42 @@ class BenchmarkUnitTests(unittest.TestCase):
 
 
 class BenchmarkIntegrationTests(unittest.TestCase):
+    def test_h2_delayed_backup_wins_and_cancels_primary(self):
+        from contextlib import ExitStack
+        from bench_modern import one_load
+
+        with tempfile.TemporaryDirectory(prefix='dnsp-hedge-h2-') as td, ExitStack() as cleanup:
+            cert, key = make_certificate(Path(td))
+            primary = MockServer(free_port(), cert, key, delay_ms=5)
+            backup = MockServer(free_port(), cert, key, delay_ms=5)
+            for upstream in (primary, backup):
+                upstream.start()
+                cleanup.callback(upstream.close)
+                await_ready(upstream.port, None, 'DoH mock')
+            port, metrics = free_port(), free_port()
+            command = [str(BINARY), '-p', str(port), '-m', str(metrics),
+                       '-s', f'https://localhost:{primary.port}/dns-query',
+                       '--backup-upstream', f'https://localhost:{backup.port}/dns-query',
+                       '--bootstrap-address', '127.0.0.1', '--backup-bootstrap-address', '127.0.0.1',
+                       '--ca-file', str(cert), '--upstream-http=auto', '--upstream-hedge-ms', '60']
+            with subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE) as process:
+                try:
+                    await_ready(metrics, process, 'DNSProxy metrics')
+                    self.assertEqual(one_load(port, 1, 0)['successful_queries'], 1)
+                    before = metric_snapshot(metrics)
+                    primary.app.delay = 1
+                    self.assertEqual(one_load(port, 1, 0)['successful_queries'], 1)
+                    stats = metric_snapshot(metrics)
+                    for counter in ('dnsp_upstream_hedge_wins_total{role="backup"}',
+                                    'dnsp_upstream_hedges_cancelled_total',
+                                    'dnsp_upstream_http_responses_total{version="2"}'):
+                        self.assertEqual(stats[counter] - before[counter], 1)
+                    self.assertEqual(stats['dnsp_queries_inflight'], 0)
+                    self.assertEqual(primary.app.snapshot()['upstream_http_versions'], {'2': 2})
+                finally:
+                    process.terminate()
+                    process.wait(timeout=5)
+
     def test_large_udp_replies_distinguish_truncation_from_success(self):
         with tempfile.TemporaryDirectory(prefix='dnsp-large-bench-') as td:
             for cap in (None, 4096):

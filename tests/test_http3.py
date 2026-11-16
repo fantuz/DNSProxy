@@ -28,6 +28,7 @@ async def quic_upstream(upstream, cert, key):
         yield
     finally:
         server.close()
+        await asyncio.sleep(0)  # Finish datagram transport close callbacks in this loop.
 
 
 class Http3Tests(unittest.IsolatedAsyncioTestCase):
@@ -48,7 +49,7 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.to_thread(upstream.close)
 
     @contextmanager
-    def proxy(self, upstream_port, cert, mode='prefer-h3', hostname='localhost', env=None, backup_port=None):
+    def proxy(self, upstream_port, cert, mode='prefer-h3', hostname='localhost', env=None, backup_port=None, hedge_ms=0):
         dns_port, metrics_port = free_port(), free_port()
         command = [str(BINARY), '-p', str(dns_port), '-m', str(metrics_port),
                    '-s', f'https://{hostname}:{upstream_port}/dns-query', '--ca-file', str(cert)]
@@ -60,6 +61,8 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
             command.extend(['--backup-upstream', f'https://localhost:{backup_port}/dns-query',
                             '--backup-bootstrap-address', '127.0.0.1',
                             '--doh-connect-ms', '400', '--doh-timeout-ms', '1600'])
+        if hedge_ms:
+            command.extend(['--upstream-hedge-ms', str(hedge_ms)])
         with tempfile.TemporaryFile() as log, subprocess.Popen(command, stderr=log, env=env) as proxy:
             try:
                 await_ready(metrics_port, proxy, 'DNSProxy metrics')
@@ -90,7 +93,9 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
                     initial = await asyncio.to_thread(one_load, dns, 1, 0)
                     self.assertEqual(initial['successful_queries'], 1)
                     load = await asyncio.to_thread(one_load, dns, 8, 0.25)
-                    self.assertGreaterEqual(load['successful_queries'], 8, load)
+                    self.assertGreaterEqual(load['successful_queries'], 8,
+                                            {'load': load, 'upstream': upstream.app.snapshot(),
+                                             'proxy': metric_snapshot(metrics)})
                     self.assertEqual(load['failed_responses'] + load['timeouts'], 0, load)
                     observed = upstream.app.snapshot()
                     responses = load['successful_queries'] + 1
@@ -115,6 +120,35 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
                 self.assertGreater(row['successful_queries'], 0, row)
                 self.assertEqual(row['failed_responses'] + row['timeouts'], 0, row)
                 self.assertGreater(row['curl_metric_delta'][f'dnsp_upstream_http_responses_total{{version="{version}"}}'], 0)
+
+    async def test_h3_delayed_backup_wins_and_cancels_primary(self):
+        async with self.upstream(http2=False) as (primary, cert, key):
+            backup = MockServer(free_port(), cert, key, delay_ms=5)
+            async with quic_upstream(primary, cert, key), quic_upstream(backup, cert, key):
+                with self.proxy(primary.port, cert, backup_port=backup.port, hedge_ms=60) as (dns, metrics):
+                    warm = await asyncio.to_thread(one_load, dns, 1, 0)
+                    self.assertEqual(warm['successful_queries'], 1)
+                    before = metric_snapshot(metrics)
+                    primary.app.delay = 1
+                    result = await asyncio.to_thread(one_load, dns, 1, 0)
+                    self.assertEqual(result['successful_queries'], 1)
+                    stats = metric_snapshot(metrics)
+                    for counter in ('dnsp_upstream_hedges_started_total',
+                                    'dnsp_upstream_hedge_wins_total{role="backup"}',
+                                    'dnsp_upstream_hedges_cancelled_total',
+                                    'dnsp_upstream_http_responses_total{version="3"}'):
+                        self.assertEqual(stats[counter] - before[counter], 1)
+                    self.assertEqual(stats['dnsp_queries_inflight'], 0)
+                    self.assertEqual(primary.app.snapshot()['upstream_http_versions'], {'3': 2})
+                    # A cancelled stream must not poison later multiplexed work
+                    # on the same resolver and upstream connection pool.
+                    primary.app.delay = .015
+                    burst = await asyncio.to_thread(one_load, dns, 8, .2)
+                    self.assertGreaterEqual(burst['successful_queries'], 8, burst)
+                    self.assertEqual(burst['failed_responses'] + burst['timeouts'], 0, burst)
+            for upstream in (primary, backup):
+                self.assertEqual(upstream.app.snapshot()['upstream_inflight'], 0)
+                self.assertEqual(upstream.app.snapshot()['upstream_invalid'], 0)
 
     async def test_fallback_when_udp_gets_no_response(self):
         async with self.upstream() as (upstream, cert, _):
@@ -239,4 +273,14 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
 
 
 if __name__ == '__main__':
+    if '--isolated' in sys.argv:
+        # Container CI exposed an order-dependent failure between these native
+        # QUIC fixtures and separate event loops. Isolate complete scenarios;
+        # persistent connections and cancellation/reuse still run within cases.
+        sys.argv.remove('--isolated')
+        failed = False
+        for name in unittest.defaultTestLoader.getTestCaseNames(Http3Tests):
+            result = subprocess.run([sys.executable, __file__, 'Http3Tests.' + name, *sys.argv[1:]])
+            failed |= result.returncode != 0
+        raise SystemExit(1 if failed else 0)
     unittest.main(verbosity=2)

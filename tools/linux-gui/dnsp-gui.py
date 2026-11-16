@@ -1,6 +1,8 @@
 #!/usr/bin/python3
 """Optional Linux GTK 4 monitor. The resolver does not depend on this program."""
 
+from __future__ import annotations
+
 import argparse
 from collections import deque
 import math
@@ -9,7 +11,15 @@ import sys
 import threading
 import time
 
-from monitor import Collector, DEFAULTS, DemoCollector, Rates, Snapshot, display_value
+from monitor import (
+    Collector,
+    DEFAULTS,
+    DemoCollector,
+    LatencyWindow,
+    Rates,
+    Snapshot,
+    display_value,
+)
 
 
 def arguments(argv=None):
@@ -67,7 +77,7 @@ def build_application(options):
 
     class Window(Gtk.ApplicationWindow):
         def __init__(self, app):
-            super().__init__(application=app, title="DNSProxy · Linux monitor PoC")
+            super().__init__(application=app, title="DNSProxy · Linux monitor")
             self.set_default_size(1040, 880)
             self.collector = (
                 DemoCollector()
@@ -75,6 +85,11 @@ def build_application(options):
                 else Collector(options.pid, options.metrics_port)
             )
             self.rates = Rates()
+            self.latencies = LatencyWindow()
+            self.selected_pid = options.pid
+            self.instance_ids = [None]
+            self.instance_labels = []
+            self.updating_instances = False
             self.history = deque(maxlen=60)
             self.results = queue.Queue(maxsize=1)
             self.busy = False
@@ -109,6 +124,20 @@ def build_application(options):
             self.detail = self.label("Read-only monitor · detecting local DNSProxy")
             self.detail.set_wrap(True)
             root.append(self.detail)
+            picker = Gtk.Box(spacing=12)
+            picker.append(self.label("Resolver instance"))
+            self.instance_selector = Gtk.DropDown.new_from_strings(
+                ["Automatic selection"]
+            )
+            self.instance_selector.set_hexpand(True)
+            self.instance_selector.set_sensitive(not options.demo)
+            self.instance_selector.connect("notify::selected", self.instance_changed)
+            picker.append(self.instance_selector)
+            reconnect = Gtk.Button(label="Reconnect")
+            reconnect.set_sensitive(not options.demo)
+            reconnect.connect("clicked", lambda *_: self.instance_changed(force=True))
+            picker.append(reconnect)
+            root.append(picker)
             if options.demo:
                 root.append(
                     self.label(
@@ -153,6 +182,15 @@ def build_application(options):
                 "Activity history · up to 60 samples", "dim-label"
             )
             overview.append(self.chart_scale)
+            overview.append(
+                self.group(
+                    "Estimated latency · last 60 sampling intervals",
+                    [
+                        ("client_percentiles", "Client reply p50 / p95 / p99"),
+                        ("upstream_percentiles", "Completed attempt p50 / p95 / p99"),
+                    ],
+                )
+            )
             columns = Gtk.Box(spacing=28, homogeneous=True)
             left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
             right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
@@ -194,6 +232,7 @@ def build_application(options):
                         ("http", "HTTP/1 · HTTP/2 · HTTP/3 replies"),
                         ("reuse", "Reused requests / new connections"),
                         ("roles", "Primary / backup attempts"),
+                        ("hedges", "Parallel backups / backup wins"),
                     ],
                 )
             )
@@ -204,6 +243,9 @@ def build_application(options):
                         ("cpu", "CPU (% of one core)"),
                         ("uptime", "Process uptime"),
                         ("pid", "Process ID"),
+                        ("service", "Packaged systemd service"),
+                        ("build", "Daemon / libcurl version"),
+                        ("capabilities", "Built HTTP/2 · HTTP/3 support"),
                     ],
                 )
             )
@@ -230,8 +272,13 @@ def build_application(options):
                 "from query counts. An unavailable metric is shown as a dash, rather than a zero.",
                 "Pause switches to on-demand sampling with Refresh now. Automatic polling also stops while the "
                 "window is unmapped. Closing the GUI leaves DNSProxy running.",
-                "When several resolvers run, use --pid PID. If /proc is restricted, --metrics-port PORT offers "
+                "Use the instance selector when several resolvers run. Service state is read independently "
+                "from dnsp-modern.service and never changes the daemon. If /proc is restricted, --metrics-port PORT offers "
                 "traffic-only monitoring without root privileges or inferred startup settings.",
+                "Percentiles are estimates interpolated from bounded histogram buckets over recent samples. "
+                "Client timings include complete UDP/TCP replies, cache hits, policy blocks and DNS errors. "
+                "Attempt timings include completed failures but exclude cancelled losing races. No query log is collected. "
+                "A dash means insufficient samples or an older daemon without histograms; above range means the final unbounded bucket.",
             ):
                 label = self.label(text)
                 label.set_wrap(True)
@@ -242,6 +289,7 @@ def build_application(options):
             )
             root.append(self.freshness)
             self.connect("close-request", self.close_monitor)
+            self.connect("unmap", self.reset_baseline)
             self.tick_id = GLib.timeout_add(250, self.tick)
 
         @staticmethod
@@ -280,8 +328,67 @@ def build_application(options):
         def pause_changed(self, *_):
             self.epoch += 1
             self.rates.reset()
+            self.latencies.reset()
             self.pause.set_label("Resume" if self.pause.get_active() else "Pause")
             self.last_started = 0
+
+        def reset_baseline(self, *_):
+            self.epoch += 1
+            self.rates.reset()
+            self.latencies.reset()
+            self.last_started = 0
+
+        def instance_changed(self, *_args, force=False):
+            if self.updating_instances or options.demo:
+                return
+            index = self.instance_selector.get_selected()
+            if index >= len(self.instance_ids):
+                return
+            pid = self.instance_ids[index]
+            if pid == self.selected_pid and not force:
+                return
+            self.selected_pid = pid
+            self.collector = Collector(
+                pid, options.metrics_port if pid is None else None
+            )
+            self.reset_baseline()
+            self.history.clear()
+            self.snapshot = None
+            self.last_success = None
+            for value in self.values.values():
+                value.set_text("—")
+            self.status.set_text("Connecting…")
+            self.detail.set_text("Reading the selected instance")
+            self.show_settings(None)
+            self.chart.queue_draw()
+            self.request_sample(force=True)
+
+        def show_instances(self, snapshot):
+            rows = list(snapshot.instances)
+            if snapshot.process and all(p.pid != snapshot.process.pid for p in rows):
+                rows.append(snapshot.process)
+            ids = [None] + [p.pid for p in rows]
+            labels = [
+                f"Traffic only · port {options.metrics_port}"
+                if options.metrics_port
+                else "Automatic selection"
+            ]
+            labels += [
+                f"PID {p.pid} · DNS port {p.invocation.get('-p')} · metrics {p.invocation.get('-m')}"
+                for p in rows
+            ]
+            if self.selected_pid and self.selected_pid not in ids:
+                ids.append(self.selected_pid)
+                labels.append(f"Selected PID {self.selected_pid} · unavailable")
+            if labels == self.instance_labels and ids == self.instance_ids:
+                return
+            self.updating_instances = True
+            self.instance_ids, self.instance_labels = ids, labels
+            self.instance_selector.set_model(Gtk.StringList.new(labels))
+            self.instance_selector.set_selected(
+                ids.index(self.selected_pid) if self.selected_pid in ids else 0
+            )
+            self.updating_instances = False
 
         def request_sample(self, force=False):
             if self.closed or self.busy or (self.pause.get_active() and not force):
@@ -336,9 +443,13 @@ def build_application(options):
             return True
 
         def apply(self, snapshot):
+            if self.snapshot and self.snapshot.identity != snapshot.identity:
+                self.history.clear()
             self.snapshot = snapshot
             process, metrics = snapshot.process, snapshot.metrics
+            self.show_instances(snapshot)
             rate, delta, cpu = self.rates.update(snapshot)
+            percentile_values = self.latencies.update(snapshot)
             if metrics:
                 self.last_success = snapshot.at
             self.status.set_text(
@@ -367,6 +478,18 @@ def build_application(options):
             self.values["pid"].set_text(
                 str(process.pid) if process and process.pid else "—"
             )
+            if snapshot.service:
+                self.values["service"].set_text(snapshot.service.describe(process))
+            for key, values in zip(
+                ("client_percentiles", "upstream_percentiles"), percentile_values
+            ):
+                if values is not None:
+                    self.values[key].set_text(
+                        " / ".join(
+                            "above range" if math.isinf(v) else f"{1000 * v:.1f} ms"
+                            for v in values
+                        )
+                    )
             if process:
                 hours, rest = divmod(int(process.uptime), 3600)
                 self.values["uptime"].set_text(
@@ -402,6 +525,27 @@ def build_application(options):
                 ):
                     put(key, name)
                 pair("cache", "dnsp_cache_hits_total", "dnsp_cache_misses_total")
+                self.values["hedges"].set_text(
+                    number(get("dnsp_upstream_hedges_started_total"))
+                    + " / "
+                    + number(get("dnsp_upstream_hedge_wins_total", role="backup"))
+                )
+                info = [
+                    dict(labels)
+                    for (name, labels), value in metrics.samples.items()
+                    if name == "dnsp_build_info" and value == 1
+                ]
+                if len(info) == 1:
+                    self.values["build"].set_text(
+                        info[0].get("version", "unknown")
+                        + " / "
+                        + info[0].get("libcurl", "unknown")
+                    )
+                    self.values["capabilities"].set_text(
+                        info[0].get("http2", "unknown")
+                        + " · "
+                        + info[0].get("http3", "unknown")
+                    )
                 pair(
                     "blocked",
                     "dnsp_blocked_queries_total",

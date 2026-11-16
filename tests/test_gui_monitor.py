@@ -5,6 +5,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import os
+import math
 import re
 import socket
 import subprocess
@@ -16,7 +17,8 @@ import unittest
 from unittest.mock import patch
 
 BASE = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(BASE / "tools/linux-gui"))
+GUI_SOURCE = Path(os.environ.get("DNSP_GUI_SOURCE", BASE / "tools/linux-gui"))
+sys.path.insert(0, str(GUI_SOURCE))
 import monitor  # noqa: E402 - optional tool lives outside the tests package
 from test_modern import BINARY, DoH, HTTP, query, unused_ports  # noqa: E402
 
@@ -270,9 +272,11 @@ class ProcessTests(unittest.TestCase):
             self.assertEqual(parsed.memory_bytes, 10 * os.sysconf("SC_PAGE_SIZE"))
             self.assertEqual(parsed.invocation.metrics_port, 9090)
             self.assertEqual(monitor.discover_pid(root), 42)
+            self.assertEqual(monitor.list_instances(root), (parsed,))
             another = root / "43"
             another.mkdir()
             (another / "exe").symlink_to("/usr/bin/dnsp-modern")
+            self.assertEqual(monitor.list_instances(root), (parsed,))
             with self.assertRaisesRegex(ValueError, "Multiple"):
                 monitor.discover_pid(root)
             (pid / "exe").unlink()
@@ -304,6 +308,114 @@ class ProcessTests(unittest.TestCase):
             self.assertFalse(snapshot.error)
             self.assertIsNone(snapshot.process)
             self.assertIsNotNone(snapshot.metrics)
+
+
+class ServiceTests(unittest.TestCase):
+    def test_fixed_read_only_service_lookup_and_other_instance(self):
+        result = subprocess.CompletedProcess(
+            [],
+            0,
+            "LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=42\nResult=success\n",
+            "",
+        )
+        with patch.object(monitor.subprocess, "run", return_value=result) as run:
+            status = monitor.read_service()
+        self.assertEqual(status.describe(), "active / running")
+        self.assertIn("another instance", status.describe(sample(pid=43).process))
+        args, kwargs = run.call_args
+        self.assertEqual(
+            args[0][:3], ["/usr/bin/systemctl", "show", "dnsp-modern.service"]
+        )
+        self.assertLessEqual(kwargs["timeout"], 1)
+        self.assertNotIn("start", args[0])
+
+    def test_absent_unavailable_timeout_and_untrusted_status(self):
+        for code, body, expected in (
+            (1, "LoadState=not-found\n", "Service not installed"),
+            (1, "", "Systemd status unavailable"),
+            (0, "MainPID=-1\n", "Systemd status unavailable"),
+            (0, "Result=unsafe result\n", "Systemd status unavailable"),
+            (0, "x" * 4097, "Systemd status unavailable"),
+        ):
+            with (
+                self.subTest(body=body[:30]),
+                patch.object(
+                    monitor.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], code, body, ""),
+                ),
+            ):
+                self.assertEqual(monitor.read_service().describe(), expected)
+        with patch.object(
+            monitor.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired("systemctl", 0.75),
+        ):
+            self.assertEqual(monitor.read_service().load, "unavailable")
+
+    def test_multiple_instances_are_exposed_without_fetching_ambiguous_metrics(self):
+        processes = (sample(pid=42).process, sample(pid=43).process)
+        with (
+            patch.object(monitor, "list_instances", return_value=processes),
+            patch.object(monitor, "read_service", return_value=None),
+            patch.object(monitor, "fetch_metrics") as fetch,
+        ):
+            snapshot = monitor.Collector().collect()
+            self.assertEqual(snapshot.instances, processes)
+            self.assertIn("Choose one", snapshot.error)
+            fetch.assert_not_called()
+
+
+class LatencyTests(unittest.TestCase):
+    @staticmethod
+    def histogram(counts=(0, 0, 0), *, at=1, **changes):
+        values = dict(monitor.parse_metrics(BODY).samples)
+        for name, labels in (
+            ("dnsp_client_duration_seconds", (("transport", "udp"),)),
+            ("dnsp_client_duration_seconds", (("transport", "tcp"),)),
+            ("dnsp_upstream_duration_seconds", ()),
+        ):
+            for bound, count in zip(("0.01", "0.1", "+Inf"), counts):
+                values[(name + "_bucket", tuple(sorted(labels + (("le", bound),))))] = (
+                    count
+                )
+            values[(name + "_count", labels)] = counts[-1]
+        return replace(sample(at=at, **changes), metrics=monitor.Metrics(values))
+
+    def test_recent_percentiles_idle_reset_and_bound(self):
+        window = monitor.LatencyWindow()
+        self.assertEqual(window.update(self.histogram()), (None, None))
+        client, upstream = window.update(self.histogram((5, 10, 10), at=2))
+        for values in (client, upstream):
+            self.assertAlmostEqual(values[0], 0.01)
+            self.assertAlmostEqual(values[1], 0.091)
+            self.assertAlmostEqual(values[2], 0.0982)
+        # An idle interval preserves the recent window, not a synthetic zero.
+        self.assertEqual(
+            window.update(self.histogram((5, 10, 10), at=3)), (client, upstream)
+        )
+        for tick in range(4, 100):
+            window.update(self.histogram((5, 10, 10), at=tick))
+        self.assertEqual(len(window.history), 61)
+        self.assertEqual(
+            window.update(self.histogram((5, 10, 10), at=100)), (None, None)
+        )
+        self.assertEqual(window.update(self.histogram((1, 2, 2), at=101)), (None, None))
+        self.assertEqual(
+            window.update(self.histogram((5, 10, 10), at=102, start=101)), (None, None)
+        )
+
+    def test_legacy_missing_and_invalid_histograms_recover(self):
+        window = monitor.LatencyWindow()
+        window.update(sample())
+        self.assertEqual(window.update(self.histogram()), (None, None))
+        self.assertIsNotNone(window.update(self.histogram((1, 2, 2), at=2))[0])
+        self.assertEqual(window.update(replace(sample(), metrics=None)), (None, None))
+        window.update(self.histogram())
+        self.assertEqual(window.update(self.histogram((2, 1, 3))), (None, None))
+        self.assertEqual(window.update(self.histogram((0, 0, 5))), (None, None))
+        client, upstream = window.update(self.histogram((0, 0, 6), at=3))
+        self.assertTrue(all(math.isinf(value) for value in client + upstream))
 
 
 class RateTests(unittest.TestCase):
