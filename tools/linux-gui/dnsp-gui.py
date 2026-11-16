@@ -182,6 +182,15 @@ def build_application(options):
                 "Activity history · up to 60 samples", "dim-label"
             )
             overview.append(self.chart_scale)
+            overview.append(
+                self.group(
+                    "Estimated latency · last 60 sampling intervals",
+                    [
+                        ("client_percentiles", "Client reply p50 / p95 / p99"),
+                        ("upstream_percentiles", "Completed attempt p50 / p95 / p99"),
+                    ],
+                )
+            )
             columns = Gtk.Box(spacing=28, homogeneous=True)
             left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
             right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
@@ -241,15 +250,6 @@ def build_application(options):
                 )
             )
             overview.append(columns)
-            overview.append(
-                self.group(
-                    "Estimated latency · last 60 sampling intervals",
-                    [
-                        ("client_percentiles", "Client reply p50 / p95 / p99"),
-                        ("upstream_percentiles", "Completed attempt p50 / p95 / p99"),
-                    ],
-                )
-            )
             notebook.append_page(self.scroll(overview), self.label("Overview"))
             self.startup = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
             self.startup.append(self.label("Waiting for a readable DNSProxy process…"))

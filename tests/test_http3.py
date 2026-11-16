@@ -92,7 +92,9 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
                     initial = await asyncio.to_thread(one_load, dns, 1, 0)
                     self.assertEqual(initial['successful_queries'], 1)
                     load = await asyncio.to_thread(one_load, dns, 8, 0.25)
-                    self.assertGreaterEqual(load['successful_queries'], 8, load)
+                    self.assertGreaterEqual(load['successful_queries'], 8,
+                                            {'load': load, 'upstream': upstream.app.snapshot(),
+                                             'proxy': metric_snapshot(metrics)})
                     self.assertEqual(load['failed_responses'] + load['timeouts'], 0, load)
                     observed = upstream.app.snapshot()
                     responses = load['successful_queries'] + 1

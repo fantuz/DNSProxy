@@ -92,7 +92,7 @@ class BenchmarkIntegrationTests(unittest.TestCase):
                        '-s', f'https://localhost:{primary.port}/dns-query',
                        '--backup-upstream', f'https://localhost:{backup.port}/dns-query',
                        '--bootstrap-address', '127.0.0.1', '--backup-bootstrap-address', '127.0.0.1',
-                       '--ca-file', str(cert), '--upstream-http=h2', '--upstream-hedge-ms', '60']
+                       '--ca-file', str(cert), '--upstream-http=auto', '--upstream-hedge-ms', '60']
             with subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE) as process:
                 try:
                     await_ready(metrics, process, 'DNSProxy metrics')
