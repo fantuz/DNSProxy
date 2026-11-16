@@ -1,6 +1,7 @@
 """Real dual-upstream races, reply ownership, deadlines and bounded telemetry."""
 from contextlib import contextmanager
 import socket
+import ssl
 from pathlib import Path
 import struct
 import subprocess
@@ -105,6 +106,31 @@ class HedgingTests(unittest.TestCase):
                 self.assertEqual(len(primary.received), 1)
                 self.assertEqual(len(backup.received), 1)
                 self.assertEqual(self.metric(metric, 'dnsp_queries_inflight'), 0)
+
+    @unittest.skipUnless(dns.OPENSSL, 'TLS fixture requires openssl')
+    def test_extended_tls_primary_still_obeys_the_original_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cert, key = Path(directory) / 'cert.pem', Path(directory) / 'key.pem'
+            subprocess.run([dns.OPENSSL, 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+                            '-days', '1', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost',
+                            '-out', str(cert), '-keyout', str(key)], check=True, timeout=10,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            tls.load_cert_chain(cert, key)
+            with self.endpoint('stall', tls=tls) as primary, self.endpoint('stall') as backup:
+                with self.proxy(f'https://localhost:{primary.server_port}/dns-query', self.url(backup),
+                                '--ca-file', str(cert), '--bootstrap-address', '127.0.0.1',
+                                total_ms=800, hedge_ms=80) as (port, metric), \
+                     socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+                    client.settimeout(3)
+                    start = time.monotonic()
+                    client.sendto(dns.QUERY, ('127.0.0.1', port))
+                    self.assertEqual(client.recv(4096)[3] & 15, 2)
+                    self.assertLess(time.monotonic() - start, 1.6)
+                    self.assertEqual(self.metric(metric, 'dnsp_upstream_hedges_started_total'), 1)
+                    self.assertEqual(self.metric(metric, 'dnsp_queries_inflight'), 0)
+                    self.assertEqual(len(primary.received), 1)
+                    self.assertEqual(len(backup.received), 1)
 
     def test_late_coalesced_waiters_keep_ids_and_obey_no_store(self):
         for mode, requests in (('wait_answer', 1), ('wait_nostore', 2)):

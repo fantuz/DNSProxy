@@ -84,7 +84,7 @@ jobs:
           RUN make -f modern.mk dnsp-modern
           DOCKERFILE
       - name: Verify HTTP/3 negotiation and TCP fallback
-        run: docker run --rm --network none dnsp-modern-h3-ci /opt/bench/bin/python tests/test_http3.py
+        run: docker run --rm --network none dnsp-modern-h3-ci /opt/bench/bin/python tests/test_http3.py --isolated
       - name: Diagnose HTTP/3 reuse against the PR base if integration fails
         if: failure() && github.event_name == 'pull_request'
         env:

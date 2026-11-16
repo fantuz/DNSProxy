@@ -1217,7 +1217,7 @@ static void record_upstream_phases(CURL *easy,long connects) {
        ready>0 && first_byte>=ready)
         record_phase(PHASE_FIRST_BYTE,first_byte-ready);
 }
-static void complete(Query *q,CURLcode code) {
+static void complete(Query *q,CURLcode code,bool deadline_expired) {
     long status=0,version=0,connects=0;
     char *content_type=NULL;
     double seconds=0;
@@ -1225,6 +1225,7 @@ static void complete(Query *q,CURLcode code) {
     curl_easy_getinfo(q->easy,CURLINFO_HTTP_VERSION,&version);
     curl_easy_getinfo(q->easy,CURLINFO_NUM_CONNECTS,&connects);
     curl_easy_getinfo(q->easy,CURLINFO_TOTAL_TIME,&seconds);
+    if(deadline_expired) seconds=(double)(clock_ms()-q->attempt_started_ms)/1000.0;
     curl_easy_getinfo(q->easy,CURLINFO_CONTENT_TYPE,&content_type);
     record_upstream_phases(q->easy,connects);
     observe_latency(&metrics.upstream_latency,seconds);
@@ -1548,8 +1549,22 @@ static void drain_completions(void) {
         if(msg->msg==CURLMSG_DONE) {
             Query *q=NULL;
             curl_easy_getinfo(msg->easy_handle,CURLINFO_PRIVATE,&q);
-            if(q) complete(q,msg->data.result);
+            if(q) complete(q,msg->data.result,false);
         }
+    }
+}
+static void expire_hedged_queries(uint64_t now) {
+    if(!upstream_hedge_ms) return;
+    for(;;) {
+        Query *expired=NULL;
+        for(Query *q=active;q;q=q->next)
+            if(q->failover_deadline_ms && now>=q->failover_deadline_ms) {expired=q;break;}
+        if(!expired) return;
+        /* A mid-transfer CURLOPT_TIMEOUT_MS extension does not necessarily
+         * rearm libcurl's original expiry timer. Enforce the logical deadline
+         * independently, including capacity-suppressed races. */
+        finish_hedge(expired,false);
+        complete(expired,CURLE_OPERATION_TIMEDOUT,true);
     }
 }
 static bool drive_curl(curl_socket_t fd,int events) {
@@ -1757,10 +1772,14 @@ static void metric_response(MetricClient *c) {
         "# TYPE dnsp_client_duration_seconds histogram\n"
         "# TYPE dnsp_upstream_hedges_started_total counter\n"
         "dnsp_upstream_hedges_started_total %" PRIu64 "\n"
+        "# TYPE dnsp_upstream_hedges_suppressed_total counter\n"
         "dnsp_upstream_hedges_suppressed_total %" PRIu64 "\n"
+        "# TYPE dnsp_upstream_hedges_cancelled_total counter\n"
         "dnsp_upstream_hedges_cancelled_total %" PRIu64 "\n"
+        "# TYPE dnsp_upstream_hedge_wins_total counter\n"
         "dnsp_upstream_hedge_wins_total{role=\"primary\"} %" PRIu64 "\n"
         "dnsp_upstream_hedge_wins_total{role=\"backup\"} %" PRIu64 "\n"
+        "# TYPE dnsp_upstream_hedges_inflight gauge\n"
         "dnsp_upstream_hedges_inflight %zu\n",
         DNSP_VERSION,(curl_number>>16)&255u,(curl_number>>8)&255u,curl_number&255u,
         h2?"yes":"no",h3?"yes":"no",metrics.hedges_started,metrics.hedges_suppressed,
@@ -2182,6 +2201,7 @@ static int dnsp_run(int argc,char **argv) {
             metrics.timer_fires++;
             if(!drive_curl(CURL_SOCKET_TIMEOUT,0)) {exitcode=1;break;}
         }
+        if(upstream_hedge_ms) {expire_hedged_queries(clock_ms());now=clock_ms();}
         size_t n=0,tcp_count=0;
 #define ADD(kind_,fd_,events_,idx_,gen_) do { \
     pfds[n]=(dnsp_pollfd){.fd=(fd_),.events=(events_)}; \
@@ -2217,9 +2237,12 @@ static int dnsp_run(int argc,char **argv) {
             if(left<0) left=0;
             if(left<timeout) timeout=(int)left;
         }
-        if(upstream_hedge_ms) for(Query *q=active;q;q=q->next) if(q->hedge_at_ms) {
-            uint64_t left=now>=q->hedge_at_ms?0:q->hedge_at_ms-now;
-            if(left<(uint64_t)timeout) timeout=(int)left;
+        if(upstream_hedge_ms) for(Query *q=active;q;q=q->next) {
+            uint64_t deadlines[]={q->hedge_at_ms,q->failover_deadline_ms};
+            for(size_t i=0;i<sizeof(deadlines)/sizeof(deadlines[0]);i++) if(deadlines[i]) {
+                uint64_t left=now>=deadlines[i]?0:deadlines[i]-now;
+                if(left<(uint64_t)timeout) timeout=(int)left;
+            }
         }
         uint64_t idle_ms=tcp_idle_ms;
         if(tcp_count>=TCP_PRESSURE_CLIENTS && idle_ms>TCP_PRESSURE_IDLE_MS) idle_ms=TCP_PRESSURE_IDLE_MS;

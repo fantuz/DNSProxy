@@ -140,6 +140,12 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(stats[counter] - before[counter], 1)
                     self.assertEqual(stats['dnsp_queries_inflight'], 0)
                     self.assertEqual(primary.app.snapshot()['upstream_http_versions'], {'3': 2})
+                    # A cancelled stream must not poison later multiplexed work
+                    # on the same resolver and upstream connection pool.
+                    primary.app.delay = .015
+                    burst = await asyncio.to_thread(one_load, dns, 8, .2)
+                    self.assertGreaterEqual(burst['successful_queries'], 8, burst)
+                    self.assertEqual(burst['failed_responses'] + burst['timeouts'], 0, burst)
             for upstream in (primary, backup):
                 self.assertEqual(upstream.app.snapshot()['upstream_inflight'], 0)
                 self.assertEqual(upstream.app.snapshot()['upstream_invalid'], 0)
@@ -267,4 +273,14 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
 
 
 if __name__ == '__main__':
+    if '--isolated' in sys.argv:
+        # Container CI exposed an order-dependent failure between these native
+        # QUIC fixtures and separate event loops. Isolate complete scenarios;
+        # persistent connections and cancellation/reuse still run within cases.
+        sys.argv.remove('--isolated')
+        failed = False
+        for name in unittest.defaultTestLoader.getTestCaseNames(Http3Tests):
+            result = subprocess.run([sys.executable, __file__, 'Http3Tests.' + name, *sys.argv[1:]])
+            failed |= result.returncode != 0
+        raise SystemExit(1 if failed else 0)
     unittest.main(verbosity=2)

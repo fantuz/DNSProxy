@@ -43,7 +43,8 @@ eligible primary request remains pending after 150 ms. The default is `0`
 (disabled). A positive delay requires a backup and must be smaller than
 `--doh-timeout-ms`; the accepted range is 0–60000 ms.
 
-Both attempts use the same original deadline. After the primary authenticates,
+Both attempts use the same original deadline, enforced independently by the
+event loop even when a libcurl timeout is extended. After the primary authenticates,
 it keeps the remaining total budget while the backup races it. Before HTTPS
 certificate verification completes, the original half-budget failover policy
 remains in effect; the hedge waits for authentication. A primary certificate or

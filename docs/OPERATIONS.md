@@ -96,3 +96,8 @@ permanently. See [the upstream policy](UPSTREAM_FAILOVER.md).
 Use the [benchmark guide](../bench/README.md) to install the optional test
 dependencies and compare latency, failures, and negotiated protocol. Loopback
 results reflect the local fixture and selected libcurl build.
+
+HTTP/3 integration scenarios use separate Python processes with `--isolated`
+to avoid state leaking between native QUIC fixtures and event loops. Each
+scenario retains its persistent connections and multiplexing checks. The race
+scenario also verifies an eight-client burst after cancelling a losing stream.
