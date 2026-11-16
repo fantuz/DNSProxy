@@ -249,10 +249,11 @@ adapter address (`DNSP_TEST_SECOND_ADDRESS`), without changing adapter settings.
 
 Next decisions: signed installer and broader desktop acceptance. New releases
 include both Windows ZIPs alongside eight Linux daemon packages, four optional
-Linux GUI packages (from v4.6.0) and two native macOS archives. Publication waits for native Windows/macOS builds, portable
-bundle tests, Linux packages and sanitizers; all twelve downloads are included
-in the release's `SHA256SUMS`. Distribution in a regular release
-does not replace the platform coverage and unsigned-build limitations described above.
+Linux GUI packages (from v4.6.0) and two native macOS archives. Publication waits
+for native Windows/macOS builds, portable bundle tests, Linux packages and
+sanitizers; all sixteen packages are included in the release's `SHA256SUMS`.
+The platform coverage and unsigned-build limitations above apply to these
+regular releases.
 
 ## Build from source
 
