@@ -1,11 +1,15 @@
 """Read-only Linux process and DNSProxy Prometheus collectors (no GTK dependency)."""
 
+from __future__ import annotations
+
+from collections import deque
 from dataclasses import dataclass, field
 import http.client
 import math
 import os
 from pathlib import Path
 import re
+import subprocess
 import time
 from urllib.parse import urlsplit, urlunsplit
 
@@ -17,6 +21,7 @@ DEFAULTS = {
     "-s": ("https://cloudflare-dns.com/dns-query",),
     "-m": (),
     "--backup-upstream": (),
+    "--upstream-hedge-ms": ("0",),
     "--backup-bootstrap-address": (),
     "--bootstrap-address": (),
     "--ca-file": (),
@@ -73,6 +78,7 @@ class Invocation:
             "In-memory DNS cache": self.number("--cache-entries") > 0,
             "EDNS request padding": has("--edns-padding"),
             "Backup upstream": has("--backup-upstream"),
+            "Delayed parallel upstream": self.number("--upstream-hedge-ms") > 0,
             "Primary bootstrap address": has("--bootstrap-address"),
             "Backup bootstrap address": has("--backup-bootstrap-address"),
             "Prefer HTTP/3 (with fallback)": self.get("--upstream-http") == "prefer-h3",
@@ -198,6 +204,88 @@ def discover_pid(proc=Path("/proc")):
     return found[0] if found else None
 
 
+def list_instances(proc=Path("/proc")):
+    """Bound the picker to readable, verified DNSProxy executables."""
+    found = []
+    for directory in proc.iterdir():
+        if not directory.name.isdecimal():
+            continue
+        try:
+            if (
+                Path(os.readlink(directory / "exe").removesuffix(" (deleted)")).name
+                != "dnsp-modern"
+            ):
+                continue
+            found.append(read_process(int(directory.name), proc))
+        except (OSError, ValueError):
+            continue
+        if len(found) == 128:
+            break
+    return tuple(sorted(found, key=lambda process: process.pid))
+
+
+@dataclass(frozen=True)
+class ServiceStatus:
+    load: str
+    active: str
+    substate: str
+    pid: int = 0
+    result: str = ""
+
+    def describe(self, process=None):
+        if self.load == "not-found":
+            return "Service not installed"
+        if self.load == "unavailable":
+            return "Systemd status unavailable"
+        suffix = (
+            " · another instance"
+            if process and self.pid and process.pid != self.pid
+            else ""
+        )
+        result = f" · {self.result}" if self.result and self.result != "success" else ""
+        return f"{self.active} / {self.substate}{result}{suffix}"
+
+
+def read_service():
+    """Read fixed unit properties, never invoke privileged service controls."""
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/systemctl",
+                "show",
+                "dnsp-modern.service",
+                "--no-pager",
+                "--property=LoadState,ActiveState,SubState,MainPID,Result",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=0.75,
+            check=False,
+        )
+        if len(result.stdout) > 4096:
+            raise ValueError("Oversized service status")
+        properties = dict(
+            line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
+        )
+        if result.returncode and properties.get("LoadState") != "not-found":
+            raise ValueError("Service manager unavailable")
+        states = [
+            properties.get(name, "unknown")
+            for name in ("LoadState", "ActiveState", "SubState")
+        ]
+        if any(not re.fullmatch("[a-z-]{1,32}", value) for value in states):
+            raise ValueError("Invalid service status")
+        pid = int(properties.get("MainPID", "0"))
+        outcome = properties.get("Result", "")
+        if not 0 <= pid <= 2147483647 or (
+            outcome and not re.fullmatch("[a-z-]{1,32}", outcome)
+        ):
+            raise ValueError("Invalid service identity")
+        return ServiceStatus(*states, pid, outcome)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return ServiceStatus("unavailable", "unknown", "unknown")
+
+
 @dataclass(frozen=True)
 class Metrics:
     samples: dict
@@ -273,6 +361,8 @@ class Snapshot:
     metrics: Metrics | None
     port: int | None
     error: str = ""
+    instances: tuple = ()
+    service: ServiceStatus | None = None
 
     @property
     def identity(self):
@@ -284,18 +374,41 @@ class Collector:
         self.pid = pid
         self.metrics_port = metrics_port
         self.pinned_identity = None
+        self.instances = ()
+        self.service = None
+        self.status_at = None
 
     def collect(self):
         process = None
         port = self.metrics_port
-        try:
-            pid = (
-                self.pid
-                if self.pid is not None
-                else discover_pid()
-                if port is None
-                else None
+        now = time.monotonic()
+        if self.status_at is None or now - self.status_at >= 5:
+            try:
+                self.instances = list_instances()
+            except OSError:
+                self.instances = ()
+            self.service = read_service()
+            self.status_at = now
+
+        def snapshot(metrics, error=""):
+            return Snapshot(
+                time.monotonic(),
+                process,
+                metrics,
+                port,
+                error,
+                self.instances,
+                self.service,
             )
+
+        try:
+            if self.pid is None and port is None and len(self.instances) > 1:
+                raise ValueError(
+                    "Multiple DNSProxy instances found. Choose one in the instance selector."
+                )
+            pid = self.pid
+            if pid is None and port is None and self.instances:
+                pid = self.instances[0].pid
             if pid is not None:
                 process = read_process(pid)
                 if self.pid is not None:
@@ -318,10 +431,7 @@ class Collector:
                     "No DNSProxy process found. Start dnsp-modern, then refresh."
                 )
             if port is None:
-                return Snapshot(
-                    time.monotonic(),
-                    process,
-                    None,
+                return snapshot(
                     None,
                     "Metrics disabled. Start dnsp-modern with -m PORT for live traffic.",
                 )
@@ -332,9 +442,9 @@ class Collector:
                 raise ValueError(
                     "DNSProxy restarted during the sample; refresh to reconnect"
                 )
-            return Snapshot(time.monotonic(), process, metrics, port)
+            return snapshot(metrics)
         except (OSError, ValueError, http.client.HTTPException) as error:
-            return Snapshot(time.monotonic(), process, None, port, str(error))
+            return snapshot(None, str(error))
 
 
 class Rates:
@@ -366,6 +476,113 @@ class Rates:
                 return None, None, cpu
             deltas.append(now - before)
         return sum(deltas) / dt, sum(deltas), cpu
+
+
+def _histogram(metrics, name, populations):
+    combined = None
+    bounds = None
+    for population in populations:
+        rows = {}
+        for (metric, labels), count in metrics.samples.items():
+            labels = dict(labels)
+            if metric != name + "_bucket" or set(labels) != set(population) | {"le"}:
+                continue
+            if any(labels[key] != value for key, value in population.items()):
+                continue
+            try:
+                bound = float(labels["le"])
+            except ValueError:
+                return None
+            if (
+                math.isnan(bound)
+                or bound <= 0
+                or bound in rows
+                or not isinstance(count, int)
+            ):
+                return None
+            rows[bound] = count
+        if not rows or math.inf not in rows:
+            return None
+        current_bounds = tuple(sorted(rows))
+        counts = tuple(rows[bound] for bound in current_bounds)
+        if any(a > b for a, b in zip(counts, counts[1:])):
+            return None
+        if metrics.get(name + "_count", **population) != counts[-1]:
+            return None
+        if bounds is None:
+            bounds, combined = current_bounds, counts
+        elif bounds != current_bounds:
+            return None
+        else:
+            combined = tuple(a + b for a, b in zip(combined, counts))
+    return bounds, combined
+
+
+def _percentiles(bounds, counts):
+    if not counts[-1] or any(a > b for a, b in zip(counts, counts[1:])):
+        return None
+    values = []
+    for quantile in (0.5, 0.95, 0.99):
+        target = quantile * counts[-1]
+        lower, before = 0.0, 0
+        for upper, count in zip(bounds, counts):
+            if count >= target:
+                values.append(
+                    math.inf
+                    if math.isinf(upper)
+                    else lower + (upper - lower) * (target - before) / (count - before)
+                )
+                break
+            lower, before = upper, count
+    return tuple(values)
+
+
+class LatencyWindow:
+    """Bounded histogram deltas over at most 60 sampling intervals, no query log."""
+
+    def __init__(self):
+        self.history = deque(maxlen=61)
+        self.identity = None
+
+    def reset(self):
+        self.history.clear()
+        self.identity = None
+
+    def update(self, snapshot):
+        if snapshot.metrics is None:
+            self.reset()
+            return None, None
+        current = (
+            _histogram(
+                snapshot.metrics,
+                "dnsp_client_duration_seconds",
+                ({"transport": "udp"}, {"transport": "tcp"}),
+            ),
+            _histogram(snapshot.metrics, "dnsp_upstream_duration_seconds", ({},)),
+        )
+        if self.identity != snapshot.identity:
+            self.reset()
+        if self.history:
+            for old, new in zip(self.history[-1], current):
+                if (old is None) != (new is None) or (
+                    old is not None
+                    and new is not None
+                    and (old[0] != new[0] or any(a > b for a, b in zip(old[1], new[1])))
+                ):
+                    self.reset()
+                    break
+        self.identity = snapshot.identity
+        self.history.append(current)
+        if len(self.history) < 2:
+            return None, None
+        results = []
+        for baseline, latest in zip(self.history[0], current):
+            if baseline is None or latest is None or baseline[0] != latest[0]:
+                results.append(None)
+                continue
+            delta = tuple(a - b for a, b in zip(latest[1], baseline[1]))
+            results.append(_percentiles(latest[0], delta))
+        return tuple(results)
 
 
 class DemoCollector:
@@ -424,6 +641,42 @@ class DemoCollector:
             'dnsp_blocklist_entries{action="allow"}': 12,
             "dnsp_blocklist_reload_failures_total": 0,
         }
+        values[
+            'dnsp_build_info{version="demo",libcurl="demo",http2="yes",http3="no"}'
+        ] = 1
+        for name, labels, observations, duration in (
+            ("dnsp_client_duration_seconds", 'transport="udp",', count, 0.025),
+            (
+                "dnsp_client_duration_seconds",
+                'transport="tcp",',
+                180 + int(elapsed),
+                0.025,
+            ),
+            ("dnsp_upstream_duration_seconds", "", 2841 + int(elapsed * 5), 0.05),
+        ):
+            for bound in (
+                0.001,
+                0.0025,
+                0.005,
+                0.01,
+                0.025,
+                0.05,
+                0.1,
+                0.25,
+                0.5,
+                1,
+                2.5,
+                5,
+                10,
+                60,
+            ):
+                values[f'{name}_bucket{{{labels}le="{bound:g}"}}'] = (
+                    observations if bound >= duration else 0
+                )
+            values[f'{name}_bucket{{{labels}le="+Inf"}}'] = observations
+            suffix = "{" + labels.rstrip(",") + "}" if labels else ""
+            values[name + "_count" + suffix] = observations
+            values[name + "_sum" + suffix] = observations * duration
         metrics = parse_metrics(
             "\n".join(f"{key} {value}" for key, value in values.items()).encode()
         )

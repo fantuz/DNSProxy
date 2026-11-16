@@ -94,6 +94,8 @@ jobs:
           if ($LASTEXITCODE) { $failed = $true }
           & $python tests/test_modern.py -v
           if ($LASTEXITCODE) { $failed = $true }
+          & $python tests/test_hedging.py -v
+          if ($LASTEXITCODE) { $failed = $true }
           & $python tests/test_policy.py -v
           if ($LASTEXITCODE) { $failed = $true }
           & $python tests/test_policy_updater.py -v

@@ -50,10 +50,44 @@ sudo systemctl kill --kill-who=main -s SIGUSR1 dnsp-modern
 journalctl -u dnsp-modern -n 20 --no-pager
 ```
 
+## Inspect latency and parallel requests
+
+`dnsp_build_info` reports the running daemon version, numeric runtime libcurl
+version and built HTTP/2/3 capabilities. Query names, endpoint URLs and client
+addresses are never metric labels.
+
+`dnsp_client_duration_seconds` is a histogram labelled by UDP/TCP transport.
+Timing starts when a complete request is received (a full frame for TCP) and
+ends when the full reply is written. Cache hits, policy blocks, DNS errors and
+truncations count; abandoned requests and failed writes do not. Coalesced UDP
+clients have individual arrival times. TCP timings include pipeline queueing.
+
+`dnsp_upstream_duration_seconds` measures each completed DoH attempt, including
+failures. Cancelled losing races and client-disconnect cancellations are
+excluded. Its existing `_sum` and `_count` remain available. Both histograms
+use fixed upper bounds in seconds: .001, .0025, .005, .01, .025, .05, .1, .25,
+.5, 1, 2.5, 5, 10, 60 and +Inf. Memory use and label cardinality are bounded.
+For example, in Prometheus:
+
+```promql
+histogram_quantile(0.95, sum by (le) (rate(dnsp_client_duration_seconds_bucket[5m])))
+```
+
+The Linux GUI estimates p50/p95/p99 from histogram deltas over at most 60
+sampling intervals (roughly one minute at the default refresh). Bucket
+interpolation makes these estimates; they are not per-query logs. The window
+resets on process/instance changes, counter resets and collection gaps.
+
+For `--upstream-hedge-ms`, inspect launches, suppressed launches, cancellations,
+role-labelled wins and `dnsp_upstream_hedges_inflight`. Compare percentiles and
+upstream request volume with the default sequential mode before enabling it
+permanently. See [the upstream policy](UPSTREAM_FAILOVER.md).
+
 ## Choose a test suite
 
 | Test | Coverage |
 | --- | --- |
+| `python3 tests/test_hedging.py` | Parallel wins, deadlines, capacity, coalescing, TLS rejection, policy reload and TCP cancellation |
 | `make modern-check` | DNS wire validation, EDNS, UDP/TCP framing and deadlines, caching, and local DoH error handling. The upstream fixtures exercise HTTP/1.1 and include HTTPS certificate checks. |
 | `test_benchmark.py` | TLS HTTP/1.1 and HTTP/2, simultaneous streams, idle reconnect, and recovery after GOAWAY. The benchmark workflow also runs a TCP loss scenario on an isolated loopback link. |
 | `test_http3.py` | HTTP/3 negotiation and concurrent streams, HTTP/2 fallback with the QUIC path blackholed, certificate hostname checks, and proxy routing. Requires a QUIC-capable libcurl and the optional Python test dependencies. |

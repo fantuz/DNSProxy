@@ -22,3 +22,15 @@ for script in postinst prerm postrm; do
     test -x "$inspection/DEBIAN/$script"
 done
 printf 'package=%s\n' "$pkg" >> "${GITHUB_OUTPUT:?}"
+gui="dist/dnsp-modern-gui_${version}_all.deb"
+test "$(dpkg-deb --field "$gui" Package)" = dnsp-modern-gui
+test "$(dpkg-deb --field "$gui" Version)" = "$version"
+test "$(dpkg-deb --field "$gui" Architecture)" = all
+dpkg-deb -x "$gui" "$inspection/gui"
+test -x "$inspection/gui/usr/bin/dnsp-gui"
+test -f "$inspection/gui/usr/share/applications/org.dnsproxy.LinuxMonitor.desktop"
+printf 'gui_package=%s\n' "$gui" >> "$GITHUB_OUTPUT"
+# The same pure-Python package is tested on both CPUs and published once.
+if [ "$(dpkg --print-architecture)" = amd64 ]; then
+    printf 'gui_upload=%s\n' "$gui" >> "$GITHUB_OUTPUT"
+fi

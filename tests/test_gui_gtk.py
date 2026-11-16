@@ -9,14 +9,12 @@ import time
 import unittest
 import uuid
 
-from test_gui_monitor import BASE, live_resolver, metrics_endpoint, send_query
+from test_gui_monitor import GUI_SOURCE, live_resolver, metrics_endpoint, send_query
 
-spec = importlib.util.spec_from_file_location(
-    "dnsp_gui", BASE / "tools/linux-gui/dnsp-gui.py"
-)
+spec = importlib.util.spec_from_file_location("dnsp_gui", GUI_SOURCE / "dnsp-gui.py")
 gui = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gui)
-from monitor import Collector, DemoCollector  # noqa: E402
+from monitor import Collector, DemoCollector, Invocation  # noqa: E402
 
 
 class GuiTests(unittest.TestCase):
@@ -89,7 +87,7 @@ class GuiTests(unittest.TestCase):
             if isinstance(child, self.Gtk.CheckButton):
                 radios.append(child)
             child = child.get_next_sibling()
-        self.assertEqual(len(radios), 24)
+        self.assertEqual(len(radios), 2 * len(Invocation().toggles()))
         self.assertTrue(all(not radio.get_sensitive() for radio in radios))
         self.screenshot("demo-startup-options.png")
         self.window.pause.set_active(True)
@@ -174,6 +172,55 @@ class GuiTests(unittest.TestCase):
         self.window.apply(DemoCollector().collect())
         self.assertEqual(self.window.values["rate"].get_text(), "—")
         self.assertIn("Receiving metrics", self.window.status.get_text())
+
+    def test_selecting_two_live_instances_resets_rates_and_shows_build_info(self):
+        with (
+            live_resolver() as (first, first_port, _),
+            live_resolver() as (second, second_port, _),
+        ):
+            self.window.close()
+            self.app.quit()
+            self.pump(0.05)
+            self.app = gui.build_application(gui.arguments(["--interval", ".5"]))
+            self.app.set_application_id(
+                "org.dnsproxy.LinuxMonitor.Test" + uuid.uuid4().hex
+            )
+            self.app.register(None)
+            self.app.activate()
+            self.window = self.app.window
+            self.wait_for(
+                lambda: first.pid in self.window.instance_ids
+                and second.pid in self.window.instance_ids
+            )
+            self.assertIn("Choose one", self.window.detail.get_text())
+            for process, port in ((first, first_port), (second, second_port)):
+                self.window.instance_selector.set_selected(
+                    self.window.instance_ids.index(process.pid)
+                )
+                self.assertIsNone(self.window.rates.previous)
+                self.assertEqual(len(self.window.latencies.history), 0)
+                self.wait_for(
+                    lambda: self.window.snapshot is not None
+                    and self.window.snapshot.process is not None
+                    and self.window.snapshot.process.pid == process.pid
+                )
+                self.assertEqual(self.window.values["pid"].get_text(), str(process.pid))
+                self.assertNotEqual(self.window.values["build"].get_text(), "—")
+                self.assertNotEqual(self.window.values["capabilities"].get_text(), "—")
+                before = self.window.snapshot.metrics.get(
+                    "dnsp_queries_total", transport="udp"
+                )
+                send_query(port)
+                self.window.refresh.emit("clicked")
+                self.wait_for(
+                    lambda: self.window.snapshot.metrics.get(
+                        "dnsp_queries_total", transport="udp"
+                    )
+                    > before
+                )
+            self.screenshot("instance-selection.png")
+            self.assertIsNone(first.poll())
+            self.assertIsNone(second.poll())
 
     def test_startup_origin_refreshes_when_explicit_value_equals_default(self):
         from monitor import parse_invocation

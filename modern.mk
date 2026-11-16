@@ -19,6 +19,7 @@ modern-check: dnsp-modern
 	"$$probe"
 	python3 tests/test_host_capabilities.py
 	python3 tests/test_modern.py
+	python3 tests/test_hedging.py
 	python3 tests/test_ipv6.py
 	python3 tests/test_linux_dns.py
 	python3 tests/test_policy.py

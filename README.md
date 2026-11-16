@@ -217,6 +217,7 @@ Run `./dnsp-modern --help` for the options available in your build.
 | `-p PORT` | DNS listener port, 1–65535 | `5300` |
 | `-s URL` | Upstream DoH endpoint | `https://cloudflare-dns.com/dns-query` |
 | `--backup-upstream URL` | Backup DoH endpoint for eligible transport failures | Disabled |
+| `--upstream-hedge-ms MS` | Start an eligible parallel backup after this delay (0–60000); requires a backup and a delay below the total timeout | `0` (disabled) |
 | `--backup-bootstrap-address IP` | Numeric address for the backup HTTPS hostname | Resolve the hostname normally |
 | `-m PORT` | Loopback-only metrics port, 1–65535 and different from `-p` | Disabled for manual runs. The packaged service uses `9153`. |
 | `--bootstrap-address IP` | Numeric IPv4 or unbracketed IPv6 address for an HTTPS upstream hostname | Resolve the hostname normally |
@@ -287,7 +288,11 @@ slower connection and more time for the reply.
 ```
 
 With a backup configured, eligible queries reserve half of the available
-deadline for retry. See [upstream failover](docs/UPSTREAM_FAILOVER.md) for
+deadline for retry. Optional `--upstream-hedge-ms 150` starts a delayed parallel
+backup for a slow primary; the first validated DNS reply wins and cancels the
+other attempt. Both attempts share the original deadline. TLS authentication
+of the primary completes before a parallel backup starts. This can disclose
+more queries to the backup; use resolvers with equivalent DNS views and policies. See [upstream failover](docs/UPSTREAM_FAILOVER.md) for
 eligible requests, failure policy, and per-endpoint metrics.
 
 Check the active deadlines in the [on-demand status report](#on-demand-status-report).
@@ -464,7 +469,12 @@ Useful Prometheus-compatible series:
 | `dnsp_upstream_http_responses_total{version="1"}`, `{version="2"}`, `{version="3"}` | Responses by negotiated upstream HTTP version |
 | `dnsp_upstream_new_connections_total`, `dnsp_upstream_reused_requests_total` | libcurl connection activity |
 | `dnsp_upstream_easy_handles_reused_total` | Transfers that took a reset easy handle from the idle pool |
-| `dnsp_upstream_duration_seconds_sum`, `dnsp_upstream_duration_seconds_count` | Aggregate upstream time |
+| `dnsp_upstream_duration_seconds_bucket`, `_sum`, `_count` | Bounded completed-attempt latency histogram; cancelled attempts excluded |
+| `dnsp_client_duration_seconds_bucket`, `_sum`, `_count` | Complete client reply latency by `transport="udp"` or `"tcp"`, including cache and policy replies |
+| `dnsp_build_info` | Running daemon/libcurl version and built HTTP/2/3 capabilities |
+| `dnsp_upstream_hedges_started_total`, `_suppressed_total`, `_cancelled_total` | Parallel backup launches, capacity/setup suppression and cancelled losing attempts |
+| `dnsp_upstream_hedge_wins_total{role="primary"}`, `{role="backup"}` | Validated replies that win a launched race |
+| `dnsp_upstream_hedges_inflight` | Extra parallel attempts; `dnsp_queries_inflight` counts logical queries |
 | `dnsp_upstream_phase_duration_seconds_sum`, `dnsp_upstream_phase_duration_seconds_count` | Queue wait (libcurl 8.6+), new TLS handshake, and time from transfer-ready to first byte, selected by `phase` |
 | `dnsp_curl_socket_callbacks_total`, `dnsp_curl_timer_callbacks_total` | Event-loop activity |
 
@@ -473,12 +483,14 @@ client addresses. The HTTP version and connection reuse counters **do not
 measure simultaneous HTTP/2 streams**; use the bundled benchmark for
 that measurement.
 
-### Optional Linux desktop monitor (PoC)
+### Optional Linux desktop monitor
 
 The Linux-only GTK 4 monitor provides a read-only view of `dnsp-modern`:
 startup options as On/Off radio buttons, incoming-query activity and history,
 upstream HTTP/1/2/3 counters, cache and blocklist statistics, CPU, memory and
-uptime. Invocation values distinguish explicit settings from defaults. The GUI
+uptime. Select a resolver in the instance picker, inspect the packaged systemd
+service state, and view daemon/libcurl capabilities and estimated recent
+p50/p95/p99 latency. Invocation values distinguish explicit settings from defaults. The GUI
 runs as an ordinary desktop user and reads the existing process and metrics
 listener. The C resolver runs independently of the monitor.
 
@@ -504,14 +516,18 @@ Then open the monitor in another terminal:
 /usr/bin/python3 tools/linux-gui/dnsp-gui.py
 ```
 
-It auto-detects a single readable resolver. Use `--pid PID` to select among
-multiple instances, or `--metrics-port 9153` for traffic-only monitoring when
+It auto-detects a single readable resolver. Choose among multiple instances
+in the window or use `--pid PID`. Use `--metrics-port 9153` for traffic-only monitoring when
 process details are inaccessible. The packaged systemd service already enables
 metrics on port `9153`.
 
 **Pause** switches to on-demand sampling with **Refresh now**. Incoming-query
 activity appears on the next sample; closing the window leaves DNSProxy running.
-The GUI PoC currently runs from source, with desktop packaging as a follow-up.
+Optional `dnsp-modern-gui` DEB (`all`) and RPM (`noarch`) packages add a desktop
+launcher and `dnsp-gui` command. They work on Linux x86-64 and ARM64; install the
+package for your distribution alongside the daemon. These packages first appear
+in releases after v4.5.0; current PR builds provide CI artifacts. GTK dependencies
+belong only to the optional GUI package. See the [installation guide](packaging/README-packaging.md#optional-linux-desktop-package).
 X11 is tested in GitHub CI on Linux x86-64 and ARM64; native Wayland testing is
 a follow-up. See the [Linux GUI guide](docs/LINUX-GUI.md) for the startup-options
 preview, counter definitions, polling limits and troubleshooting.
@@ -560,8 +576,8 @@ both architecture artifacts before the next release. See the
 
 Set the next version in `VERSION` and merge to `master` to publish once the
 Linux package matrix, sanitizer job, and native Windows build and tests pass.
-The release requires all eight Linux packages and the Windows ZIP, covered by
-`SHA256SUMS`. See the
+The release requires eight Linux daemon packages, four architecture-independent
+GUI packages, two Windows ZIPs and two macOS archives, all covered by `SHA256SUMS`. See the
 [packaging guide](packaging/README-packaging.md) for installation, local
 builds, and manual release recovery.
 
@@ -588,10 +604,8 @@ independent of the listener family.
 
 ## Feature ideas
 
-- **DNS-aware response caching.** Bound memory, honor positive and negative
-  TTLs, and start with queries free of client-specific EDNS options.
-- **Tail-latency metrics.** Add bounded latency buckets by client transport
-  and upstream outcome so operators can see slow replies behind the mean.
+- **Native Wayland validation.** Extend the desktop tests beyond the X11 CI session.
+- **Monitor overhead benchmarks.** Measure GUI sampling costs against an unmonitored daemon.
 
 ## Contributing
 

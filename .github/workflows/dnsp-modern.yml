@@ -99,7 +99,7 @@ jobs:
             scripts/build-windows.sh scripts/bundle-windows.py scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-windows.yml
           check_paths macos "${common[@]}" bench/ tests/ packaging/macos/ docs/MACOS.md \
             scripts/build-macos.sh scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-macos.yml
-          check_paths gui "${common[@]}" tools/linux-gui/ tests/test_gui_monitor.py tests/test_gui_gtk.py \
+          check_paths gui "${common[@]}" packaging/gui/ scripts/build-gui-deb.sh scripts/test-gui-package.py tools/linux-gui/ tests/test_gui_monitor.py tests/test_gui_gtk.py \
             docs/LINUX-GUI.md docs/images/ .github/workflows/dnsp-linux-gui-poc.yml
 
   deb:
@@ -142,10 +142,19 @@ jobs:
         env:
           PACKAGE: ${{ steps.build.outputs.package }}
         run: sudo sh scripts/test-deb-lifecycle.sh "$PACKAGE"
+      - name: Verify the optional desktop package
+        env:
+          GUI_PACKAGE: ${{ steps.build.outputs.gui_package }}
+        run: |
+          sudo apt-get install -y --no-install-recommends "./$GUI_PACKAGE"
+          /usr/bin/python3 scripts/test-gui-package.py
+          sudo apt-get purge -y dnsp-modern-gui
       - uses: actions/upload-artifact@v6
         with:
           name: dnsp-modern-${{ matrix.distro }}-${{ matrix.arch }}
-          path: ${{ steps.build.outputs.package }}
+          path: |
+            ${{ steps.build.outputs.package }}
+            ${{ steps.build.outputs.gui_upload }}
           if-no-files-found: error
           retention-days: 14
 
@@ -186,10 +195,19 @@ jobs:
           cmp dnsp-modern /usr/bin/dnsp-modern
           apt-get purge -y dnsp-modern
           test ! -e /usr/bin/dnsp-modern
+      - name: Verify the optional desktop package
+        env:
+          GUI_PACKAGE: ${{ steps.build.outputs.gui_package }}
+        run: |
+          apt-get install -y --no-install-recommends "./$GUI_PACKAGE"
+          /usr/bin/python3 scripts/test-gui-package.py
+          apt-get purge -y dnsp-modern-gui
       - uses: actions/upload-artifact@v6
         with:
           name: dnsp-modern-debian13-${{ matrix.arch }}
-          path: ${{ steps.build.outputs.package }}
+          path: |
+            ${{ steps.build.outputs.package }}
+            ${{ steps.build.outputs.gui_upload }}
           if-no-files-found: error
           retention-days: 14
 
@@ -226,16 +244,20 @@ jobs:
       - name: Install, query, and remove the RPM
         env:
           PACKAGE: ${{ steps.build.outputs.package }}
+          GUI_PACKAGE: ${{ steps.build.outputs.gui_package }}
           DNSP_TEST_BINARY: /usr/bin/dnsp-modern
         run: |
-          dnf install -y "./$PACKAGE"
+          dnf install -y --setopt=install_weak_deps=False "./$PACKAGE" "./$GUI_PACKAGE"
+          /usr/bin/python3 scripts/test-gui-package.py
           python3 tests/test_modern.py Tests.test_udp Tests.test_tcp
-          dnf remove -y dnsp-modern
+          dnf remove -y dnsp-modern-gui dnsp-modern
           test ! -e /usr/bin/dnsp-modern
       - uses: actions/upload-artifact@v6
         with:
           name: dnsp-modern-rocky9-${{ matrix.arch }}
-          path: ${{ steps.build.outputs.package }}
+          path: |
+            ${{ steps.build.outputs.package }}
+            ${{ steps.build.outputs.gui_upload }}
           if-no-files-found: error
           retention-days: 14
 

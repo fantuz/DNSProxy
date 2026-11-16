@@ -12,7 +12,7 @@ END = "<!-- dnsp-downloads:end -->"
 VERSION = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 
 
-def downloads(version, repository, *, macos=True, windows_arm64=True):
+def downloads(version, repository, *, macos=True, windows_arm64=True, gui=True):
     if not re.fullmatch(VERSION, version):
         raise ValueError("Expected a MAJOR.MINOR.PATCH release version")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
@@ -44,6 +44,13 @@ def downloads(version, repository, *, macos=True, windows_arm64=True):
     links = [asset("RPM", f"dnsp-modern-{version}-1.el9.{arch}.rpm")
              for arch in ("x86_64", "aarch64")]
     lines.append(f"| Rocky Linux 9 | {' | '.join(links)} |")
+    if gui:
+        lines.extend(["", "Optional Linux desktop monitor (works on both processor architectures):", "",
+                      "| Platform | GUI package |", "| --- | --- |"])
+        for label, distro in (("Ubuntu 22.04", "ubuntu22.04"),
+                              ("Ubuntu 24.04", "ubuntu24.04"), ("Debian 13", "debian13")):
+            lines.append(f"| {label} | " + asset("GUI DEB", f"dnsp-modern-gui_{version}+{distro}_all.deb") + " |")
+        lines.append("| Rocky Linux 9 | " + asset("GUI RPM", f"dnsp-modern-gui-{version}-1.el9.noarch.rpm") + " |")
     checksums = asset("SHA256SUMS", "SHA256SUMS")
     lines.extend(["",
                   "**Windows:** choose the ZIP matching your system type (amd64 or ARM64), "
@@ -70,7 +77,8 @@ def refresh(release, repository):
     # if either architecture is present, require the complete pair.
     macos = any(name.endswith(("-macos-x86_64.tar.gz", "-macos-arm64.tar.gz")) for name in available)
     windows_arm64 = any(name.endswith('-windows-arm64-poc.zip') for name in available)
-    block, expected = downloads(match.group(1), repository, macos=macos, windows_arm64=windows_arm64)
+    gui = any(name.startswith(("dnsp-modern-gui_", "dnsp-modern-gui-")) for name in available)
+    block, expected = downloads(match.group(1), repository, macos=macos, windows_arm64=windows_arm64, gui=gui)
     missing = expected - available
     if missing:
         raise ValueError("Release is missing downloads: " + ", ".join(sorted(missing)))

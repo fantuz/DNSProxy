@@ -30,7 +30,7 @@ enum { DNS_HEADER=12, UDP_RX_MAX=65527, UDP_REPLY_MAX=4096, UDP_REPLY_DEFAULT=12
        MIN_TIMEOUT_MS=100, MAX_DOH_TIMEOUT_MS=60000, MAX_TCP_TIMEOUT_MS=600000,
        DNS_OPT_SIZE=11, CACHE_MAX_ENTRIES=1024, CACHE_MAX_QUERY=DNS_HEADER+255+4+DNS_OPT_SIZE,
        CACHE_MAX_REPLY=4096, CACHE_MAX_ANSWERS=128, CACHE_MAX_TTL=3600 };
-enum { MAX_IDLE_EASIES=16 };
+enum { MAX_IDLE_EASIES=16, MAX_PARALLEL_BACKUPS=16 };
 static unsigned udp_reply_max=UDP_REPLY_DEFAULT;
 static atomic_bool stopping;
 /* A process signal can be delivered to a libcurl resolver thread. */
@@ -223,7 +223,7 @@ static DnsResult dns_parse(const unsigned char *p,size_t n,const DnsInfo *reques
 
 typedef struct Client Client;
 typedef struct Query Query;
-typedef struct {struct sockaddr_storage peer;dnsp_socklen_t peer_len;UdpLocal local;uint16_t id;uint64_t deadline_ms;} UdpWaiter;
+typedef struct {struct sockaddr_storage peer;dnsp_socklen_t peer_len;UdpLocal local;uint16_t id;uint64_t deadline_ms,started_ms;} UdpWaiter;
 typedef struct {
     size_t count;
     uint16_t offset[CACHE_MAX_ANSWERS];
@@ -253,14 +253,17 @@ struct Client {
     unsigned char length[2];
     unsigned char *in,*out;
     bool busy,read_eof,out_satisfies_query;uint64_t generation,queries_started;
-    uint64_t idle_since_ms,frame_deadline,write_deadline;
+    uint64_t idle_since_ms,frame_deadline,write_deadline,query_started_ms,out_started_ms;
 };
 struct Query {
     CURL *easy;
     unsigned char *request,*response;
     size_t req_len,resp_len,resp_cap,padded_len;
     Upstream *upstream;
-    uint64_t failover_deadline_ms,attempt_deadline_ms;
+    uint64_t failover_deadline_ms,attempt_deadline_ms,attempt_started_ms;
+    uint64_t started_ms,hedge_at_ms;
+    Query *hedge_peer;
+    bool hedge_secondary,hedge_launched;
     DnsInfo info;
     struct sockaddr_storage peer;dnsp_socklen_t peer_len;
     UdpLocal udp_local;
@@ -275,6 +278,11 @@ struct Query {
 typedef struct { curl_socket_t fd;int action;uint64_t generation; } CurlSocket;
 typedef enum { PHASE_QUEUE, PHASE_TLS, PHASE_FIRST_BYTE, PHASE_COUNT } TimingPhase;
 typedef struct {uint64_t usec,count;} PhaseTiming;
+enum { LATENCY_BUCKETS=14 };
+static const double latency_bounds[LATENCY_BUCKETS]={
+    .001,.0025,.005,.01,.025,.05,.1,.25,.5,1,2.5,5,10,60
+};
+typedef struct {uint64_t buckets[LATENCY_BUCKETS],count;double sum;} Histogram;
 typedef struct {
     uint64_t udp_queries,tcp_queries,queries_satisfied,invalid_queries,overload,upstream_requests,
       upstream_ok,upstream_failed,upstream_timeouts,invalid_responses,
@@ -285,6 +293,8 @@ typedef struct {
     uint64_t udp_queries_coalesced;
     double upstream_seconds;
     PhaseTiming upstream_phase[PHASE_COUNT];
+    Histogram client_latency[2],upstream_latency;
+    uint64_t hedges_started,hedges_suppressed,hedges_cancelled,hedge_primary_wins,hedge_backup_wins;
 } Metrics;
 static Metrics metrics;
 static Query *active;
@@ -305,6 +315,7 @@ static int64_t curl_deadline=-1;
 static uint64_t tcp_idle_ms=TCP_IDLE_MS,tcp_io_ms=TCP_IO_MS;
 static size_t tcp_max_per_source=TCP_MAX_PER_SOURCE;
 static long doh_connect_ms=DOH_CONNECT_MS,doh_timeout_ms=DOH_TIMEOUT_MS;
+static long upstream_hedge_ms;
 static CacheEntry *answer_cache;
 static size_t cache_entries;
 static PolicyConfig policy_config;
@@ -424,7 +435,7 @@ static void policy_tick(uint64_t now) {
 typedef struct {
     dnsp_socket_t fd;uint64_t generation,last_ms;
     char request[512];size_t have;
-    char reply[6144];size_t reply_len,sent;
+    char reply[16384];size_t reply_len,sent;
 } MetricClient;
 static MetricClient metric_clients[MAX_METRICS_CLIENTS];
 
@@ -555,7 +566,18 @@ static void detach_query(Query *q) {
     }
 }
 static void free_query(Query *q) {
+    if(q->hedge_peer) q->hedge_peer->hedge_peer=NULL;
     free(q->request);free(q->response);free(q);
+}
+static void observe_latency(Histogram *hist,double seconds) {
+    if(seconds<0) seconds=0;
+    hist->count++;hist->sum+=seconds;
+    for(size_t i=0;i<LATENCY_BUCKETS;i++) if(seconds<=latency_bounds[i]) hist->buckets[i]++;
+}
+static void observe_client_latency(uint64_t started_ms,bool tcp) {
+    uint64_t now=clock_ms();
+    if(started_ms && now>=started_ms)
+        observe_latency(&metrics.client_latency[tcp?1:0],(double)(now-started_ms)/1000.0);
 }
 static void remove_query(Query *q) {
     detach_query(q);
@@ -577,6 +599,7 @@ static void close_client(Client *c) {
     c->fd=DNSP_BAD_SOCKET;c->have=c->need=c->sent=c->out_len=0;
     c->busy=c->read_eof=c->out_satisfies_query=false;c->generation++;c->queries_started=0;
     c->frame_deadline=c->write_deadline=0;
+    c->query_started_ms=c->out_started_ms=0;
 }
 static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_query) {
     if(q->client) {
@@ -590,18 +613,21 @@ static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_qu
             c->out[0]=(unsigned char)(n>>8);c->out[1]=(unsigned char)n;
             memcpy(c->out+2,p,n);c->out_len=n+2;c->sent=0;
             c->out_satisfies_query=satisfies_query;
+            c->out_started_ms=q->started_ms;
             c->write_deadline=clock_ms()+tcp_io_ms;
         }
     } else {
         dnsp_ssize_t written=dnsp_send_udp(q->udp_fd,(const struct sockaddr*)&q->peer,q->peer_len,
                                           NULL,0,p,n,q->udp_local);
         if(satisfies_query && written==(dnsp_ssize_t)n) metrics.queries_satisfied++;
+        if(written==(dnsp_ssize_t)n) observe_client_latency(q->started_ms,false);
         for(size_t i=0;i<q->udp_waiter_count;i++) {
             UdpWaiter *waiter=&q->udp_waiters[i];
             unsigned char id[]={ (unsigned char)(waiter->id>>8),(unsigned char)waiter->id };
             written=dnsp_send_udp(q->udp_fd,(const struct sockaddr*)&waiter->peer,waiter->peer_len,
                                   id,sizeof(id),p+2,n-2,waiter->local);
             if(satisfies_query && written==(dnsp_ssize_t)n) metrics.queries_satisfied++;
+            if(written==(dnsp_ssize_t)n) observe_client_latency(waiter->started_ms,false);
         }
     }
 }
@@ -901,8 +927,9 @@ static void strip_doh_padding(Query *q,const DnsInfo *info) {
     q->resp_len=write_pos;
 }
 static bool join_udp_query(const Query *pending,const unsigned char *data) {
+    uint64_t arrival=clock_ms();
     UdpWaiter incoming={.peer=pending->peer,.peer_len=pending->peer_len,.local=pending->udp_local,.id=be16(data),
-                        .deadline_ms=clock_ms()+(uint64_t)doh_timeout_ms};
+                        .deadline_ms=arrival+(uint64_t)doh_timeout_ms,.started_ms=arrival};
     Query *available=NULL;
     for(Query *q=active;q;q=q->next) {
         if(!q->shareable_udp || q->udp_fd!=pending->udp_fd || q->req_len!=pending->req_len ||
@@ -922,7 +949,7 @@ static bool join_udp_query(const Query *pending,const unsigned char *data) {
 }
 static bool submit_until(const unsigned char *data,size_t len,Client *client,dnsp_socket_t udp_fd,
                          const struct sockaddr_storage *peer,dnsp_socklen_t peer_len,UdpLocal local,
-                         uint64_t deadline_ms,Upstream *endpoint);
+                         uint64_t deadline_ms,Upstream *endpoint,uint64_t request_started_ms);
 static void retry_udp_waiters(const Query *q,size_t count) {
     /* Coalescing accepts only plain, single-question address queries. */
     unsigned char request[CACHE_MAX_QUERY];
@@ -934,7 +961,7 @@ static void retry_udp_waiters(const Query *q,size_t count) {
         request[0]=(unsigned char)(waiter->id>>8);
         request[1]=(unsigned char)waiter->id;
         (void)submit_until(request,q->req_len,NULL,q->udp_fd,&peer,waiter->peer_len,
-                           waiter->local,waiter->deadline_ms,q->upstream);
+                           waiter->local,waiter->deadline_ms,q->upstream,waiter->started_ms);
     }
 }
 static bool start_upstream(Query *q,long timeout_ms) {
@@ -944,7 +971,8 @@ static bool start_upstream(Query *q,long timeout_ms) {
     const unsigned char *post=q->added_padding?q->request+q->req_len:q->request;
     size_t post_len=q->added_padding?q->padded_len:q->req_len;
     q->cache_headers=(CacheHeaders){.max_age=UINT32_MAX};
-    q->attempt_deadline_ms=clock_ms()+(uint64_t)timeout_ms;
+    q->attempt_started_ms=clock_ms();
+    q->attempt_deadline_ms=q->attempt_started_ms+(uint64_t)timeout_ms;
     CURLcode setup_code=CURLE_OUT_OF_MEMORY;
     q->easy=acquire_easy();
     if(!q->easy) goto fail;
@@ -1035,6 +1063,91 @@ static bool failover_eligible(const unsigned char *data,const DnsInfo *info) {
     unsigned additional=be16(data+10);
     return !additional || (additional==1 && info->final_opt_rdlen && !be16(data+info->final_opt_rdlen));
 }
+static size_t parallel_backups(void) {
+    size_t count=0;
+    for(Query *q=active;q;q=q->next) if(q->hedge_secondary && q->hedge_peer) count++;
+    return count;
+}
+static void move_query_owner(Query *to,const Query *from) {
+    to->client=from->client;to->generation=from->generation;
+    to->peer=from->peer;to->peer_len=from->peer_len;to->udp_fd=from->udp_fd;
+    to->udp_local=from->udp_local;to->started_ms=from->started_ms;
+    to->udp_waiter_count=from->udp_waiter_count;
+    memcpy(to->udp_waiters,from->udp_waiters,sizeof(to->udp_waiters));
+    to->cache_slot=from->cache_slot;to->hedge_secondary=false;
+}
+static void finish_hedge(Query *q,bool validated) {
+    Query *peer=q->hedge_peer;
+    if(peer) {
+        if(q->hedge_secondary) move_query_owner(q,peer);
+        q->hedge_peer=NULL;peer->hedge_peer=NULL;
+        metrics.hedges_cancelled++;
+        remove_query(peer);
+    }
+    q->hedge_secondary=false;q->hedge_at_ms=0;
+    if(validated && q->hedge_launched) {
+        if(q->upstream==&primary) metrics.hedge_primary_wins++;
+        else metrics.hedge_backup_wins++;
+    }
+}
+static void hedge_tick(uint64_t now) {
+    if(!upstream_hedge_ms) return;
+    for(Query *q=active;q;q=q->next) {
+        if(!q->hedge_at_ms || now<q->hedge_at_ms) continue;
+        q->hedge_at_ms=0; /* Capacity pressure must not create a busy poll loop. */
+        if(policy_query_blocked(&q->info) || now>=q->failover_deadline_ms) continue;
+        if(!q->upstream->loopback_http) {
+            curl_off_t ready=0;
+            long verify=1,proxy_verify=1;
+            /* Keep certificate and CONNECT rejections fail-closed. Until the
+             * primary authenticates, preserve the sequential failover budget.
+             * PRETRANSFER also covers an already authenticated reused TLS
+             * connection, whose APPCONNECT timestamp is zero. */
+            if(curl_easy_getinfo(q->easy,CURLINFO_PRETRANSFER_TIME_T,&ready)!=CURLE_OK || !ready ||
+               curl_easy_getinfo(q->easy,CURLINFO_SSL_VERIFYRESULT,&verify)!=CURLE_OK || verify ||
+               curl_easy_getinfo(q->easy,CURLINFO_PROXY_SSL_VERIFYRESULT,&proxy_verify)!=CURLE_OK || proxy_verify) {
+                q->hedge_at_ms=now+10;continue;
+            }
+            if(curl_easy_setopt(q->easy,CURLOPT_TIMEOUT_MS,
+                    (long)(q->failover_deadline_ms-q->attempt_started_ms))!=CURLE_OK) {
+                metrics.hedges_suppressed++;continue;
+            }
+            q->attempt_deadline_ms=q->failover_deadline_ms;
+        }
+        if(active_count>=MAX_ACTIVE || parallel_backups()>=MAX_PARALLEL_BACKUPS) {
+            metrics.hedges_suppressed++;continue;
+        }
+        Query *other=malloc(sizeof(*other));
+        if(!other) {metrics.hedges_suppressed++;continue;}
+        *other=*q;
+        other->request=NULL;other->response=NULL;other->easy=NULL;
+        other->resp_len=other->resp_cap=0;other->cache_slot=NULL;
+        other->upstream=&backup;other->shareable_udp=false;other->udp_waiter_count=0;
+        other->hedge_peer=NULL;other->hedge_secondary=true;other->retried_stale=false;
+        size_t bytes=q->req_len+q->padded_len;
+        other->request=malloc(bytes);
+        if(!other->request) {free(other);metrics.hedges_suppressed++;continue;}
+        memcpy(other->request,q->request,bytes);
+        now=clock_ms();
+        if(now>=q->failover_deadline_ms) {free_query(other);continue;}
+        if(!start_upstream(other,(long)(q->failover_deadline_ms-now))) {
+            free_query(other);metrics.hedges_suppressed++;continue;
+        }
+        q->hedge_launched=other->hedge_launched=true;
+        q->hedge_peer=other;other->hedge_peer=q;
+        metrics.hedges_started++;
+    }
+}
+static bool primary_security_failure(Query *q,CURLcode code,long status,long proxy_status) {
+    if(q->upstream!=&primary) return false;
+    long verify=0,proxy_verify=0;
+    curl_easy_getinfo(q->easy,CURLINFO_SSL_VERIFYRESULT,&verify);
+    curl_easy_getinfo(q->easy,CURLINFO_PROXY_SSL_VERIFYRESULT,&proxy_verify);
+    return proxy_status>=300 || proxy_verify ||
+        (verify && (verify!=1 || status || proxy_status || !h3_verification_pending(q->easy,code))) ||
+        code==CURLE_PEER_FAILED_VERIFICATION || code==CURLE_SSL_CACERT_BADFILE ||
+        code==CURLE_SSL_CONNECT_ERROR;
+}
 static bool retry_stale_connection(Query *q,CURLcode code,long status,long proxy_status,long connects) {
     if(q->retried_stale || connects || status || q->resp_len ||
        (code!=CURLE_SEND_ERROR && code!=CURLE_RECV_ERROR && code!=CURLE_GOT_NOTHING && code!=CURLE_HTTP2) ||
@@ -1074,6 +1187,7 @@ static bool retry_on_backup(Query *q,CURLcode code,long status,long proxy_status
     free(q->response);
     q->response=NULL;q->resp_len=q->resp_cap=0;
     q->upstream=&backup;
+    q->hedge_at_ms=0;
     q->cache_slot=NULL;
     q->shareable_udp=false; /* Keep the existing waiters on this query. */
     now=clock_ms();
@@ -1113,6 +1227,7 @@ static void complete(Query *q,CURLcode code) {
     curl_easy_getinfo(q->easy,CURLINFO_TOTAL_TIME,&seconds);
     curl_easy_getinfo(q->easy,CURLINFO_CONTENT_TYPE,&content_type);
     record_upstream_phases(q->easy,connects);
+    observe_latency(&metrics.upstream_latency,seconds);
     if(seconds>0) metrics.upstream_seconds+=seconds;
     if(connects>0) metrics.requests_new_connections+=(uint64_t)connects;
     else if(code==CURLE_OK) metrics.requests_reused_connections++;
@@ -1138,6 +1253,7 @@ static void complete(Query *q,CURLcode code) {
     }
     size_t retries=0;
     if(filtered>0) {
+        finish_hedge(q,failure==LOG_COUNT);
         if(failure==LOG_COUNT) {metrics.upstream_ok++;q->upstream->replies++;}
         else {
             metrics.upstream_failed++;q->upstream->failures++;
@@ -1145,6 +1261,7 @@ static void complete(Query *q,CURLcode code) {
         }
         send_policy_block(q,q->request,!denied_name);
     } else if(failure==LOG_COUNT) {
+        finish_hedge(q,true);
         strip_doh_padding(q,&response);
         metrics.upstream_ok++;q->upstream->replies++;
         uint64_t age_ms=doh_response_age_ms(&q->cache_headers,seconds);
@@ -1167,8 +1284,15 @@ static void complete(Query *q,CURLcode code) {
         long proxy_status=0;
         curl_easy_getinfo(q->easy,CURLINFO_HTTP_CONNECTCODE,&proxy_status);
         log_failure(failure,q->client!=NULL,code,status,q->upstream,proxy_status);
-        if(retry_stale_connection(q,code,status,proxy_status,connects)) return;
-        if(retry_on_backup(q,code,status,proxy_status)) return;
+        if(q->hedge_peer) {
+            if(!primary_security_failure(q,code,status,proxy_status)) {
+                if(!q->hedge_secondary) move_query_owner(q->hedge_peer,q);
+                detach_query(q);free_query(q);return; /* The other attempt still owns the reply. */
+            }
+            finish_hedge(q,false); /* A primary TLS/proxy rejection remains fail-closed. */
+        }
+        if(!q->hedge_launched && retry_stale_connection(q,code,status,proxy_status,connects)) return;
+        if(!q->hedge_launched && retry_on_backup(q,code,status,proxy_status)) return;
         send_error(q,q->request,2);
     }
     Client *client=q->client;
@@ -1181,12 +1305,13 @@ static void complete(Query *q,CURLcode code) {
 }
 static bool submit_until(const unsigned char *data,size_t len,Client *client,dnsp_socket_t udp_fd,
                          const struct sockaddr_storage *peer,dnsp_socklen_t peer_len,UdpLocal local,
-                         uint64_t deadline_ms,Upstream *endpoint) {
+                         uint64_t deadline_ms,Upstream *endpoint,uint64_t request_started_ms) {
     DnsInfo info;
     DnsResult result=dns_parse(data,len,NULL,&info);
     if(result==DNS_DROP) {metrics.invalid_queries++;return false;}
     Query pending={.req_len=len,.info=info,.client=client,.generation=client?client->generation:0,
-                   .udp_fd=udp_fd,.peer_len=peer_len,.udp_local=local,.upstream=endpoint};
+                   .udp_fd=udp_fd,.peer_len=peer_len,.udp_local=local,.upstream=endpoint,
+                   .started_ms=request_started_ms?request_started_ms:client?client->query_started_ms:clock_ms()};
     if(peer) pending.peer=*peer;
     if(result!=DNS_OK) {
         if(result==DNS_FORMERR) metrics.invalid_queries++;
@@ -1229,7 +1354,8 @@ static bool submit_until(const unsigned char *data,size_t len,Client *client,dns
 
     if(endpoint==&primary && backup.url && failover_eligible(data,&info) && timeout_ms>1) {
         pending.failover_deadline_ms=deadline_ms?deadline_ms:clock_ms()+(uint64_t)timeout_ms;
-        timeout_ms/=2;
+        if(upstream_hedge_ms) pending.hedge_at_ms=clock_ms()+(uint64_t)upstream_hedge_ms;
+        if(!upstream_hedge_ms || !endpoint->loopback_http) timeout_ms/=2;
     }
     Query *q=malloc(sizeof(*q));
     if(!q) goto setup_failure;
@@ -1256,7 +1382,7 @@ reject:
 }
 static bool submit(const unsigned char *data,size_t len,Client *client,dnsp_socket_t udp_fd,
                    const struct sockaddr_storage *peer,dnsp_socklen_t peer_len,UdpLocal local) {
-    return submit_until(data,len,client,udp_fd,peer,peer_len,local,0,&primary);
+    return submit_until(data,len,client,udp_fd,peer,peer_len,local,0,&primary,0);
 }
 #ifdef __APPLE__
 #include <launch.h>
@@ -1338,6 +1464,7 @@ static bool start_tcp_query(Client *c) {
     }
     free(c->in);c->in=NULL;
     c->have=c->need=0; /* submit() owns a copy of the complete wire request */
+    c->query_started_ms=0;
     return true;
 }
 static short tcp_events(const Client *c) {
@@ -1356,6 +1483,7 @@ static void tcp_io(Client *c,short events) {
         else {close_client(c);return;}
         if(c->sent==c->out_len) {
             if(c->out_satisfies_query) metrics.queries_satisfied++;
+            observe_client_latency(c->out_started_ms,true);c->out_started_ms=0;
             c->out_satisfies_query=false;
             free(c->out);c->out=NULL;
             c->out_len=c->sent=0;
@@ -1394,6 +1522,7 @@ static void tcp_io(Client *c,short events) {
     }
     if(c->need && c->have==c->need) {
         c->frame_deadline=0;
+        c->query_started_ms=clock_ms();
         if(c->busy || c->out_len) metrics.tcp_pipeline_buffered++;
         else (void)start_tcp_query(c);
     }
@@ -1476,6 +1605,23 @@ static void report_status(uint64_t uptime_ms,const char *bindip,int port,int met
             domain_policy?domain_policy->deny.count:0,domain_policy?domain_policy->allow.count:0,
             domain_policy?domain_policy->bytes:0,policy_reload_failed);
 }
+static bool append_histogram(char *body,size_t cap,size_t *used,const char *name,
+                             const char *transport,const Histogram *hist,bool totals) {
+#define HIST(...) do {int z=snprintf(body+*used,cap-*used,__VA_ARGS__); \
+    if(z<0 || (size_t)z>=cap-*used) {return false;} \
+    *used+=(size_t)z;} while(0)
+    char labels[48]="";
+    if(transport) snprintf(labels,sizeof(labels),"transport=\"%s\",",transport);
+    for(size_t i=0;i<LATENCY_BUCKETS;i++)
+        HIST("%s_bucket{%sle=\"%.4g\"} %" PRIu64 "\n",name,labels,latency_bounds[i],hist->buckets[i]);
+    HIST("%s_bucket{%sle=\"+Inf\"} %" PRIu64 "\n",name,labels,hist->count);
+    if(totals) {
+        HIST("%s_sum{transport=\"%s\"} %.6f\n",name,transport,hist->sum);
+        HIST("%s_count{transport=\"%s\"} %" PRIu64 "\n",name,transport,hist->count);
+    }
+#undef HIST
+    return true;
+}
 static void metric_response(MetricClient *c) {
 #define METRIC(...) do {int z=snprintf(c->reply+c->reply_len,sizeof(c->reply)-c->reply_len,__VA_ARGS__); \
     if(z<0 || (size_t)z>=sizeof(c->reply)-c->reply_len) {close_metric(c);return;} \
@@ -1483,7 +1629,7 @@ static void metric_response(MetricClient *c) {
     uint64_t policy_now=dnsp_clock_ms(true);
     uint64_t policy_age=domain_policy && policy_now>=domain_policy->loaded_ms?
                         (policy_now-domain_policy->loaded_ms)/1000u:0;
-    char body[5632];int n=snprintf(body,sizeof(body),
+    char body[15360];int n=snprintf(body,sizeof(body),
         "# TYPE dnsp_queries_total counter\n"
         "dnsp_queries_total{transport=\"udp\"} %llu\n"
         "dnsp_queries_total{transport=\"tcp\"} %llu\n"
@@ -1539,7 +1685,7 @@ static void metric_response(MetricClient *c) {
         "dnsp_curl_socket_callbacks_total %llu\n"
         "dnsp_curl_timer_callbacks_total %llu\n"
         "dnsp_curl_timer_fires_total %llu\n"
-        "# TYPE dnsp_upstream_duration_seconds_sum counter\n"
+        "# TYPE dnsp_upstream_duration_seconds histogram\n"
         "dnsp_upstream_duration_seconds_sum %.6f\n"
         "dnsp_upstream_duration_seconds_count %llu\n"
         "# HELP dnsp_upstream_phase_duration_seconds Time spent in observed upstream transfer phases.\n"
@@ -1592,12 +1738,41 @@ static void metric_response(MetricClient *c) {
         (double)metrics.upstream_phase[PHASE_QUEUE].usec/1e6,metrics.upstream_phase[PHASE_QUEUE].count,
         (double)metrics.upstream_phase[PHASE_TLS].usec/1e6,metrics.upstream_phase[PHASE_TLS].count,
         (double)metrics.upstream_phase[PHASE_FIRST_BYTE].usec/1e6,metrics.upstream_phase[PHASE_FIRST_BYTE].count,
-        active_count,tcp_open_count(),curl_socket_count,
+        active_count-parallel_backups(),tcp_open_count(),curl_socket_count,
         policy_blocked_queries,policy_blocked_aliases,
         domain_policy?domain_policy->deny.count:0,domain_policy?domain_policy->allow.count:0,
         domain_policy?domain_policy->generation:0,domain_policy?domain_policy->bytes:0,
         policy_age,policy_reload_ok,policy_reload_failed);
     if(n<0 || (size_t)n>=sizeof(body)) {close_metric(c);return;}
+    size_t used=(size_t)n;
+    const curl_version_info_data *build=curl_version_info(CURLVERSION_NOW);
+    unsigned curl_number=build?build->version_num:0;
+    bool h2=build && (build->features&CURL_VERSION_HTTP2),h3=false;
+#ifdef CURL_VERSION_HTTP3
+    h3=build && (build->features&CURL_VERSION_HTTP3);
+#endif
+    int extra=snprintf(body+used,sizeof(body)-used,
+        "# TYPE dnsp_build_info gauge\n"
+        "dnsp_build_info{version=\"%s\",libcurl=\"%u.%u.%u\",http2=\"%s\",http3=\"%s\"} 1\n"
+        "# TYPE dnsp_client_duration_seconds histogram\n"
+        "# TYPE dnsp_upstream_hedges_started_total counter\n"
+        "dnsp_upstream_hedges_started_total %" PRIu64 "\n"
+        "dnsp_upstream_hedges_suppressed_total %" PRIu64 "\n"
+        "dnsp_upstream_hedges_cancelled_total %" PRIu64 "\n"
+        "dnsp_upstream_hedge_wins_total{role=\"primary\"} %" PRIu64 "\n"
+        "dnsp_upstream_hedge_wins_total{role=\"backup\"} %" PRIu64 "\n"
+        "dnsp_upstream_hedges_inflight %zu\n",
+        DNSP_VERSION,(curl_number>>16)&255u,(curl_number>>8)&255u,curl_number&255u,
+        h2?"yes":"no",h3?"yes":"no",metrics.hedges_started,metrics.hedges_suppressed,
+        metrics.hedges_cancelled,metrics.hedge_primary_wins,metrics.hedge_backup_wins,parallel_backups());
+    if(extra<0 || (size_t)extra>=sizeof(body)-used) {close_metric(c);return;}
+    used+=(size_t)extra;
+    if(!append_histogram(body,sizeof(body),&used,"dnsp_client_duration_seconds","udp",&metrics.client_latency[0],true) ||
+       !append_histogram(body,sizeof(body),&used,"dnsp_client_duration_seconds","tcp",&metrics.client_latency[1],true) ||
+       !append_histogram(body,sizeof(body),&used,"dnsp_upstream_duration_seconds",NULL,&metrics.upstream_latency,false)) {
+        close_metric(c);return;
+    }
+    n=(int)used;
     METRIC("HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\n"
            "Connection: close\r\nContent-Length: %d\r\n\r\n",n);
     METRIC("%s",body);
@@ -1753,6 +1928,7 @@ static void usage(FILE *stream,const char *program) {
             "  -p PORT                     UDP/TCP DNS port, 1..65535 (default 5300)\n"
             "  -s URL                      Upstream DoH URL (default https://cloudflare-dns.com/dns-query)\n"
             "  --backup-upstream URL        Optional DoH endpoint for transport failover\n"
+            "  --upstream-hedge-ms MS       Delayed parallel backup, 0 disables (default 0)\n"
             "  --backup-bootstrap-address IP  Numeric address for the backup HTTPS upstream\n"
             "  -m PORT                     Loopback metrics port, 1..65535 (default disabled)\n"
             "  --bootstrap-address IP      Numeric IPv4 or IPv6 address for the HTTPS upstream\n"
@@ -1797,6 +1973,10 @@ static int dnsp_run(int argc,char **argv) {
         else if(!strcmp(argv[i],"-p") && i+1<argc) port=(int)parse_range(argv[++i],1,65535);
         else if(!strcmp(argv[i],"-s") && i+1<argc) primary.url=argv[++i];
         else if(!strcmp(argv[i],"--backup-upstream") && i+1<argc) backup.url=argv[++i];
+        else if(!strcmp(argv[i],"--upstream-hedge-ms") && i+1<argc) {
+            upstream_hedge_ms=parse_range(argv[++i],0,MAX_DOH_TIMEOUT_MS);
+            if(upstream_hedge_ms<0) {fprintf(stderr,"invalid --upstream-hedge-ms\n");return 2;}
+        }
         else if(!strcmp(argv[i],"--backup-bootstrap-address") && i+1<argc) backup_address=argv[++i];
         else if(!strcmp(argv[i],"--bootstrap-address")) {
             if(i+1==argc) {fprintf(stderr,"--bootstrap-address requires an IPv4 or IPv6 address\n");return 2;}
@@ -1890,6 +2070,9 @@ static int dnsp_run(int argc,char **argv) {
     }
     if(backup_address && !backup.url) {
         fprintf(stderr,"--backup-bootstrap-address requires --backup-upstream\n");return 2;
+    }
+    if(upstream_hedge_ms && (!backup.url || upstream_hedge_ms>=doh_timeout_ms)) {
+        fprintf(stderr,"--upstream-hedge-ms requires --backup-upstream and a delay below --doh-timeout-ms\n");return 2;
     }
     if(!dnsp_service_active() && !dnsp_install_handlers(stop_now,request_report)) {
         fprintf(stderr,"level=error event=control_handler\n");return 1;
@@ -1989,6 +2172,7 @@ static int dnsp_run(int argc,char **argv) {
         if(!dnsp_service_tick()) {exitcode=1;break;}
         uint64_t now=clock_ms();
         policy_tick(now);
+        hedge_tick(now);
         if(atomic_load_explicit(&report_requested,memory_order_relaxed)) {
             atomic_store_explicit(&report_requested,false,memory_order_relaxed);
             for(size_t i=0;i<bind_count;i++)
@@ -2032,6 +2216,10 @@ static int dnsp_run(int argc,char **argv) {
             int64_t left=curl_deadline-(int64_t)now;
             if(left<0) left=0;
             if(left<timeout) timeout=(int)left;
+        }
+        if(upstream_hedge_ms) for(Query *q=active;q;q=q->next) if(q->hedge_at_ms) {
+            uint64_t left=now>=q->hedge_at_ms?0:q->hedge_at_ms-now;
+            if(left<(uint64_t)timeout) timeout=(int)left;
         }
         uint64_t idle_ms=tcp_idle_ms;
         if(tcp_count>=TCP_PRESSURE_CLIENTS && idle_ms>TCP_PRESSURE_IDLE_MS) idle_ms=TCP_PRESSURE_IDLE_MS;

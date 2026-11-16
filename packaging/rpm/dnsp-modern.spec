@@ -21,6 +21,19 @@ Requires:       python3
 Event-driven DNS-over-HTTPS forwarder with UDP and TCP listeners, EDNS
 validation and Prometheus metrics. The systemd service is opt-in.
 
+%package gui
+Summary:        Read-only GTK 4 desktop monitor for DNSProxy
+BuildArch:      noarch
+Requires:       python3 >= 3.9
+Requires:       python3-gobject
+Requires:       gtk4
+Requires:       hicolor-icon-theme
+Recommends:     %{name}
+
+%description gui
+View resolver instances, service state, traffic, latency and startup options.
+The monitor runs as an ordinary user and does not modify DNS configuration.
+
 %prep
 %autosetup
 
@@ -37,6 +50,11 @@ install -Dpm 0644 packaging/systemd/dnsp-modern-dns-recovery.service %{buildroot
 install -Dpm 0644 packaging/systemd/dnsp-modern-dns-recovery.timer %{buildroot}%{_unitdir}/dnsp-modern-dns-recovery.timer
 
 install -Dpm 0755 scripts/update-blocklist.py %{buildroot}%{_sbindir}/dnsp-update-blocklist
+install -Dpm 0755 packaging/gui/dnsp-gui %{buildroot}%{_bindir}/dnsp-gui
+install -d %{buildroot}%{_datadir}/dnsp-modern-gui
+install -pm 0644 tools/linux-gui/*.py %{buildroot}%{_datadir}/dnsp-modern-gui/
+install -Dpm 0644 packaging/gui/org.dnsproxy.LinuxMonitor.desktop %{buildroot}%{_datadir}/applications/org.dnsproxy.LinuxMonitor.desktop
+install -Dpm 0644 packaging/gui/dnsp-modern.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/dnsp-modern.svg
 
 %check
 %make_build -f modern.mk modern-check
@@ -62,3 +80,11 @@ fi
 %{_sbindir}/dnsp-configure-dns
 %{_unitdir}/dnsp-modern-dns-recovery.service
 %{_unitdir}/dnsp-modern-dns-recovery.timer
+
+%files gui
+%license LICENSE
+%doc docs/LINUX-GUI.md docs/images
+%{_bindir}/dnsp-gui
+%{_datadir}/dnsp-modern-gui/
+%{_datadir}/applications/org.dnsproxy.LinuxMonitor.desktop
+%{_datadir}/icons/hicolor/scalable/apps/dnsp-modern.svg

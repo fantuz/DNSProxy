@@ -77,8 +77,10 @@ class ReleaseTests(unittest.TestCase):
         for distro in ("ubuntu22.04", "ubuntu24.04", "debian13"):
             for arch in ("amd64", "arm64"):
                 (directory / f"dnsp-modern_0.3.8+{distro}_{arch}.deb").write_text(arch)
+            (directory / f"dnsp-modern-gui_0.3.8+{distro}_all.deb").write_text("GUI")
         for arch in ("x86_64", "aarch64"):
             (directory / f"dnsp-modern-0.3.8-1.el9.{arch}.rpm").write_text(arch)
+        (directory / "dnsp-modern-gui-0.3.8-1.el9.noarch.rpm").write_text("GUI")
         for arch in ("amd64", "arm64"):
             (directory / f"dnsp-modern-0.3.8-windows-{arch}-poc.zip").write_text("Windows bundle")
         for arch in ("x86_64", "arm64"):
@@ -158,7 +160,7 @@ esac
         for package in expected_packages:
             self.assertEqual(arguments.count(package), 2)
         checksums = (assets / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(checksums), 12)
+        self.assertEqual(len(checksums), 16)
         self.assertEqual(sorted(line.split("  ", 1)[1] for line in checksums), expected_packages)
         self.script("publish-modern.sh", assets, FAIL_PUBLICATION="true", **publish)
         self.assertEqual(create_args.read_text(), attempts)
@@ -282,6 +284,27 @@ esac
         self.assertIn("Not available", result.stdout)
         self.assertIn("Existing changelog.", result.stdout)
 
+    def test_refresh_old_release_has_no_gui_links_and_partial_gui_set_is_rejected(self):
+        assets = self.packages(self.root / "legacy-gui")
+        release = {
+            "tag_name": "v0.3.8-modern", "draft": False, "prerelease": False,
+            "assets": [{"name": path.name} for path in assets.iterdir() if not path.name.startswith("dnsp-modern-gui")]
+                      + [{"name": "SHA256SUMS"}],
+            "body": "Existing changelog.",
+        }
+        path = self.root / "legacy-gui.json"
+        for partial in (False, True):
+            if partial:
+                release["assets"].append({"name": "dnsp-modern-gui_0.3.8+debian13_all.deb"})
+            path.write_text(json.dumps(release))
+            result = subprocess.run(["python3", str(SCRIPTS / "release-downloads.py"), "--release-json", str(path)],
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode == 0, not partial, result.stderr)
+            if not partial:
+                self.assertNotIn("GUI package", result.stdout)
+                self.assertNotIn("dnsp-modern-gui", result.stdout)
+                self.assertIn("Existing changelog.", result.stdout)
+
     def test_incomplete_package_sets_never_tag_or_publish(self):
         prepared = self.script("prepare-release.sh")["commit"]
         gh_calls = self.root / "gh-calls"
@@ -290,7 +313,7 @@ esac
         gh.chmod(0o755)
         for case in ("missing-windows", "empty-windows", "wrong-version", "missing-windows-arm64",
                      "empty-windows-arm64", "wrong-windows-arm64-version", "extra-zip", "missing-linux",
-                     "missing-macos", "empty-macos", "extra-macos"):
+                     "missing-macos", "empty-macos", "extra-macos", "missing-gui-deb", "empty-gui-rpm"):
             with self.subTest(case=case):
                 assets = self.packages(self.root / case)
                 windows = assets / "dnsp-modern-0.3.8-windows-amd64-poc.zip"
@@ -315,6 +338,10 @@ esac
                     (assets / "dnsp-modern-0.3.8-macos-x86_64.tar.gz").unlink()
                 elif case == "empty-macos":
                     (assets / "dnsp-modern-0.3.8-macos-arm64.tar.gz").write_bytes(b"")
+                elif case == "missing-gui-deb":
+                    (assets / "dnsp-modern-gui_0.3.8+debian13_all.deb").unlink()
+                elif case == "empty-gui-rpm":
+                    (assets / "dnsp-modern-gui-0.3.8-1.el9.noarch.rpm").write_bytes(b"")
                 else:
                     (assets / "stale-build.tar.gz").write_text("old build")
                 self.script("publish-modern.sh", assets, succeeds=False,

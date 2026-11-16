@@ -101,13 +101,39 @@ its architecture. First start is opt-in for both formats. On a live systemd
 host, the RPM uses the distribution's restart-on-upgrade and stop-on-removal
 helpers.
 
+## Optional Linux desktop package
+
+`dnsp-modern-gui` is a separate GTK 4/Python companion with a desktop launcher
+and `dnsp-gui` command. It is architecture independent (`all` DEB / `noarch`
+RPM), tested on both x86-64 and ARM64. Install the matching distribution's GUI
+package alongside its daemon package, or monitor a source build. GTK stays out
+of the daemon package's dependencies. The GUI only reads status and metrics;
+it does not start, stop or reconfigure the daemon.
+
+```sh
+sudo apt install ./dnsp-modern-gui_*_all.deb
+# Rocky Linux 9:
+sudo dnf install ./dnsp-modern-gui-*.noarch.rpm
+dnsp-gui
+```
+
+The package recommends `dnsp-modern`; it does not require a packaged daemon.
+For a source installation, add `--no-install-recommends` to APT or
+`--setopt=install_weak_deps=False` to DNF to install only the GUI. Uninstalling
+it leaves the daemon running. See the [desktop guide](../docs/LINUX-GUI.md).
+
+`build-deb.sh` produces both packages; `build-rpm.sh` produces a native daemon
+RPM and a noarch GUI subpackage. To build only the GUI DEB, use
+`sh scripts/build-gui-deb.sh "$(cat VERSION)"`. Desktop packages first appear in
+releases after v4.5.0; this PR's CI provides artifacts before release.
+
 ## Automatic and manual releases
 
 1. Set the next release number in the top-level `VERSION` file and merge to
    `master`.
 2. The first successful build for the new version creates the matching
    `vVERSION-modern` tag at the tested commit and publishes a regular GitHub release
-   with eight Linux packages, Windows AMD64/ARM64 PoC ZIPs, two native macOS
+   with eight Linux daemon packages, four optional GUI packages, Windows AMD64/ARM64 PoC ZIPs, two native macOS
    archives, and `SHA256SUMS`. Publication waits for the native Windows and both
    macOS builds and extracted-package tests, as well as Linux packaging and
    sanitizers. Other commits at the published version
@@ -118,12 +144,13 @@ helpers.
    highest release tag. The workflow stages a commit that changes only
    `VERSION`. All eight Linux package builds, Windows and both macOS builds/tests,
    and the sanitizer job check out that commit before the workflow tags it and publishes
-   the complete set. A blank
+   the complete set of 16 packages plus `SHA256SUMS`. Both CPU architectures
+   also install and validate the optional GUI packages. A blank
    field uses the `VERSION` from `master`. Pushing an explicit tag also works
    when it matches the tagged commit's `VERSION`.
 
 Release notes begin with a download table for Windows, macOS Intel/Apple Silicon
-and each Linux package target, followed by the generated changelog. README
+and each Linux daemon/GUI package target, followed by the generated changelog. README
 download buttons point to the latest release's table, so they do not need
 version-specific URLs. The changelog starts at the previous published regular
 release explicitly: manual version commits can sit outside `master` history,

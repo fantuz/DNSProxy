@@ -37,10 +37,12 @@ for distro in ubuntu22.04 ubuntu24.04 debian13; do
     for arch in amd64 arm64; do
         packages+=("dnsp-modern_${version}+${distro}_${arch}.deb")
     done
+    packages+=("dnsp-modern-gui_${version}+${distro}_all.deb")
 done
 for arch in x86_64 aarch64; do
     packages+=("dnsp-modern-${version}-1.el9.${arch}.rpm")
 done
+packages+=("dnsp-modern-gui-${version}-1.el9.noarch.rpm")
 for arch in amd64 arm64; do
     packages+=("dnsp-modern-${version}-windows-${arch}-poc.zip")
 done

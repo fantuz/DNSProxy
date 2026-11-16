@@ -75,6 +75,39 @@ class BenchmarkUnitTests(unittest.TestCase):
 
 
 class BenchmarkIntegrationTests(unittest.TestCase):
+    def test_h2_delayed_backup_wins_and_cancels_primary(self):
+        from contextlib import ExitStack
+        from bench_modern import one_load
+
+        with tempfile.TemporaryDirectory(prefix='dnsp-hedge-h2-') as td, ExitStack() as cleanup:
+            cert, key = make_certificate(Path(td))
+            primary = MockServer(free_port(), cert, key, delay_ms=5)
+            backup = MockServer(free_port(), cert, key, delay_ms=5)
+            for upstream in (primary, backup):
+                upstream.start()
+                cleanup.callback(upstream.close)
+                await_ready(upstream.port, None, 'DoH mock')
+            port, metrics = free_port(), free_port()
+            command = [str(BINARY), '-p', str(port), '-m', str(metrics),
+                       '-s', f'https://localhost:{primary.port}/dns-query',
+                       '--backup-upstream', f'https://localhost:{backup.port}/dns-query',
+                       '--bootstrap-address', '127.0.0.1', '--backup-bootstrap-address', '127.0.0.1',
+                       '--ca-file', str(cert), '--upstream-http=h2', '--upstream-hedge-ms', '60']
+            with subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE) as process:
+                try:
+                    await_ready(metrics, process, 'DNSProxy metrics')
+                    self.assertEqual(one_load(port, 1, 0)['successful_queries'], 1)
+                    primary.app.delay = 1
+                    self.assertEqual(one_load(port, 1, 0)['successful_queries'], 1)
+                    stats = metric_snapshot(metrics)
+                    self.assertEqual(stats['dnsp_upstream_hedge_wins_total{role="backup"}'], 1)
+                    self.assertEqual(stats['dnsp_upstream_hedges_cancelled_total'], 1)
+                    self.assertEqual(stats['dnsp_upstream_http_responses_total{version="2"}'], 2)
+                    self.assertEqual(stats['dnsp_queries_inflight'], 0)
+                finally:
+                    process.terminate()
+                    process.wait(timeout=5)
+
     def test_large_udp_replies_distinguish_truncation_from_success(self):
         with tempfile.TemporaryDirectory(prefix='dnsp-large-bench-') as td:
             for cap in (None, 4096):
