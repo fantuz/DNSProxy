@@ -573,8 +573,10 @@ before supplying a replacement. See
 
 ## Packages and releases
 
-See the [4.6.0 release notes](docs/releases/4.6.0.md) for desktop packages,
-latency reporting, delayed parallel upstream requests and upgrade guidance.
+See the [4.7.0 release notes](docs/releases/4.7.0.md) for Debian 13 slim
+container images, tested image publication and upgrade guidance. The
+[4.6.0 release notes](docs/releases/4.6.0.md) describe desktop packages,
+latency reporting and delayed parallel upstream requests.
 
 GitHub Actions builds DEBs for Debian 13 and Ubuntu 22.04/24.04, and RPMs for
 Rocky Linux 9. Each distribution has native x86-64 and ARM64 builds. Download

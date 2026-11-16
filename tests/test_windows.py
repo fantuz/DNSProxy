@@ -74,9 +74,17 @@ class WindowsTests(unittest.TestCase):
         ]
         for command in commands:
             with self.subTest(launcher=command[-1]), tempfile.TemporaryDirectory() as cwd, tempfile.TemporaryFile() as log:
-                process = fixtures.spawn_proxy(command, cwd=cwd, stdout=log, stderr=log)
+                # The CI parent is pwsh; let Windows PowerShell 5.1 construct
+                # its own module paths. Cold shell/CLR startup on ARM64 is
+                # separate from the resolver's DNS response deadlines below.
+                environment = {key: value for key, value in os.environ.items()
+                               if key.lower() != 'psmodulepath'}
+                powershell = command[-1].lower().endswith('.ps1')
+                startup_timeout = 45 if powershell else 15
+                process = fixtures.spawn_proxy(command, cwd=cwd, stdin=subprocess.DEVNULL,
+                                               stdout=log, stderr=log, env=environment)
                 try:
-                    deadline = time.monotonic() + 15
+                    deadline = time.monotonic() + startup_timeout
                     while time.monotonic() < deadline and process.poll() is None:
                         try:
                             for address in ('127.0.0.1', '::1'):
@@ -87,7 +95,8 @@ class WindowsTests(unittest.TestCase):
                             time.sleep(.05)
                     else:
                         log.seek(0)
-                        self.fail(f'Launcher failed: {log.read()!r}')
+                        self.fail(f'Launcher not ready within {startup_timeout}s: '
+                                  f'exit_code={process.poll()}, output={log.read()!r}')
                     for family, address in ((socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1')):
                         with socket.socket(family, socket.SOCK_DGRAM) as client:
                             client.settimeout(3)
@@ -99,7 +108,8 @@ class WindowsTests(unittest.TestCase):
                             client.sendall(struct.pack('!H', len(packet)) + packet)
                             self.assertEqual(fixtures.Tests.tcp_frame(client), answer)
                     process.send_signal(signal.CTRL_BREAK_EVENT)
-                    process.wait(timeout=5)
+                    if not powershell:
+                        process.wait(timeout=5)
                     deadline = time.monotonic() + 5
                     while time.monotonic() < deadline:
                         try:
@@ -110,6 +120,15 @@ class WindowsTests(unittest.TestCase):
                         time.sleep(.05)
                     else:
                         self.fail('Launcher left the resolver running after console stop')
+                    if powershell:
+                        # Check the daemon's five-second listener deadline
+                        # before allowing the PowerShell host to tear down.
+                        try:
+                            process.wait(timeout=15)
+                        except subprocess.TimeoutExpired:
+                            log.seek(0)
+                            self.fail('PowerShell host did not exit after DNS listeners closed: '
+                                      f'output={log.read()!r}')
                 finally:
                     if process.poll() is None:
                         subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True)

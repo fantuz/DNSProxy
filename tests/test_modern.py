@@ -608,7 +608,8 @@ class Tests(unittest.TestCase):
                 try:
                     proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
-                    proc.kill();proc.wait(timeout=3)
+                    proc.kill()
+                    proc.wait(timeout=3)
 
     def test_reject_invalid_tcp_deadlines(self):
         for option in ('--tcp-idle-ms', '--tcp-io-ms'):
@@ -1138,10 +1139,12 @@ class Tests(unittest.TestCase):
             self.assertRegex(result.stdout, rf'(?m)^{field}=(?:yes|no)$')
 
     def test_listener_failure_reports_role(self):
+        # Occupy TCP on a port known to support both protocols. Windows can
+        # assign an ephemeral TCP port that Hyper-V has excluded for UDP.
+        port, _ = unused_ports()
         with socket.socket() as occupied:
-            occupied.bind(('127.0.0.1', 0))
+            occupied.bind(('127.0.0.1', port))
             occupied.listen()
-            port = occupied.getsockname()[1]
             result = subprocess.run([str(BINARY), '-p', str(port)],
                                     capture_output=True, timeout=3)
         self.assertEqual(result.returncode, 1, result.stderr)
