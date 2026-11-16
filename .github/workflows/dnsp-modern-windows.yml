@@ -1,4 +1,4 @@
-name: DNSProxy modern - native Windows PoC
+name: DNSProxy modern - native Windows
 
 "on":
   workflow_dispatch:

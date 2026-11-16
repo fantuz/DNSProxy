@@ -1,4 +1,4 @@
-name: DNSProxy Linux GUI PoC
+name: DNSProxy Linux desktop monitor
 
 "on":
   push:
@@ -71,7 +71,7 @@ jobs:
         run: |
           dbus-run-session -- xvfb-run -a -s '-screen 0 1280x960x24' \
             /usr/bin/python3 tests/test_gui_gtk.py
-      - name: Bundle the standalone PoC sources
+      - name: Bundle the desktop monitor sources
         if: always()
         run: |
           mkdir -p dist

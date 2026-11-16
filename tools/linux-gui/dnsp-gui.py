@@ -743,7 +743,7 @@ def build_application(options):
 def main():
     options = arguments()
     if not sys.platform.startswith("linux"):
-        print("This PoC currently supports Linux only.", file=sys.stderr)
+        print("This desktop monitor currently supports Linux only.", file=sys.stderr)
         return 2
     try:
         app = build_application(options)

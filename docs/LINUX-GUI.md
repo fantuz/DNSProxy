@@ -8,8 +8,9 @@ needed only on machines where you choose to open the monitor.
 
 GTK 4 is a native Linux toolkit with X11 and Wayland backends; Python uses its
 PyGObject bindings. There is no browser, embedded web server, Electron runtime,
-privileged helper or second implementation of DNS/DoH. macOS and Windows GUI
-support is outside this PoC.
+privileged helper or second implementation of DNS/DoH. This GTK monitor currently
+supports Linux. Windows console launchers and service controls are documented in
+the [Windows guide](WINDOWS.md).
 
 ## Preview
 
@@ -22,8 +23,8 @@ synthetic. Live integration tests separately exercise the running C resolver.
 
 ## Install the optional package
 
-Download the `dnsp-modern-gui` package for your distribution from a release that
-includes it (after v4.5.0), or use the artifacts from this PR's GitHub Actions.
+Download the `dnsp-modern-gui` package for your distribution from v4.6.0 or
+later, or use the artifacts from a successful GitHub Actions build.
 The Python GUI package is architecture independent: `all` for DEB or `noarch`
 for RPM, tested on x86-64 and ARM64.
 
@@ -137,7 +138,7 @@ schema updates.
 
 The query indicator updates after the next sample, not for each packet. With
 **Pause**, the monitor reads data only when you press **Refresh now**. This is
-the PoC's on-demand mode. It does not start the daemon or open a window when a
+the monitor's on-demand mode. It does not start the daemon or open a window when a
 query arrives. Query-triggered daemon startup would need separate service/socket
 activation design, especially for UDP and privileged port 53.
 
@@ -158,8 +159,8 @@ activation design, especially for UDP and privileged port 53.
   reconnects after a restart when a single readable resolver exists. Without a
   PID, resets can only be detected through falling counters.
 - CPU may exceed 100% when several cores are busy. The daemon's CPU/RSS are
-  displayed, not the GUI's. The PoC does not yet include a monitor-overhead
-  benchmark or claim zero overhead.
+  displayed, not the GUI's. A measured monitor-overhead
+  benchmark remains a follow-up.
 - Upstream preference and negotiated protocol are different. `prefer-h3` can
   fall back; reply counters show actual use. `dnsp_build_info` exposes
   the running daemon version, numeric libcurl version and built HTTP/2/3 support.
@@ -188,7 +189,7 @@ activation design, especially for UDP and privileged port 53.
 
 Focused local checks exercise argument handling, real metrics HTTP responses,
 limits, restarts, process identity, rates and the actual C resolver. The
-**DNSProxy Linux GUI PoC** GitHub workflow runs these plus GTK tests under Xvfb
+**DNSProxy Linux desktop monitor** GitHub workflow runs these plus GTK tests under Xvfb
 on **Ubuntu 22.04 x86-64** and **Ubuntu 24.04 ARM64**. It checks formatting and
 imports, confirms queries appear in the GUI and that closing it leaves the
 resolver running, and publishes source bundles and screenshots as CI artifacts.

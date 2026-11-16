@@ -1,4 +1,4 @@
-# Native Windows proof of concept
+# Native Windows builds
 
 This build runs `dnsp-modern.c` directly on Windows x86-64 and ARM64. DNS parsing, cache,
 failover, EDNS, limits, metrics, and libcurl connection management are shared
@@ -15,8 +15,9 @@ and choose the ZIP for your **Settings → System → About → System type**:
 | x64-based processor (Intel/AMD) | `dnsp-modern-VERSION-windows-amd64-poc.zip` |
 | ARM-based processor (Windows 11 ARM64) | `dnsp-modern-VERSION-windows-arm64-poc.zip` |
 
-ARM64 is introduced after v4.4.0; older releases contain only the AMD64 ZIP.
-Until the first release containing this change, use the ARM64 CI artifact below.
+Native Windows 11 ARM64 ZIPs are available from v4.5.0 onward; older Windows
+releases contain only the AMD64 ZIP. The historical `-poc` suffix in ZIP names
+is retained for compatibility with existing download automation.
 Download **SHA256SUMS** from the same release as the ZIP. Check the ZIP's hash against its entry in `SHA256SUMS`:
 
 ```powershell
@@ -65,6 +66,14 @@ selects a custom PEM trust bundle. `--version` reports actual libcurl, TLS,
 HTTP/2 and HTTP/3 capabilities. HTTP/3 remains opt-in with
 `--upstream-http=prefer-h3` and the same fallback policy as Linux.
 
+## Desktop interface and console launchers
+
+`Start-DNSProxy.cmd` opens the resolver in a console. `Start-DNSProxy.ps1`
+accepts launch options and can request UAC elevation. Service installation and
+DNS configuration use the PowerShell commands below. These tools currently
+provide no graphical settings or statistics window; the GTK desktop monitor is
+[available on Linux](LINUX-GUI.md).
+
 ## Administrator option and port conflicts
 
 Windows does not generally reserve ports below 1024 for administrators. Port
@@ -110,7 +119,7 @@ Resolve-DnsName example.com -Type A -DnsOnly
 ```
 
 Other adapters, IPv6 DNS, VPN settings, Windows resolution policies and
-applications with their own DoH can select other resolvers. This PoC does not
+applications with their own DoH can select other resolvers. DNSProxy does not
 enforce system-wide DNS routing. A public resolver configured as an alternate
 Windows DNS server may receive queries directly; use DNSProxy's
 `--backup-upstream` and matching `--backup-bootstrap-address` for encrypted
@@ -187,7 +196,7 @@ the lists inside its protected `policy` directory. See [blocklists](BLOCKLISTS.m
 for formats, reply modes, automatic reloads, SCM control and the optional Python updater.
 
 
-| Area | Windows PoC |
+| Area | Windows build |
 | --- | --- |
 | DNS wire parsing, all RR types, EDNS, padding and reply limits | Shared C implementation |
 | TTL/DoH Age expiration, coalescing and failover | Shared C implementation |
@@ -216,8 +225,8 @@ discovery with both valid and invalid TLS hostnames. The required
 **DNSProxy PR checks** status includes Windows when applicable.
 The Linux packages and tests also validate changes to the shared core.
 
-Both architecture bundles are unsigned Windows **PoCs**, without an MSI/MSIX
-installer. CI executes the resolver, Python protocol fixtures, platform
+Both architecture bundles are unsigned portable Windows builds, without an
+MSI/MSIX installer. CI executes the resolver, Python protocol fixtures, platform
 probes, and service acceptance on Windows Server 2022 AMD64 and Windows 11 ARM64.
 It also verifies the extracted bundle's checksums and PE architecture.
 On the ARM64 runner, the Python test driver uses x64 emulation because the QUIC
@@ -226,8 +235,8 @@ resolver, platform probes, service fixture and bundled DLLs are ARM64-native;
 their PE machine types are checked and the full product tests execute them on
 the ARM64 host. The Python driver is a CI dependency, outside the portable ZIP.
 Other desktop Windows 10/11 configurations, non-administrator accounts, Unicode/long paths,
-suspend/resume, and VPN policies need a broader acceptance matrix before a
-supported Windows release. The shared resolver supports IPv4 and IPv6 DNS listeners. Repeat `-l` to enable
+suspend/resume, and VPN policies remain areas for broader acceptance testing.
+The shared resolver supports IPv4 and IPv6 DNS listeners. Repeat `-l` to enable
 both, for example `-l 127.0.0.1 -l ::1 -p 53`. Both portable launchers enable
 IPv4 and IPv6 loopback by default. On an IPv6-disabled machine, run the EXE
 directly with `-l 127.0.0.1`. Test the listener before changing Windows DNS. IPv6 record types and upstream addresses remain independent of
@@ -239,11 +248,12 @@ loopback aliases such as `127.0.0.2` are not supported for wildcard replies via
 adapter address (`DNSP_TEST_SECOND_ADDRESS`), without changing adapter settings.
 
 Next decisions: signed installer and broader desktop acceptance. New releases
-include both Windows PoC ZIPs alongside eight Linux packages and two native
-macOS archives. Publication waits for native Windows/macOS builds, portable
-bundle tests, Linux packages and sanitizers; all twelve downloads are included
-in the release's `SHA256SUMS`. Distribution in a regular release
-does not change the Windows PoC support status described above.
+include both Windows ZIPs alongside eight Linux daemon packages, four optional
+Linux GUI packages (from v4.6.0) and two native macOS archives. Publication waits
+for native Windows/macOS builds, portable bundle tests, Linux packages and
+sanitizers; all sixteen packages are included in the release's `SHA256SUMS`.
+The platform coverage and unsigned-build limitations above apply to these
+regular releases.
 
 ## Build from source
 

@@ -80,7 +80,7 @@ do not replace its stub listener or symlink as part of service setup.
 | Ubuntu 24.04 | DEB | amd64 | arm64 |
 | Debian 13 | DEB | amd64 | arm64 |
 | Rocky Linux 9 | RPM | x86_64 | aarch64 |
-| Windows PoC | Portable ZIP | amd64 | arm64 (Windows 11) |
+| Windows | Portable ZIP | amd64 | arm64 (Windows 11) |
 | macOS 15+ | Portable tar.gz | x86_64 (Intel) | arm64 (Apple Silicon) |
 
 The [macOS archives](../docs/MACOS.md) use Apple's system libcurl and include a
@@ -124,8 +124,8 @@ it leaves the daemon running. See the [desktop guide](../docs/LINUX-GUI.md).
 
 `build-deb.sh` produces both packages; `build-rpm.sh` produces a native daemon
 RPM and a noarch GUI subpackage. To build only the GUI DEB, use
-`sh scripts/build-gui-deb.sh "$(cat VERSION)"`. Desktop packages first appear in
-releases after v4.5.0; this PR's CI provides artifacts before release.
+`sh scripts/build-gui-deb.sh "$(cat VERSION)"`. Desktop packages are available from
+v4.6.0 onward. Successful CI builds also provide package artifacts.
 
 ## Automatic and manual releases
 
@@ -133,7 +133,7 @@ releases after v4.5.0; this PR's CI provides artifacts before release.
    `master`.
 2. The first successful build for the new version creates the matching
    `vVERSION-modern` tag at the tested commit and publishes a regular GitHub release
-   with eight Linux daemon packages, four optional GUI packages, Windows AMD64/ARM64 PoC ZIPs, two native macOS
+   with eight Linux daemon packages, four optional GUI packages, Windows AMD64/ARM64 ZIPs, two native macOS
    archives, and `SHA256SUMS`. Publication waits for the native Windows and both
    macOS builds and extracted-package tests, as well as Linux packaging and
    sanitizers. Other commits at the published version

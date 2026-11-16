@@ -11,7 +11,7 @@
   <a href="https://github.com/fantuz/DNSProxy/issues"><img src="https://img.shields.io/github/issues/fantuz/DNSProxy" alt="Open issues" height="20"></a>
   <a href="https://github.com/fantuz/DNSProxy/commits/master"><img src="https://img.shields.io/github/last-commit/fantuz/DNSProxy/master" alt="Last commit on master" height="20"></a>
   <br>
-  <a href="packaging/README-packaging.md#packages-and-architectures"><img src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows%20PoC-507269" alt="Platforms: Linux, macOS and Windows PoC" height="20"></a>
+  <a href="packaging/README-packaging.md#packages-and-architectures"><img src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-507269" alt="Platforms: Linux, macOS and Windows" height="20"></a>
   <a href="dnsp-modern.c"><img src="https://img.shields.io/badge/core-C11-00599c" alt="Shared resolver core: C11" height="20"></a>
   <a href="packaging/README-packaging.md#packages-and-architectures"><img src="https://img.shields.io/badge/Install-DEB%2FRPM%20%C2%B7%20amd64%2Farm64-2e7d32" alt="Install DEB or RPM packages for amd64 and arm64" height="20"></a>
   <br>
@@ -41,8 +41,10 @@ multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
   <a href="https://github.com/fantuz/DNSProxy/releases/latest#downloads"><img src="https://img.shields.io/badge/Download%20for%20Linux-DEB%20%2F%20RPM-2e7d32?style=for-the-badge" alt="Download for Linux — DEB and RPM packages" height="28"></a>
 </p>
 
-An optional [Linux desktop monitor (PoC)](#optional-linux-desktop-monitor-poc)
-shows startup settings, live query activity and daemon statistics.
+The optional [Linux desktop monitor](#optional-linux-desktop-monitor) shows
+startup settings, live query activity, latency and daemon statistics. Windows
+provides [console launchers and service controls](docs/WINDOWS.md); a Windows
+graphical monitor remains a future addition.
 
 [Windows setup guide](docs/WINDOWS.md)
 · [macOS setup guide](docs/MACOS.md)
@@ -50,7 +52,7 @@ shows startup settings, live query activity and daemon statistics.
 
 On the release page, choose **Portable ZIP** in the Windows row. Extract the
 entire archive and double-click **Start-DNSProxy.cmd**. Keep `dnsp-modern.exe`,
-its DLLs and the certificate bundle together. The native Windows PoC uses the
+its DLLs and the certificate bundle together. The native Windows build uses the
 same C resolver as Linux; the setup guide covers service installation,
 Administrator options, DNS adapter configuration and rollback.
 
@@ -525,8 +527,8 @@ metrics on port `9153`.
 activity appears on the next sample; closing the window leaves DNSProxy running.
 Optional `dnsp-modern-gui` DEB (`all`) and RPM (`noarch`) packages add a desktop
 launcher and `dnsp-gui` command. They work on Linux x86-64 and ARM64; install the
-package for your distribution alongside the daemon. These packages first appear
-in releases after v4.5.0; current PR builds provide CI artifacts. GTK dependencies
+package for your distribution alongside the daemon. These packages are available
+from v4.6.0 onward. GTK dependencies
 belong only to the optional GUI package. See the [installation guide](packaging/README-packaging.md#optional-linux-desktop-package).
 X11 is tested in GitHub CI on Linux x86-64 and ARM64; native Wayland testing is
 a follow-up. See the [Linux GUI guide](docs/LINUX-GUI.md) for the startup-options
@@ -565,13 +567,15 @@ before supplying a replacement. See
 
 ## Packages and releases
 
+See the [4.6.0 release notes](docs/releases/4.6.0.md) for desktop packages,
+latency reporting, delayed parallel upstream requests and upgrade guidance.
+
 GitHub Actions builds DEBs for Debian 13 and Ubuntu 22.04/24.04, and RPMs for
 Rocky Linux 9. Each distribution has native x86-64 and ARM64 builds. Download
 the matching package and `SHA256SUMS` from
 [GitHub Releases](https://github.com/fantuz/DNSProxy/releases).
-Windows PoC builds offer native AMD64 and Windows 11 ARM64 portable ZIPs from
-the same C resolver. ARM64 is introduced after v4.4.0; successful CI runs offer
-both architecture artifacts before the next release. See the
+Windows builds offer native AMD64 and Windows 11 ARM64 portable ZIPs from
+the same C resolver. Both architectures are available from v4.5.0 onward. See the
 [Windows guide](docs/WINDOWS.md) for architecture selection, launch and DNS setup.
 
 Set the next version in `VERSION` and merge to `master` to publish once the
