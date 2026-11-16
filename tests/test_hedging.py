@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 import test_modern as dns
 
@@ -173,11 +174,15 @@ class HedgingTests(unittest.TestCase):
                 self.assertEqual(self.metric(metric, 'dnsp_upstream_hedges_inflight'), 0)
 
     def test_parallel_backups_have_a_separate_capacity_bound(self):
-        with self.endpoint('stall') as primary, self.endpoint('stall') as backup:
-            with self.proxy(self.url(primary), self.url(backup), total_ms=2000) as (port, metric), \
+        # Keep all attempts pending while observing the cap, including on an
+        # ARM64 Windows runner whose Python fixture runs under emulation.
+        with patch.object(dns.FailoverHTTP, 'request_queue_size', 128), \
+             self.endpoint('stall') as primary, self.endpoint('stall') as backup:
+            with self.proxy(self.url(primary), self.url(backup), total_ms=8000, connect_ms=4000) as (port, metric), \
                  socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
                 for i in range(30):
                     client.sendto(dns.query(62000 + i, ident=i), ('127.0.0.1', port))
+                self.wait_metric(metric, 'dnsp_queries_total{transport="udp"}', 30)
                 self.wait_metric(metric, 'dnsp_upstream_hedges_started_total', 16)
                 self.wait_metric(metric, 'dnsp_upstream_hedges_suppressed_total', 14)
                 self.assertEqual(self.metric(metric, 'dnsp_upstream_hedges_suppressed_total'), 14)
