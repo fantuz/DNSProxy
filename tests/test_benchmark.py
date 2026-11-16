@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 
 BASE = Path(__file__).resolve().parent.parent
 BINARY = Path(os.environ.get('DNSP_TEST_BINARY', BASE/'dnsp-modern'))
@@ -19,6 +20,20 @@ from mock_doh import MockServer, make_response  # noqa: E402
 
 
 class BenchmarkUnitTests(unittest.TestCase):
+    def test_port_probe_skips_tcp_reservations_and_closes_both_sockets(self):
+        import bench_modern
+
+        sockets = [MagicMock() for _ in range(4)]
+        for sock in sockets:
+            sock.__enter__.return_value = sock
+        sockets[1].bind.side_effect = PermissionError('Reserved by Hyper-V')
+        with patch.object(bench_modern.random, 'sample', return_value=[12001, 12002]), \
+             patch.object(bench_modern.socket, 'socket', side_effect=sockets):
+            self.assertEqual(bench_modern.free_port(), 12002)
+        for index, sock in enumerate(sockets):
+            sock.bind.assert_called_once_with(('127.0.0.1', 12001 if index < 2 else 12002))
+            sock.__exit__.assert_called_once()
+
     def test_h2_initial_stream_limit_waits_for_settings_ack(self):
         from h2.config import H2Configuration
         from h2.connection import H2Connection
@@ -104,6 +119,7 @@ class BenchmarkIntegrationTests(unittest.TestCase):
                     self.assertEqual(stats['dnsp_upstream_hedges_cancelled_total'], 1)
                     self.assertEqual(stats['dnsp_upstream_http_responses_total{version="2"}'], 2)
                     self.assertEqual(stats['dnsp_queries_inflight'], 0)
+                    self.assertEqual(primary.app.snapshot()['upstream_http_versions'], {'2': 2})
                 finally:
                     process.terminate()
                     process.wait(timeout=5)

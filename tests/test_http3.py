@@ -136,6 +136,7 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(stats['dnsp_upstream_hedges_cancelled_total'], 1)
                     self.assertEqual(stats['dnsp_upstream_http_responses_total{version="3"}'], 2)
                     self.assertEqual(stats['dnsp_queries_inflight'], 0)
+                    self.assertEqual(primary.app.snapshot()['upstream_http_versions'], {'3': 2})
 
     async def test_fallback_when_udp_gets_no_response(self):
         async with self.upstream() as (upstream, cert, _):

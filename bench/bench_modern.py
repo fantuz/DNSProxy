@@ -12,6 +12,7 @@ import http.client
 import json
 import math
 import os
+import random
 from pathlib import Path
 import socket
 import selectors
@@ -40,19 +41,21 @@ PHASES = ('queue', 'tls', 'first_byte')
 
 def free_port():
     # DNS and QUIC fixtures need UDP as well as TCP at the selected port.
-    # Windows can allow a TCP bind while reserving that same port for UDP.
-    for attempt in range(100):
+    # Probe outside the usual outbound ephemeral range. On Windows the UDP
+    # allocator can repeatedly choose a port excluded for TCP by Hyper-V.
+    for port in random.sample(range(10000, 18000), 100):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp, \
              socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
-            udp.bind(('127.0.0.1', 0))
-            port = udp.getsockname()[1]
             try:
+                if os.name == 'nt':
+                    for sock in (udp, tcp):
+                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                udp.bind(('127.0.0.1', port))
                 tcp.bind(('127.0.0.1', port))
             except OSError:
-                if attempt == 99:
-                    raise
                 continue
             return port
+    raise RuntimeError('Could not reserve a TCP/UDP benchmark fixture port')
 
 
 def make_certificate(directory):
