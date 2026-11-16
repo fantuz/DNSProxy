@@ -99,9 +99,10 @@ class ContainerTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(state['OOMKilled'], state)
         finally:
             if sys.exc_info()[0]:
-                print(docker('logs', container, check=False).stdout, file=sys.stderr)
-                print(docker('logs', container, check=False).stderr, file=sys.stderr)
-                print(docker('inspect', container, check=False).stdout, file=sys.stderr)
+                logs = docker('logs', container, check=False)
+                print(logs.stdout + logs.stderr, file=sys.stderr)
+                print(docker('inspect', '--format', '{{json .State}}', container, check=False).stdout,
+                      file=sys.stderr)
             docker('rm', '-f', container, check=False)
 
     def metrics(self, container, port):
@@ -162,7 +163,7 @@ class ContainerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(struct.unpack('!H', full[6:8])[0], 100)
             self.assertGreater(self.metrics(container, metric)['dnsp_cache_hits_total'], 0)
             before = len(server.received)
-            self.assertEqual(exchange(port, question('ads.example'))[3] & 15, 3)
+            self.assertEqual(exchange(port, question('ads.example'))[3] & 15, 5)
             self.assertEqual(len(server.received), before)
             temporary = rules/'deny.new'
             temporary.write_text('ads.example\nnew.example\n')
@@ -172,7 +173,7 @@ class ContainerTests(unittest.IsolatedAsyncioTestCase):
             while self.metrics(container, metric)['dnsp_blocklist_generation'] < 2:
                 self.assertLess(time.monotonic(), deadline)
                 time.sleep(.05)
-            self.assertEqual(exchange(port, question('new.example'))[3] & 15, 3)
+            self.assertEqual(exchange(port, question('new.example'))[3] & 15, 5)
 
     def test_packaged_http2_multiplex_and_reuse(self):
         upstream = MockServer(free_port(), self.cert, self.key, delay_ms=20)

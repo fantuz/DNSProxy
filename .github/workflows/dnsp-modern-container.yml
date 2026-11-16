@@ -75,6 +75,9 @@ jobs:
           imported=$(docker image inspect --format '{{.Id}}' "dnsp-modern:ci-$ARCH")
           expected=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["platforms"][sys.argv[2]]["config_digest"])' "out/image-$ARCH.json" "$ARCH")
           test "$imported" = "$expected"
+          docker run --rm "dnsp-modern:ci-$ARCH" --version > "out/version-$ARCH.txt"
+          grep -Fx "dnsp-modern $IMAGE_VERSION" "out/version-$ARCH.txt"
+          docker image inspect "dnsp-modern:ci-$ARCH" > "out/runtime-$ARCH.json"
           docker compose config --quiet
       - name: Exercise DNS, health, policy, shutdown, HTTP2 and HTTP3 in the runtime image
         env:

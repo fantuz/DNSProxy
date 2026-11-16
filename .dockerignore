@@ -1,4 +1,4 @@
-# Keep credentials, local binaries, historical sources and test data out of builds.
+# Keep credentials, local binaries, generated data and historical sources out of builds.
 **
 !Dockerfile
 !.dockerignore
