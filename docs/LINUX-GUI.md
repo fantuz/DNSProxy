@@ -249,6 +249,22 @@ system resolver or privileged port 53; those remain separate from this launcher.
 
 ## Validation and follow-ups
 
+`tests/gui-queries-25.txt` is an original, small query list in the same `NAME TYPE`
+format used by [DNS-OARC's dnsperf/resperf sample data](https://github.com/DNS-OARC/sample-query-data).
+The GUI regression sends it **once**, sequentially, at no more than 12.5 QPS,
+with five controlled NXDOMAIN replies among 20 successful A/AAAA/TXT/MX/NS/SOA
+replies. It observes the real GTK labels throughout the run, checks that ordinary
+NXDOMAIN replies count as satisfied queries, and rejects disappearing numeric
+values or missing scrapes under this modest workload. Separate tests cover a
+48-query NXDOMAIN burst and genuine HTTP timeouts/recovery.
+
+All names in the small list are reserved `.test`/`.invalid` names, and CI supplies
+answers through a local DoH fixture. The DNS-OARC lists are query inputs, not an
+expected-answer oracle: live answers can change. The large external corpus is
+not downloaded by CI. Against public upstreams the reserved names can all return
+NXDOMAIN; controlled positive answers exist only in the test fixture.
+
+
 Focused local checks exercise argument handling, real metrics HTTP responses,
 limits, restarts, process identity, rates and the actual C resolver. The
 **DNSProxy Linux desktop monitor** GitHub workflow runs these plus GTK tests under Xvfb

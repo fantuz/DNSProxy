@@ -8,6 +8,7 @@ import os
 import math
 import re
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -20,7 +21,15 @@ BASE = Path(__file__).resolve().parents[1]
 GUI_SOURCE = Path(os.environ.get("DNSP_GUI_SOURCE", BASE / "tools/linux-gui"))
 sys.path.insert(0, str(GUI_SOURCE))
 import monitor  # noqa: E402 - optional tool lives outside the tests package
-from test_modern import BINARY, DoH, HTTP, query, unused_ports  # noqa: E402
+from test_modern import (  # noqa: E402
+    BINARY,
+    DoH,
+    HTTP,
+    make_response,
+    question_end,
+    query,
+    unused_ports,
+)
 
 BODY = (
     b'dnsp_queries_total{transport="udp"} 10\ndnsp_queries_total{transport="tcp"} 2\n'
@@ -123,6 +132,52 @@ def send_query(port):
         answer = client.recv(4096)
         if answer[:2] != packet[:2] or answer[3] & 15:
             raise AssertionError("Invalid DNS answer")
+
+
+# A small original fixture in dnsperf/resperf's NAME TYPE format. These names
+# are reserved; all positive/negative answers come from the local DoH mock.
+def mixed_query_cases():
+    types = {"A": 1, "AAAA": 28, "TXT": 16, "MX": 15, "NS": 2, "SOA": 6}
+    cases = []
+    for ident, line in enumerate(
+        (BASE / "tests/gui-queries-25.txt").read_text().splitlines()
+    ):
+        name, kind = line.split()
+        labels = [label.encode("ascii") for label in name.rstrip(".").split(".")]
+        question = b"".join(bytes([len(label)]) + label for label in labels) + b"\0"
+        packet = (
+            struct.pack("!6H", ident, 0x0100, 1, 0, 0, 0)
+            + question
+            + struct.pack("!HH", types[kind], 1)
+        )
+        cases.append((packet, 3 if name.endswith(".invalid.") else 0))
+    return cases
+
+
+class MixedQueryDoH(DoH):
+    def do_POST(self):
+        data = self.rfile.read(int(self.headers["Content-Length"]))
+        end = question_end(data)
+        if data[12 : end - 4].endswith(b"\x07invalid\0"):
+            answer = data[:2] + struct.pack("!5H", 0x8183, 1, 0, 0, 0) + data[12:end]
+        else:
+            answer = make_response(data)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/dns-message")
+        self.send_header("Content-Length", str(len(answer)))
+        self.end_headers()
+        self.wfile.write(answer)
+
+
+def send_mixed_query(port, case):
+    packet, rcode = case
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+        client.settimeout(2)
+        client.sendto(packet, ("127.0.0.1", port))
+        answer = client.recv(4096)
+    if answer[:2] != packet[:2] or answer[3] & 15 != rcode:
+        raise AssertionError("Unexpected ID or RCODE in the mixed query fixture")
+    return rcode
 
 
 class LauncherTests(unittest.TestCase):
@@ -546,6 +601,32 @@ class LiveMonitorTests(unittest.TestCase):
             )
             self.assertGreaterEqual(
                 current.get("dnsp_client_duration_max_seconds", transport="udp"), 0.03
+            )
+
+    def test_modest_mixed_queries_count_nxdomain_as_satisfied(self):
+        cases = mixed_query_cases()
+        self.assertEqual(len(cases), 25)
+        self.assertEqual(sum(rcode == 3 for _, rcode in cases), 5)
+        with live_resolver(handler=MixedQueryDoH) as (_, port, metric):
+            before = monitor.fetch_metrics(metric)
+            for case in cases:
+                send_mixed_query(port, case)
+                time.sleep(0.02)
+            after = monitor.fetch_metrics(metric)
+            self.assertEqual(
+                after.get("dnsp_queries_total", transport="udp")
+                - before.get("dnsp_queries_total", transport="udp"),
+                25,
+            )
+            self.assertEqual(
+                after.get("dnsp_queries_satisfied_total")
+                - before.get("dnsp_queries_satisfied_total"),
+                25,
+            )
+            self.assertEqual(
+                after.get("dnsp_upstream_failures_total")
+                - before.get("dnsp_upstream_failures_total"),
+                0,
             )
 
     def test_metrics_remain_available_during_nxdomain_burst(self):

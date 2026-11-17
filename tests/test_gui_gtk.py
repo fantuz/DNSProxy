@@ -6,6 +6,7 @@ from pathlib import Path
 import os
 import subprocess
 import sys
+import threading
 import time
 import unittest
 import uuid
@@ -14,6 +15,9 @@ from test_gui_monitor import (
     BINARY,
     GUI_SOURCE,
     live_resolver,
+    mixed_query_cases,
+    MixedQueryDoH,
+    send_mixed_query,
     metrics_endpoint,
     sample,
     send_query,
@@ -166,6 +170,83 @@ class GuiTests(unittest.TestCase):
             self.assertIsNone(process.poll())
             send_query(port)
             self.window = None
+
+    def test_one_25_query_pass_with_five_nxdomains_keeps_numbers_visible(self):
+        with live_resolver(handler=MixedQueryDoH) as (process, port, _metric):
+            self.window.close()
+            self.app.quit()
+            self.pump(0.05)
+            self.app = gui.build_application(
+                gui.arguments(["--pid", str(process.pid), "--interval", ".5"])
+            )
+            self.app.set_application_id(
+                "org.dnsproxy.LinuxMonitor.Test" + uuid.uuid4().hex
+            )
+            self.app.register(None)
+            self.app.activate()
+            self.window = self.app.window
+            self.wait_for(
+                lambda: self.window.snapshot is not None
+                and self.window.snapshot.metrics is not None
+                and self.window.values["rate"].get_text() != "—"
+            )
+            baseline = self.window.snapshot.metrics.get("dnsp_queries_satisfied_total")
+            changes, samples = [], []
+            for key in ("udp", "satisfied", "rate", "latency"):
+                self.window.values[key].connect(
+                    "notify::label",
+                    lambda label, prop, key=key: changes.append(
+                        (key, label.get_text())
+                    ),
+                )
+            apply = self.window.apply
+
+            def observe(snapshot):
+                samples.append(snapshot.metrics is not None)
+                apply(snapshot)
+
+            self.window.apply = observe
+            errors, replies = [], []
+            stop = threading.Event()
+
+            def queries():
+                try:
+                    for case in mixed_query_cases():
+                        if stop.is_set():
+                            break
+                        replies.append(send_mixed_query(port, case))
+                        stop.wait(
+                            0.08
+                        )  # One pass, one outstanding request, at most 12.5 QPS.
+                except Exception as error:
+                    errors.append(error)
+
+            worker = threading.Thread(target=queries, daemon=True)
+            worker.start()
+            try:
+                self.wait_for(lambda: not worker.is_alive(), seconds=15)
+                self.assertEqual(errors, [])
+                self.assertEqual(len(replies), 25)
+                self.assertEqual(replies.count(3), 5)
+                self.wait_for(
+                    lambda: self.window.snapshot.metrics is not None
+                    and self.window.snapshot.metrics.get("dnsp_queries_satisfied_total")
+                    == baseline + 25
+                )
+                self.assertGreaterEqual(len(samples), 3)
+                self.assertTrue(all(samples))
+                self.assertTrue(changes)
+                self.assertFalse(
+                    any(value in ("", "—") for _, value in changes), changes
+                )
+                self.assertEqual(
+                    self.window.values["satisfied"].get_text(), str(int(baseline + 25))
+                )
+                self.assertIn("Receiving metrics", self.window.status.get_text())
+                self.screenshot("modest-25-query-nxdomain.png")
+            finally:
+                stop.set()
+                worker.join(timeout=3)
 
     def test_connection_failure_holds_frame_history_and_recovers_without_rate_spike(
         self,
