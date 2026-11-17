@@ -47,6 +47,9 @@ jobs:
         shell: pwsh
         run: |
           "week=$([Math]::Floor([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / 604800))" >> $env:GITHUB_OUTPUT
+          # Runner-provided variables are read in the shell, not the YAML env context.
+          $image = if ($env:ImageVersion) { $env:ImageVersion } else { [Environment]::OSVersion.Version.ToString() }
+          "image=$image" >> $env:GITHUB_OUTPUT
       - name: Restore the x64 test Python on ARM64 runners
         if: matrix.arch == 'arm64'
         id: python-cache
@@ -55,7 +58,7 @@ jobs:
           path: |
             ${{ runner.tool_cache }}/Python/${{ env.DNSP_PYTHON_VERSION }}/x64
             ${{ runner.tool_cache }}/Python/${{ env.DNSP_PYTHON_VERSION }}/x64.complete
-          key: dnsp-python-v1-${{ matrix.runner }}-${{ env.ImageVersion }}-x64-${{ env.DNSP_PYTHON_VERSION }}
+          key: dnsp-python-v1-${{ matrix.runner }}-${{ steps.cache-epoch.outputs.image }}-x64-${{ env.DNSP_PYTHON_VERSION }}
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.DNSP_PYTHON_VERSION }}
@@ -80,7 +83,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/msys64
-          key: dnsp-msys-v1-${{ matrix.runner }}-${{ matrix.msystem }}-${{ env.ImageVersion }}-${{ steps.cache-epoch.outputs.week }}-${{ hashFiles('.github/workflows/dnsp-modern-windows.yml') }}
+          key: dnsp-msys-v1-${{ matrix.runner }}-${{ matrix.msystem }}-${{ steps.cache-epoch.outputs.image }}-${{ steps.cache-epoch.outputs.week }}-${{ hashFiles('.github/workflows/dnsp-modern-windows.yml') }}
       - name: Validate the restored toolchain or use a clean installation
         id: msys-check
         shell: pwsh
