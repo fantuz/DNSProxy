@@ -20,6 +20,12 @@ name: DNSProxy modern - test and package
 permissions:
   contents: read
 
+# Superseded PR builds have no publication side effects. Release/manual runs
+# keep independent groups and retain the existing per-tag publication lock.
+concurrency:
+  group: dnsp-modern-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   DNSP_REQUIRE_IPV6: '1'
 
@@ -74,6 +80,9 @@ jobs:
       - name: Test release planning and publication with a local Git remote
         if: github.event_name == 'pull_request'
         run: python3 tests/test_release.py
+      - name: Test isolated parallel scheduling and error propagation
+        if: github.event_name == 'pull_request'
+        run: python3 tests/test_ci_parallel.py -v
       - name: Select checks for the proposed merge
         id: pr
         if: github.event_name == 'pull_request'
@@ -94,15 +103,15 @@ jobs:
           check_paths codeql "${common[@]}" .github/workflows/codeql.yml
           check_paths fuzz "${common[@]}" tests/fuzz_dns.c tests/make_fuzz_corpus.py \
             tests/test_modern.py .github/workflows/dnsp-modern-fuzz.yml
-          check_paths protocols "${common[@]}" bench/ tests/test_benchmark.py tests/test_http3.py \
+          check_paths protocols "${common[@]}" ci/ bench/ tests/test_benchmark.py tests/test_http3.py \
             tests/test_modern.py .dockerignore .github/workflows/dnsp-modern-benchmark.yml
           check_paths windows "${common[@]}" bench/ tests/ packaging/windows/ docs/WINDOWS.md \
-            scripts/build-windows.sh scripts/bundle-windows.py scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-windows.yml
+            scripts/build-windows.sh scripts/bundle-windows.py scripts/run-windows-tests.py ci/ scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-windows.yml
           check_paths macos "${common[@]}" bench/ tests/ packaging/macos/ docs/MACOS.md \
             scripts/build-macos.sh scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-macos.yml
           check_paths gui "${common[@]}" packaging/gui/ scripts/build-gui-deb.sh scripts/test-gui-package.py tools/linux-gui/ tests/test_gui_monitor.py tests/test_gui_gtk.py \
             docs/LINUX-GUI.md docs/images/ .github/workflows/dnsp-linux-gui-poc.yml
-          check_paths containers "${common[@]}" Dockerfile .dockerignore compose.yaml packaging/container/ \
+          check_paths containers "${common[@]}" ci/ Dockerfile .dockerignore compose.yaml packaging/container/ \
             tests/test_container.py tests/test_oci_bundle.py tests/test_oci_publish.py tests/test_modern.py tests/test_policy.py tests/test_http3.py \
             bench/ docs/CONTAINERS.md .github/workflows/dnsp-modern-container.yml
 
@@ -498,3 +507,4 @@ jobs:
             echo "\`$image@$OCI_DIGEST\`"
             echo 'On first publication, the owner must set the GHCR package visibility to Public to allow anonymous pulls. See docs/CONTAINERS.md.'
           } >> "$GITHUB_STEP_SUMMARY"
+

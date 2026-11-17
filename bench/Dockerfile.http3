@@ -1,0 +1,18 @@
+# Dependency layers refresh every seven days and when fixture requirements change.
+FROM debian:13-slim AS dependencies
+ARG DEPENDENCY_EPOCH
+RUN test -n "$DEPENDENCY_EPOCH" \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        build-essential pkg-config libcurl4-openssl-dev python3-venv \
+        openssl ca-certificates iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+COPY ci/requirements-http2.txt ci/requirements-protocol.txt /tmp/fixtures/
+RUN python3 -m venv /opt/bench \
+    && /opt/bench/bin/python -m pip install -r /tmp/fixtures/requirements-protocol.txt
+
+FROM dependencies AS tests
+WORKDIR /src
+COPY dnsp-modern.c dnsp-platform.h dnsp-service.h dnsp-policy.h modern.mk VERSION ./
+COPY bench/ bench/
+COPY tests/ tests/
+RUN make -f modern.mk dnsp-modern

@@ -117,6 +117,63 @@ class GuiTests(unittest.TestCase):
         self.window.pause.set_active(False)
         self.assertIsNone(self.window.rates.previous)
 
+    def test_time_axis_gaps_and_balanced_panels(self):
+        self.window.pause.set_active(True)
+        self.wait_for(lambda: not self.window.busy)
+        self.window.apply(sample(at=10, udp=10))
+        self.window.apply(sample(at=10.25, udp=12))
+        self.assertEqual(self.window.values["rate"].get_text(), "8.0")
+        self.assertEqual(list(self.window.history_times), [10.25])
+        held = list(self.window.history)
+        self.window.apply(replace(sample(at=10.5), metrics=None))
+        self.assertEqual(list(self.window.history), held)
+        self.window.apply(sample(at=10.75, udp=100))
+        self.window.apply(sample(at=11, udp=102))
+        self.assertIn(None, self.window.history)
+        self.assertEqual(len(self.window.history), len(self.window.history_times))
+        self.assertEqual(self.window.history_times[-1], 11)
+        for width, height in ((1120, 920), (800, 680)):
+            self.window.set_default_size(width, height)
+            self.pump(0.3)
+            self.assertGreaterEqual(self.window.chart.get_content_height(), 160)
+            self.assertLessEqual(self.window.chart.get_content_height(), 240)
+            self.assertGreater(
+                self.window.chart.get_width(), self.window.chart.get_height() * 3
+            )
+            grid = self.window.information_grid
+            for row in (0, 1):
+                left, right = grid.get_child_at(0, row), grid.get_child_at(1, row)
+                self.assertTrue(left.has_css_class("info-panel"))
+                self.assertEqual(left.get_allocation().y, right.get_allocation().y)
+                self.assertEqual(left.get_height(), right.get_height())
+            self.screenshot(f"balanced-overview-{width}.png")
+        viewport = self.window.notebook.get_nth_page(0)
+        adjustment = viewport.get_vadjustment()
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+        self.pump(0.1)
+        self.screenshot("balanced-information-panels.png")
+
+    def test_quarter_second_sampling_updates_without_a_backlog(self):
+        self.window.pause.set_active(True)
+        self.wait_for(lambda: not self.window.busy)
+        calls = []
+        collector = self.window.collector
+
+        class CountingCollector:
+            def collect(self):
+                calls.append(time.monotonic())
+                return collector.collect()
+
+        self.window.collector = CountingCollector()
+        self.window.preference_spins["interval"].set_value(0.25)
+        self.window.pause.set_active(False)
+        self.pump(1.1)
+        self.window.pause.set_active(True)
+        self.wait_for(lambda: not self.window.busy)
+        self.assertGreaterEqual(len(calls), 3)
+        self.assertLessEqual(len(calls), 5)
+        self.assertTrue(all(b - a >= 0.2 for a, b in zip(calls, calls[1:])))
+
     def test_stalled_http_keeps_main_loop_responsive_and_one_worker(self):
         with metrics_endpoint() as server:
             server.delay = 0.8

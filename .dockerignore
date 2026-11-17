@@ -21,3 +21,8 @@ packaging/**
 !packaging/container/
 packaging/container/**
 !packaging/container/healthcheck.sh
+
+# CI-only benchmark dependencies; never copied into the product image.
+!bench/Dockerfile.http3
+!ci/
+!ci/requirements-*.txt

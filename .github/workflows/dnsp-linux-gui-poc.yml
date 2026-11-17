@@ -50,7 +50,7 @@ jobs:
         run: |
           /usr/bin/python3 -m venv "$RUNNER_TEMP/gui-lint"
           "$RUNNER_TEMP/gui-lint/bin/pip" install ruff==0.14.4
-          "$RUNNER_TEMP/gui-lint/bin/ruff" format --check tools/linux-gui tests/test_gui_*.py
+          "$RUNNER_TEMP/gui-lint/bin/ruff" format --diff tools/linux-gui tests/test_gui_*.py
           "$RUNNER_TEMP/gui-lint/bin/ruff" check --select E4,E7,E9,F tools/linux-gui tests/test_gui_*.py
           git diff --check
       - name: Build the resolver and install the optional desktop package
@@ -60,6 +60,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends ./dist/dnsp-modern-gui_*_all.deb
           /usr/bin/python3 scripts/test-gui-package.py
           desktop-file-validate packaging/gui/org.dnsproxy.LinuxMonitor.desktop
+          DNSP_GUI_SOURCE=/usr/share/dnsp-modern-gui /usr/bin/python3 tests/test_gui_chart.py
           DNSP_GUI_SOURCE=/usr/share/dnsp-modern-gui /usr/bin/python3 tests/test_gui_monitor.py
       - name: Test GTK with real incoming DNS queries and save screenshots
         env:
@@ -85,3 +86,4 @@ jobs:
             dist/dnsp-linux-gui-poc.tar.gz
             dist/gui-screenshots/*.png
           if-no-files-found: error
+

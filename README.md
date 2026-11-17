@@ -507,10 +507,10 @@ p50/p95/p99 latency. Invocation values distinguish explicit settings from defaul
 runs as an ordinary desktop user and reads the existing process and metrics
 listener. The C resolver runs independently of the monitor.
 
-![Linux GUI demo receiving metrics, with synthetic statistics](docs/images/linux-gui-poc-demo-overview.png)
+![Linux GUI with real local CI query activity and separated panels](docs/images/linux-gui-poc-live-activity.png)
 
-The screenshot shows **demo mode with synthetic values**. From a source
-checkout, install the optional desktop dependencies and try the demo:
+The screenshot shows real local queries from CI. To try explicitly labelled
+synthetic demo data from a source checkout, install the optional dependencies:
 
 ```sh
 sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0
@@ -631,3 +631,4 @@ independent of the listener family.
 See the [C maintenance guide](docs/C_MAINTENANCE.md) for repository layout
 criteria, C review checks, and commands to run before opening a PR.
 See the [security policy](SECURITY.md) for private vulnerability reporting.
+

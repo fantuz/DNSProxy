@@ -14,10 +14,13 @@ the [Windows guide](WINDOWS.md).
 
 ## Preview
 
-These overview screenshots show the earlier layout from Linux CI in demo mode; all displayed values are
-synthetic. Live integration tests separately exercise the running C resolver.
+The current overview below comes from the native GTK regression using a real
+local resolver and 25 controlled DNS queries, including five NXDOMAIN replies.
+Its timestamps and rates are observed samples, with no Internet upstream.
 
-![Overview with query activity and daemon counters](images/linux-gui-poc-demo-overview.png)
+![Current monitor with live query activity, elapsed-time axes and separated information panels](images/linux-gui-poc-live-activity.png)
+
+The earlier startup-options screenshot uses explicitly synthetic demo data:
 
 ![Read-only startup options represented by On/Off controls](images/linux-gui-poc-demo-startup-options.png)
 
@@ -194,7 +197,7 @@ system resolver or privileged port 53; those remain separate from this launcher.
 
 ## Behaviour and limits
 
-- Default refresh: one second; `--interval` accepts 0.5–30 seconds. Automatic
+- Default refresh: 0.5 seconds; `--interval` accepts 0.25–30 seconds. Automatic
   collection stops while paused or while the window is unmapped. Closing the
   window leaves DNSProxy running.
 - One background collector at a time keeps HTTP I/O off the GTK main loop. HTTP
@@ -287,3 +290,25 @@ switching between two live resolvers, and publishes GTK screenshots. Native
 Wayland tests and a measured monitor-overhead comparison remain useful follow-ups.
 Editing system service configuration and privileged service controls remain
 separate from the ordinary-user launch form.
+
+
+### Activity chart and panel layout
+
+The activity chart scales its height with the available width (160–240 pixels),
+with a labelled rate axis, elapsed-time axis and a lightly shaded trace. The
+newest observed sample sits at the right edge. Early samples use the available
+plot width rather than occupying a tiny strip while history fills. The scale
+has headroom above the visible peak; a missing sample remains a gap. A paused
+or stale monitor retains its real data without inventing intermediate points.
+The caption shows how many samples and seconds are actually recorded.
+
+Sampling defaults to twice per second. Select 0.25 seconds in Preferences or
+use `dnsp-gui --interval 0.25` for four updates per second when collection is
+fast enough. There is still one collector at a time, with no queued backlog;
+slow reads keep their existing deadline and stale-data indication.
+
+The connection controls, activity chart and information sections use matching
+panel borders, padding and gutters. DNS traffic and upstream statistics share
+an aligned row; cache/filtering and daemon load share the next row. Metric
+cards retain equal widths and tabular numbers. These changes follow the GTK
+foreground color so light and dark themes remain readable.

@@ -30,17 +30,77 @@ jobs:
             compiler: clang
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
+    env:
+      # Pin the test driver independently of the native product architecture.
+      DNSP_PYTHON_VERSION: '3.13.17'
+      MSYSTEM: ${{ matrix.msystem }}
+      MSYS2_PATH_TYPE: minimal
+      CHERE_INVOKING: '1'
+      DNSP_PACKAGE_PREFIX: ${{ matrix.prefix }}
+      DNSP_COMPILER: ${{ matrix.compiler }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ref || github.sha }}
+      - name: Select the toolchain refresh window
+        id: cache-epoch
+        shell: pwsh
+        run: |
+          "week=$([Math]::Floor([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / 604800))" >> $env:GITHUB_OUTPUT
+          # Runner-provided variables are read in the shell, not the YAML env context.
+          $image = if ($env:ImageVersion) { $env:ImageVersion } else { [Environment]::OSVersion.Version.ToString() }
+          "image=$image" >> $env:GITHUB_OUTPUT
+      - name: Restore the x64 test Python on ARM64 runners
+        if: matrix.arch == 'arm64'
+        id: python-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ${{ runner.tool_cache }}/Python/${{ env.DNSP_PYTHON_VERSION }}/x64
+            ${{ runner.tool_cache }}/Python/${{ env.DNSP_PYTHON_VERSION }}/x64.complete
+          key: dnsp-python-v1-${{ matrix.runner }}-${{ steps.cache-epoch.outputs.image }}-x64-${{ env.DNSP_PYTHON_VERSION }}
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.13'
+          python-version: ${{ env.DNSP_PYTHON_VERSION }}
           # QUIC fixture dependencies do not all publish Windows ARM64 wheels.
           # Only this test driver uses emulation; the product/probes stay ARM64.
           architecture: x64
+      - name: Verify the test interpreter
+        shell: pwsh
+        run: |
+          python -c "import struct,sys,sysconfig; assert sys.version.split()[0] == '${{ env.DNSP_PYTHON_VERSION }}'; assert struct.calcsize('P') == 8; assert sysconfig.get_platform() == 'win-amd64'; print(sys.executable)"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Save the bare x64 test Python
+        if: matrix.arch == 'arm64' && steps.python-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ${{ runner.tool_cache }}/Python/${{ env.DNSP_PYTHON_VERSION }}/x64
+            ${{ runner.tool_cache }}/Python/${{ env.DNSP_PYTHON_VERSION }}/x64.complete
+          key: ${{ steps.python-cache.outputs.cache-primary-key }}
+      - name: Restore the prepared MSYS2 toolchain
+        id: msys-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/msys64
+          key: dnsp-msys-v1-${{ matrix.runner }}-${{ matrix.msystem }}-${{ steps.cache-epoch.outputs.image }}-${{ steps.cache-epoch.outputs.week }}-${{ hashFiles('.github/workflows/dnsp-modern-windows.yml') }}
+      - name: Validate the restored toolchain or use a clean installation
+        id: msys-check
+        shell: pwsh
+        env:
+          CACHE_HIT: ${{ steps.msys-cache.outputs.cache-hit }}
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'msys64'
+          $ready = $env:CACHE_HIT -eq 'true' -and (Test-Path "$root/usr/bin/bash.exe")
+          if ($ready) {
+            & "$root/usr/bin/bash.exe" -leo pipefail -c 'pacman -Q git "${DNSP_PACKAGE_PREFIX}-${DNSP_COMPILER}" "${DNSP_PACKAGE_PREFIX}-curl" "${DNSP_PACKAGE_PREFIX}-pkgconf" "${DNSP_PACKAGE_PREFIX}-python" >/dev/null && "$DNSP_COMPILER" --version && pkg-config --modversion libcurl && python --version'
+            $ready = $LASTEXITCODE -eq 0
+            $global:LASTEXITCODE = 0
+          }
+          if (-not $ready -and (Test-Path $root)) { Remove-Item -Recurse -Force $root }
+          "ready=$($ready.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
       - uses: msys2/setup-msys2@v2
+        if: steps.msys-check.outputs.ready != 'true'
         with:
           msystem: ${{ matrix.msystem }}
           update: true
@@ -52,12 +112,25 @@ jobs:
             ${{ matrix.prefix }}-python
       - name: Build and bundle the shared C source
         id: build
-        shell: msys2 {0}
-        run: bash scripts/build-windows.sh
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP/msys64/usr/bin/bash.exe" -leo pipefail -c 'bash scripts/build-windows.sh'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Save the prepared toolchain after a successful native build
+        if: steps.msys-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/msys64
+          key: ${{ steps.msys-cache.outputs.cache-primary-key }}
+      - name: Cache Windows protocol fixture downloads
+        uses: actions/cache@v5
+        with:
+          path: ~/AppData/Local/pip/Cache
+          key: dnsp-pip-v1-${{ matrix.runner }}-x64-${{ env.DNSP_PYTHON_VERSION }}-${{ hashFiles('ci/requirements-*.txt') }}
       - name: Install protocol test fixtures
         shell: pwsh
         run: |
-          python -m pip install --only-binary=:all: 'hypercorn==0.18.0' 'h2==4.3.0' 'aioquic==1.3.0'
+          python -m pip install --only-binary=:all: -r ci/requirements-protocol.txt
       - name: Test the portable bundle without MSYS2 on PATH
         shell: pwsh
         env:
@@ -92,15 +165,9 @@ jobs:
           if ($LASTEXITCODE) { $failed = $true }
           & $python tests/test_windows_bundle.py -v
           if ($LASTEXITCODE) { $failed = $true }
-          & $python tests/test_modern.py -v
+          & $python tests/test_ci_parallel.py -v
           if ($LASTEXITCODE) { $failed = $true }
-          & $python tests/test_hedging.py -v
-          if ($LASTEXITCODE) { $failed = $true }
-          & $python tests/test_policy.py -v
-          if ($LASTEXITCODE) { $failed = $true }
-          & $python tests/test_policy_updater.py -v
-          if ($LASTEXITCODE) { $failed = $true }
-          & $python tests/test_ipv6.py -v
+          & $python scripts/run-windows-tests.py --workers 2
           if ($LASTEXITCODE) { $failed = $true }
           & $python tests/test_windows.py -v
           if ($LASTEXITCODE) { $failed = $true }
@@ -111,10 +178,6 @@ jobs:
           $env:PSModulePath = $savedModulePath
           & $python tests/test_windows_service.py -v
           if ($LASTEXITCODE) { $failed = $true }
-          & $python -m unittest discover -s tests -p test_benchmark.py -v
-          if ($LASTEXITCODE) { $failed = $true }
-          & $python tests/test_http3.py --isolated -v
-          if ($LASTEXITCODE) { $failed = $true }
           if ($failed) { exit 1 }
       - uses: actions/upload-artifact@v6
         with:
@@ -124,3 +187,12 @@ jobs:
             dist/dnsp-modern-*-windows-${{ matrix.arch }}-poc.zip.sha256
           if-no-files-found: error
           retention-days: 14
+
+      - name: Save per-suite test logs and timings
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: dnsp-windows-test-logs-${{ matrix.arch }}
+          path: dist/windows-test-logs/
+          if-no-files-found: warn
+          retention-days: 7

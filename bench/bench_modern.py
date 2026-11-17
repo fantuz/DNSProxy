@@ -43,7 +43,11 @@ def free_port():
     # DNS and QUIC fixtures need UDP as well as TCP at the selected port.
     # Probe outside the usual outbound ephemeral range. On Windows the UDP
     # allocator can repeatedly choose a port excluded for TCP by Hyper-V.
-    for port in random.sample(range(10000, 18000), 100):
+    start = int(os.environ.get('DNSP_TEST_PORT_START', '10000'))
+    stop = int(os.environ.get('DNSP_TEST_PORT_STOP', '18000'))
+    if not 1024 <= start < stop <= 49152 or stop - start < 100:
+        raise ValueError('Fixture port range needs at least 100 ports below 49152')
+    for port in random.sample(range(start, stop), 100):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp, \
              socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
             try:
@@ -489,3 +493,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
