@@ -209,6 +209,36 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.window.values["peak_qps"].get_text(), "—")
         self.assertEqual(len(self.window.history), 0)
 
+    def test_http_timeout_preserves_frame_and_main_loop_recovers(self):
+        self.window.pause.set_active(True)
+        self.wait_for(lambda: not self.window.busy)
+        with metrics_endpoint() as server:
+            self.window.collector = Collector(
+                metrics_port=server.server_port, timeout=0.2
+            )
+            self.window.request_sample(force=True)
+            self.wait_for(
+                lambda: self.window.snapshot is not None
+                and self.window.snapshot.port == server.server_port
+            )
+            self.assertEqual(self.window.values["udp"].get_text(), "10")
+            server.delay = 0.8
+            self.window.request_sample(force=True)
+            start = time.monotonic()
+            self.window.notebook.set_current_page(2)
+            self.window.notebook.set_current_page(0)
+            self.pump(0.04)
+            self.assertLess(time.monotonic() - start, 0.3)
+            self.wait_for(lambda: not self.window.busy)
+            self.assertIsNone(self.window.snapshot.metrics)
+            self.assertEqual(self.window.values["udp"].get_text(), "10")
+            self.assertIn("No fresh data", self.window.status.get_text())
+            server.delay = 0
+            self.window.request_sample(force=True)
+            self.wait_for(lambda: not self.window.busy)
+            self.assertIsNotNone(self.window.snapshot.metrics)
+            self.assertIn("Receiving metrics", self.window.status.get_text())
+
     def test_preferences_and_launch_validation_in_demo(self):
         self.window.preference_spins["interval"].set_value(2.5)
         self.window.preference_spins["timeout"].set_value(0.4)

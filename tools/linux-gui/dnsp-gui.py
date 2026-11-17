@@ -529,6 +529,12 @@ def build_application(options):
             )
             self.launch_status.set_wrap(True)
             page.append(self.launch_status)
+            # Keep actions and feature switches discoverable before the long
+            # form, including on a compact desktop.
+            page.reorder_child_after(buttons, note)
+            page.reorder_child_after(self.launch_status, buttons)
+            page.reorder_child_after(self.launch_command, self.launch_status)
+            page.reorder_child_after(switches, self.launch_command)
             notebook.append_page(self.scroll(page), self.label("Launch resolver"))
 
         def launch_argv(self):
@@ -966,7 +972,10 @@ def build_application(options):
             frame["missed"] = number(self.missed_samples)
             maximum = metrics.get("dnsp_upstream_duration_max_seconds")
             frame["upstream_max"] = (
-                f"{maximum * 1000:.1f} ms" if maximum is not None else "—"
+                f"{maximum * 1000:.1f} ms"
+                if maximum is not None
+                and metrics.get("dnsp_upstream_duration_seconds_count")
+                else "—"
             )
             maxima = [
                 metrics.get("dnsp_client_duration_max_seconds", transport=t)
@@ -975,6 +984,10 @@ def build_application(options):
             frame["client_max"] = (
                 f"{max(maxima) * 1000:.1f} ms"
                 if all((v is not None for v in maxima))
+                and sum(
+                    metrics.get("dnsp_client_duration_seconds_count", transport=t) or 0
+                    for t in ("udp", "tcp")
+                )
                 else "—"
             )
             for key, first, second in (

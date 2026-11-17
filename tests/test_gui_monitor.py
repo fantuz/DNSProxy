@@ -526,6 +526,28 @@ class LiveMonitorTests(unittest.TestCase):
                 0,
             )
 
+    def test_exact_latency_maximum_survives_faster_replies(self):
+        class SlowFirstReply(DoH):
+            def do_POST(self):
+                if not getattr(self.server, "slow_reply_done", False):
+                    self.server.slow_reply_done = True
+                    time.sleep(0.04)
+                super().do_POST()
+
+        with live_resolver(handler=SlowFirstReply) as (_, port, metric):
+            initial = monitor.fetch_metrics(metric)
+            maximum = initial.get("dnsp_upstream_duration_max_seconds")
+            self.assertGreaterEqual(maximum, 0.03)
+            for _ in range(3):
+                send_query(port)
+            current = monitor.fetch_metrics(metric)
+            self.assertGreaterEqual(
+                current.get("dnsp_upstream_duration_max_seconds"), maximum
+            )
+            self.assertGreaterEqual(
+                current.get("dnsp_client_duration_max_seconds", transport="udp"), 0.03
+            )
+
     def test_metrics_remain_available_during_nxdomain_burst(self):
         with live_resolver() as (process, port, metric):
             before = monitor.fetch_metrics(metric)
