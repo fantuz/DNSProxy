@@ -785,9 +785,13 @@ def build_application(options):
             self.show_instances(snapshot)
             if not metrics:
                 self.missed_samples += 1
-                self.rates.reset()
                 self.latencies.reset()
                 retained = self.good_snapshot is not None
+                if retained:
+                    self.rates.reset()
+                    cpu = None
+                else:
+                    _, _, cpu = self.rates.update(snapshot)
                 self.set_label(
                     self.status,
                     "No fresh data · last values retained"
@@ -810,9 +814,41 @@ def build_application(options):
                             self.values["memory"],
                             f"{process.memory_bytes / 1048576:.1f} MiB",
                         )
+                        self.set_label(
+                            self.values["cpu"],
+                            f"{cpu:.1f}%" if cpu is not None else "—",
+                        )
+                        hours, rest = divmod(int(process.uptime), 3600)
+                        self.set_label(
+                            self.values["uptime"],
+                            f"{hours}h {rest // 60:02d}m {rest % 60:02d}s",
+                        )
+                        if snapshot.service:
+                            self.set_label(
+                                self.values["service"],
+                                snapshot.service.describe(process),
+                            )
+                if (
+                    self.owned_process is not None
+                    and process
+                    and process.pid == self.owned_process.pid
+                ):
+                    self.set_label(
+                        self.launch_status,
+                        f"Running PID {process.pid} · traffic metrics unavailable",
+                    )
                 return
             self.overview.remove_css_class("stale")
             self.good_snapshot = snapshot
+            if (
+                self.owned_process is not None
+                and process
+                and process.pid == self.owned_process.pid
+            ):
+                self.set_label(
+                    self.launch_status,
+                    f"Running PID {process.pid} · metrics responding",
+                )
             rate, delta, cpu = self.rates.update(snapshot)
             percentile_values = self.latencies.update(snapshot)
             self.last_success = snapshot.at

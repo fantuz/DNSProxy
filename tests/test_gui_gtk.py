@@ -239,6 +239,17 @@ class GuiTests(unittest.TestCase):
             self.assertIsNotNone(self.window.snapshot.metrics)
             self.assertIn("Receiving metrics", self.window.status.get_text())
 
+    def test_process_load_remains_available_without_metrics(self):
+        self.window.pause.set_active(True)
+        self.wait_for(lambda: not self.window.busy)
+        self.window.apply(replace(sample(at=10), metrics=None))
+        self.window.apply(replace(sample(at=11, cpu=0.3), metrics=None))
+        self.assertEqual(self.window.values["cpu"].get_text(), "20.0%")
+        self.assertEqual(self.window.values["uptime"].get_text(), "0h 00m 30s")
+        self.assertEqual(self.window.values["pid"].get_text(), "1")
+        self.assertIn("MiB", self.window.values["memory"].get_text())
+        self.assertEqual(self.window.values["udp"].get_text(), "—")
+
     def test_preferences_and_launch_validation_in_demo(self):
         self.window.preference_spins["interval"].set_value(2.5)
         self.window.preference_spins["timeout"].set_value(0.4)
@@ -289,6 +300,9 @@ class GuiTests(unittest.TestCase):
                     and self.window.snapshot.metrics is not None
                 )
                 self.assertEqual(self.window.snapshot.process.pid, child.pid)
+                self.assertIn(
+                    "metrics responding", self.window.launch_status.get_text()
+                )
                 self.window.notebook.set_current_page(3)
                 self.screenshot("launch-resolver.png")
                 self.window.stop_resolver()
