@@ -1,5 +1,6 @@
 """Exercise the shared DNS core over native IPv4 and IPv6 sockets."""
 from contextlib import contextmanager, ExitStack
+import os
 import socket
 import random
 import struct
@@ -27,7 +28,11 @@ def listener_ports():
     # not steal the port between reservation and the child binding its listeners.
     with ExitStack() as held:
         ports = []
-        for port in random.sample(range(18000, 28000), 100):
+        start = int(os.environ.get('DNSP_TEST_PORT_START', '18000'))
+        stop = int(os.environ.get('DNSP_TEST_PORT_STOP', '28000'))
+        if not 1024 <= start < stop <= 49152 or stop - start < 100:
+            raise ValueError('Fixture port range needs at least 100 ports below 49152')
+        for port in random.sample(range(start, stop), 100):
             try:
                 reservations = []
                 for family, host in ((socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1')):
@@ -199,3 +204,4 @@ class IPv6Tests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

@@ -272,7 +272,11 @@ def unused_ports():
     # Probe both protocols outside the usual ephemeral range before spawning.
     with ExitStack() as sockets:
         ports = []
-        for port in random.sample(range(10000, 18000), 100):
+        start = int(os.environ.get('DNSP_TEST_PORT_START', '10000'))
+        stop = int(os.environ.get('DNSP_TEST_PORT_STOP', '18000'))
+        if not 1024 <= start < stop <= 49152 or stop - start < 100:
+            raise ValueError('Fixture port range needs at least 100 ports below 49152')
+        for port in random.sample(range(start, stop), 100):
             try:
                 with ExitStack() as candidate:
                     for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
@@ -1773,3 +1777,4 @@ class FailoverTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
