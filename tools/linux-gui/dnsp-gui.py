@@ -5,13 +5,14 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
-import math
 import sys
 import shutil
 import shlex
 import subprocess
 import threading
 import time
+
+from chart import draw as draw_chart, scale_ceiling
 
 from monitor import (
     Collector,
@@ -35,7 +36,7 @@ def arguments(argv=None):
         help="Read 127.0.0.1:PORT/metrics; never a remote host",
     )
     parser.add_argument(
-        "--interval", type=float, default=1, help="Refresh seconds, 0.5..30 (default 1)"
+        "--interval", type=float, default=0.5, help="Refresh seconds, 0.25..30 (default 0.5)"
     )
     parser.add_argument(
         "--demo",
@@ -60,8 +61,8 @@ def arguments(argv=None):
         parser.error("--pid must be positive")
     if options.metrics_port is not None and not 1 <= options.metrics_port <= 65535:
         parser.error("--metrics-port must be 1..65535")
-    if not 0.5 <= options.interval <= 30:
-        parser.error("--interval must be 0.5..30 seconds")
+    if not 0.25 <= options.interval <= 30:
+        parser.error("--interval must be 0.25..30 seconds")
     if not 0.2 <= options.timeout <= 5:
         parser.error("--timeout must be 0.2..5 seconds")
     if not 20 <= options.history <= 300:
@@ -97,7 +98,7 @@ def build_application(options):
     class Window(Gtk.ApplicationWindow):
         def __init__(self, app):
             super().__init__(application=app, title="DNSProxy · Linux monitor")
-            self.set_default_size(1040, 880)
+            self.set_default_size(1120, 920)
             self.collector = (
                 DemoCollector()
                 if options.demo
@@ -110,6 +111,8 @@ def build_application(options):
             self.instance_labels = []
             self.updating_instances = False
             self.history = deque(maxlen=options.history)
+            self.history_times = deque(maxlen=options.history)
+            self.history_gap = False
             self.good_snapshot = None
             self.peak_qps = self.peak_cpu = self.peak_memory = self.peak_inflight = None
             self.missed_samples = 0
@@ -130,14 +133,26 @@ def build_application(options):
             provider = Gtk.CssProvider()
             self.css_provider = provider
             provider.load_from_data(
-                b".metric { font-variant-numeric: tabular-nums; } .metric-card { padding: 12px; border-radius: 8px; background-color: alpha(currentColor, 0.045); } .stale { opacity: 0.72; }"
+                b"""
+                .metric { font-variant-numeric: tabular-nums; }
+                .metric-card, .info-panel {
+                    padding: 16px;
+                    border: 1px solid alpha(currentColor, 0.12);
+                    border-radius: 10px;
+                    background-color: alpha(currentColor, 0.025);
+                }
+                .metric-card { padding: 14px 16px; }
+                .section-heading { font-size: 14px; font-weight: 700; }
+                .section-rule { margin-top: 2px; margin-bottom: 2px; }
+                .stale { opacity: 0.72; }
+                """
             )
             Gtk.StyleContext.add_provider_for_display(
                 Gdk.Display.get_default(),
                 provider,
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
             )
-            root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
             for side in ("top", "bottom", "start", "end"):
                 getattr(root, "set_margin_" + side)(16)
             self.set_child(root)
@@ -155,10 +170,14 @@ def build_application(options):
             self.refresh = Gtk.Button(label="Refresh now")
             self.refresh.connect("clicked", lambda *_: self.request_sample(force=True))
             toolbar.append(self.refresh)
-            root.append(toolbar)
+            connection = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            connection.add_css_class("info-panel")
+            self.connection_panel = connection
+            connection.append(toolbar)
+            root.append(connection)
             self.detail = self.label("Detecting local DNSProxy")
             self.detail.set_wrap(True)
-            root.append(self.detail)
+            connection.append(self.detail)
             picker = Gtk.Box(spacing=12)
             picker.append(self.label("Resolver instance"))
             self.instance_selector = Gtk.DropDown.new_from_strings(
@@ -172,9 +191,9 @@ def build_application(options):
             reconnect.set_sensitive(not options.demo)
             reconnect.connect("clicked", lambda *_: self.instance_changed(force=True))
             picker.append(reconnect)
-            root.append(picker)
+            connection.append(picker)
             if options.demo:
-                root.append(
+                connection.append(
                     self.label(
                         "DEMO · All values are synthetic. No DNS requests or listeners are created.",
                         "warning",
@@ -187,7 +206,7 @@ def build_application(options):
             root.append(notebook)
             overview = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
             self.overview = overview
-            cards = Gtk.Grid(column_spacing=14, row_spacing=10, column_homogeneous=True)
+            cards = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True)
             for col, (key, title) in enumerate(
                 (
                     ("rate", "Queries / second"),
@@ -199,28 +218,38 @@ def build_application(options):
                 box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
                 box.set_hexpand(True)
                 box.add_css_class("metric-card")
-                box.append(self.label(title, "dim-label"))
+                caption = self.label(title, "dim-label")
+                caption.set_wrap(True)
+                box.append(caption)
                 value = self.label("—", "title-2")
                 value.add_css_class("metric")
-                value.set_width_chars(9)
+                value.set_width_chars(8)
                 self.values[key] = value
                 box.append(value)
                 cards.attach(box, col, 0, 1, 1)
+            self.metric_cards = cards
             overview.append(cards)
-            self.activity = self.label("Waiting for the first sample", "heading")
-            overview.append(self.activity)
+            self.chart_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            self.chart_panel.add_css_class("info-panel")
+            chart_heading = Gtk.Box(spacing=12)
+            title = self.label("Query activity", "section-heading")
+            title.set_hexpand(True)
+            chart_heading.append(title)
+            chart_heading.append(self.label("QUERIES / SECOND", "dim-label"))
+            self.chart_panel.append(chart_heading)
+            self.activity = self.label("Waiting for the first sample")
+            self.chart_panel.append(self.activity)
             self.chart = Gtk.DrawingArea()
-            self.chart.set_content_height(90)
+            self.chart.set_content_height(200)
             self.chart.set_hexpand(True)
             self.chart.set_draw_func(self.draw_history)
             self.chart.set_tooltip_text(
-                "Query rate, last 60 samples; vertical scale follows the visible peak"
+                "Observed query rates against elapsed time. Gaps separate paused or failed sampling; no synthetic points are inserted."
             )
-            overview.append(self.chart)
-            self.chart_scale = self.label(
-                "Activity history · up to 60 samples", "dim-label"
-            )
-            overview.append(self.chart_scale)
+            self.chart_panel.append(self.chart)
+            self.chart_scale = self.label("Waiting for activity history", "dim-label")
+            self.chart_panel.append(self.chart_scale)
+            overview.append(self.chart_panel)
             overview.append(
                 self.group(
                     "Estimated latency · last 60 sampling intervals",
@@ -230,11 +259,9 @@ def build_application(options):
                     ],
                 )
             )
-            columns = Gtk.Box(spacing=28, homogeneous=True)
-            left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
-            right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
-            columns.append(left)
-            columns.append(right)
+            columns = Gtk.Grid(column_spacing=16, row_spacing=16, column_homogeneous=True)
+            self.information_grid = columns
+            left, right = [], []
             left.append(
                 self.group(
                     "DNS traffic",
@@ -298,6 +325,11 @@ def build_application(options):
                     ],
                 )
             )
+            for row, (left_panel, right_panel) in enumerate(zip(left, right)):
+                left_panel.set_valign(Gtk.Align.FILL)
+                right_panel.set_valign(Gtk.Align.FILL)
+                columns.attach(left_panel, 0, row, 1, 1)
+                columns.attach(right_panel, 1, row, 1, 1)
             overview.append(columns)
             notebook.append_page(self.scroll(overview), self.label("Overview"))
             self.startup = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -342,9 +374,10 @@ def build_application(options):
             self.connect("close-request", self.close_monitor)
             self.connect("unmap", self.reset_baseline)
             self.pause.set_active(options.paused)
+            self.chart_panel.set_visible(not options.no_chart)
             self.chart.set_visible(not options.no_chart)
             self.chart_scale.set_visible(not options.no_chart)
-            self.tick_id = GLib.timeout_add(100, self.tick)
+            self.tick_id = GLib.timeout_add(50, self.tick)
 
         @staticmethod
         def label(text, css=None):
@@ -364,9 +397,13 @@ def build_application(options):
             return container
 
         def group(self, title, rows):
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-            box.append(self.label(title, "heading"))
-            grid = Gtk.Grid(column_spacing=16, row_spacing=7)
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            box.add_css_class("info-panel")
+            box.append(self.label(title, "section-heading"))
+            rule = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+            rule.add_css_class("section-rule")
+            box.append(rule)
+            grid = Gtk.Grid(column_spacing=16, row_spacing=9)
             for row, (key, caption) in enumerate(rows):
                 label = self.label(caption)
                 label.set_wrap(True)
@@ -392,9 +429,9 @@ def build_application(options):
                     (
                         "interval",
                         "Refresh interval (seconds)",
-                        0.5,
+                        0.25,
                         30,
-                        0.5,
+                        0.25,
                         self.interval,
                     ),
                     (
@@ -410,7 +447,7 @@ def build_application(options):
             ):
                 grid.attach(self.label(title), 0, row, 1, 1)
                 spin = Gtk.SpinButton.new_with_range(low, high, step)
-                spin.set_digits(0 if key == "history" else 1)
+                spin.set_digits(0 if key == "history" else 2 if key == "interval" else 1)
                 spin.set_value(value)
                 spin.connect("value-changed", self.preference_changed, key)
                 self.preference_spins[key] = spin
@@ -436,6 +473,7 @@ def build_application(options):
         def preference_changed(self, spin, key):
             if key == "history":
                 self.history = deque(self.history, maxlen=spin.get_value_as_int())
+                self.history_times = deque(self.history_times, maxlen=spin.get_value_as_int())
                 self.chart.queue_draw()
             elif key == "interval":
                 self.interval = spin.get_value()
@@ -446,6 +484,7 @@ def build_application(options):
                 self.collector.timeout = self.timeout
 
         def chart_visibility_changed(self, button):
+            self.chart_panel.set_visible(button.get_active())
             self.chart.set_visible(button.get_active())
             self.chart_scale.set_visible(button.get_active())
             if button.get_active():
@@ -588,6 +627,7 @@ def build_application(options):
             self.collector = Collector(child.pid, timeout=self.timeout)
             self.reset_baseline()
             self.history.clear()
+            self.history_times.clear()
             self.good_snapshot = self.snapshot = None
             self.last_success = None
             self.peak_qps = self.peak_cpu = self.peak_memory = self.peak_inflight = None
@@ -615,6 +655,7 @@ def build_application(options):
                     self.stop_button.set_sensitive(False)
 
         def pause_changed(self, *_):
+            self.history_gap = True
             self.epoch += 1
             self.rates.reset()
             self.latencies.reset()
@@ -624,6 +665,7 @@ def build_application(options):
             self.last_started = 0
 
         def reset_baseline(self, *_):
+            self.history_gap = True
             self.epoch += 1
             self.rates.reset()
             self.latencies.reset()
@@ -644,6 +686,7 @@ def build_application(options):
             )
             self.reset_baseline()
             self.history.clear()
+            self.history_times.clear()
             self.good_snapshot = None
             self.peak_qps = self.peak_cpu = self.peak_memory = self.peak_inflight = None
             self.missed_samples = 0
@@ -719,6 +762,10 @@ def build_application(options):
             if self.closed:
                 return False
             self.check_launched_resolver()
+            if self.chart.get_visible() and self.chart.get_width() > 0:
+                height = max(160, min(240, round(self.chart.get_width() / 4.5)))
+                if self.chart.get_content_height() != height:
+                    self.chart.set_content_height(height)
             now = time.monotonic()
             if (
                 self.get_mapped()
@@ -770,6 +817,7 @@ def build_application(options):
                 )
             if changed:
                 self.history.clear()
+                self.history_times.clear()
                 self.rates.reset()
                 self.latencies.reset()
                 self.good_snapshot = None
@@ -784,6 +832,7 @@ def build_application(options):
             process, metrics = snapshot.process, snapshot.metrics
             self.show_instances(snapshot)
             if not metrics:
+                self.history_gap = True
                 self.missed_samples += 1
                 self.latencies.reset()
                 retained = self.good_snapshot is not None
@@ -1059,14 +1108,22 @@ def build_application(options):
                 else "○ Idle · no incoming queries since last sample"
             )
             if rate is not None:
+                if self.history_gap and self.history:
+                    self.history.append(None)
+                    self.history_times.append(snapshot.at)
+                self.history_gap = False
                 self.history.append(rate)
+                self.history_times.append(snapshot.at)
                 if self.chart.get_visible():
                     self.chart.queue_draw()
             peak = max(
                 (value for value in self.history if value is not None), default=0
             )
             self.chart_scale.set_text(
-                f"Activity history · last {len(self.history)} samples · visible peak {peak:,.1f} queries/s"
+                f"{sum(value is not None for value in self.history)} samples · "
+                f"{self.history_times[-1] - self.history_times[0]:.1f} s recorded · "
+                f"scale 0–{scale_ceiling(peak):g} queries/s"
+                if self.history_times else "Waiting for activity history"
             )
 
         def show_settings(self, invocation):
@@ -1146,38 +1203,12 @@ def build_application(options):
                 )
             self.startup.append(values)
 
-        def draw_history(self, _area, cr, width, height):
-            cr.set_source_rgba(0.35, 0.5, 0.65, 0.16)
-            cr.rectangle(0, 0, width, height)
-            cr.fill()
-            peak = max(1, max((v for v in self.history if v is not None), default=1))
-            cr.set_source_rgb(0.2, 0.55, 0.85)
-            cr.set_line_width(2)
-            drawing = False
-            for i, value in enumerate(self.history):
-                if value is None:
-                    if drawing:
-                        cr.stroke()
-                    drawing = False
-                    continue
-                x, y = (
-                    3 + i * (width - 6) / (self.history.maxlen - 1),
-                    height - 5 - value / peak * (height - 10),
-                )
-                if drawing:
-                    cr.line_to(x, y)
-                else:
-                    cr.move_to(x, y)
-                drawing = True
-            cr.stroke()
-            # A single rate sample has no segment yet. Keep incoming activity
-            # visible immediately instead of showing an empty chart at startup.
-            for i, value in enumerate(self.history):
-                if value is not None:
-                    x = 3 + i * (width - 6) / (self.history.maxlen - 1)
-                    y = height - 5 - value / peak * (height - 10)
-                    cr.arc(x, y, 2, 0, math.tau)
-                    cr.fill()
+        def draw_history(self, area, cr, width, height):
+            color = area.get_style_context().get_color()
+            draw_chart(
+                cr, width, height, list(self.history), list(self.history_times),
+                self.interval, (color.red, color.green, color.blue),
+            )
 
         def close_monitor(self, *_):
             self.closed = True
@@ -1221,3 +1252,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
