@@ -578,8 +578,10 @@ before supplying a replacement. See
 
 ## Packages and releases
 
-See the [4.8.0 release notes](docs/releases/4.8.0.md) for stable desktop refresh,
-new statistics, monitoring preferences and resolver launch controls. The
+See the [4.9.0 release notes](docs/releases/4.9.0.md) for faster desktop
+sampling, timestamped charts, balanced information panels and CI build reuse.
+The [4.8.0 release notes](docs/releases/4.8.0.md) cover stable desktop refresh,
+statistics, monitoring preferences and resolver launch controls. The
 [4.7.0 release notes](docs/releases/4.7.0.md) cover Debian 13 slim container
 images, tested image publication and upgrade guidance. The
 [4.6.0 release notes](docs/releases/4.6.0.md) describe desktop packages,
