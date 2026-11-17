@@ -110,8 +110,9 @@ helpers.
 and `dnsp-gui` command. It is architecture independent (`all` DEB / `noarch`
 RPM), tested on both x86-64 and ARM64. Install the matching distribution's GUI
 package alongside its daemon package, or monitor a source build. GTK stays out
-of the daemon package's dependencies. The GUI only reads status and metrics;
-it does not start, stop or reconfigure the daemon.
+of the daemon package's dependencies. Monitoring an existing daemon is read-only. The separate Launch resolver form
+can start and stop a new ordinary-user resolver; it does not reconfigure the
+packaged service or change system DNS.
 
 ```sh
 sudo apt install ./dnsp-modern-gui_*_all.deb

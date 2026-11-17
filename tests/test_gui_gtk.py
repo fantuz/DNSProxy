@@ -1,15 +1,28 @@
 """Run under Xvfb: GTK rendering, on-demand sampling and the actual C daemon."""
 
 import importlib.util
+from dataclasses import replace
 from pathlib import Path
 import os
 import subprocess
 import sys
+import threading
 import time
 import unittest
 import uuid
 
-from test_gui_monitor import GUI_SOURCE, live_resolver, metrics_endpoint, send_query
+from test_gui_monitor import (
+    BINARY,
+    GUI_SOURCE,
+    live_resolver,
+    mixed_query_cases,
+    MixedQueryDoH,
+    send_mixed_query,
+    metrics_endpoint,
+    sample,
+    send_query,
+    unused_ports,
+)
 
 spec = importlib.util.spec_from_file_location("dnsp_gui", GUI_SOURCE / "dnsp-gui.py")
 gui = importlib.util.module_from_spec(spec)
@@ -158,20 +171,229 @@ class GuiTests(unittest.TestCase):
             send_query(port)
             self.window = None
 
-    def test_connection_failure_clears_live_values_and_recovers(self):
-        self.wait_for(lambda: self.window.snapshot is not None)
-        from monitor import Snapshot
+    def test_one_25_query_pass_with_five_nxdomains_keeps_numbers_visible(self):
+        with live_resolver(handler=MixedQueryDoH) as (process, port, _metric):
+            self.window.close()
+            self.app.quit()
+            self.pump(0.05)
+            self.app = gui.build_application(
+                gui.arguments(["--pid", str(process.pid), "--interval", ".5"])
+            )
+            self.app.set_application_id(
+                "org.dnsproxy.LinuxMonitor.Test" + uuid.uuid4().hex
+            )
+            self.app.register(None)
+            self.app.activate()
+            self.window = self.app.window
+            self.wait_for(
+                lambda: self.window.snapshot is not None
+                and self.window.snapshot.metrics is not None
+                and self.window.values["rate"].get_text() != "—"
+            )
+            baseline = self.window.snapshot.metrics.get("dnsp_queries_satisfied_total")
+            changes, samples = [], []
+            for key in ("udp", "satisfied", "rate", "latency"):
+                self.window.values[key].connect(
+                    "notify::label",
+                    lambda label, prop, key=key: changes.append(
+                        (key, label.get_text())
+                    ),
+                )
+            apply = self.window.apply
 
-        snapshot = self.window.snapshot
-        self.window.apply(
-            Snapshot(time.monotonic(), snapshot.process, None, 1, "Connection refused")
+            def observe(snapshot):
+                samples.append(snapshot.metrics is not None)
+                apply(snapshot)
+
+            self.window.apply = observe
+            errors, replies = [], []
+            stop = threading.Event()
+
+            def queries():
+                try:
+                    for case in mixed_query_cases():
+                        if stop.is_set():
+                            break
+                        replies.append(send_mixed_query(port, case))
+                        stop.wait(
+                            0.08
+                        )  # One pass, one outstanding request, at most 12.5 QPS.
+                except Exception as error:
+                    errors.append(error)
+
+            worker = threading.Thread(target=queries, daemon=True)
+            worker.start()
+            try:
+                self.wait_for(lambda: not worker.is_alive(), seconds=15)
+                self.assertEqual(errors, [])
+                self.assertEqual(len(replies), 25)
+                self.assertEqual(replies.count(3), 5)
+                self.wait_for(
+                    lambda: self.window.snapshot.metrics is not None
+                    and self.window.snapshot.metrics.get("dnsp_queries_satisfied_total")
+                    == baseline + 25
+                )
+                self.assertGreaterEqual(len(samples), 3)
+                self.assertTrue(all(samples))
+                self.assertTrue(changes)
+                self.assertFalse(
+                    any(value in ("", "—") for _, value in changes), changes
+                )
+                self.assertEqual(
+                    self.window.values["satisfied"].get_text(), str(int(baseline + 25))
+                )
+                self.assertIn("Receiving metrics", self.window.status.get_text())
+                self.screenshot("modest-25-query-nxdomain.png")
+            finally:
+                stop.set()
+                worker.join(timeout=3)
+
+    def test_connection_failure_holds_frame_history_and_recovers_without_rate_spike(
+        self,
+    ):
+        self.window.pause.set_active(True)
+        self.wait_for(lambda: not self.window.busy)
+        first, second = sample(at=10), sample(at=11, udp=30)
+        self.window.apply(first)
+        self.window.apply(second)
+        before = {key: label.get_text() for key, label in self.window.values.items()}
+        history = list(self.window.history)
+        startup = self.window.startup.get_first_child()
+        changes = []
+        for key, label in self.window.values.items():
+            label.connect(
+                "notify::label", lambda label, prop, key=key: changes.append(key)
+            )
+        for at, process in ((12, second.process), (13, None), (14, second.process)):
+            self.window.apply(
+                replace(second, at=at, process=process, metrics=None, error="Timed out")
+            )
+        self.assertEqual(
+            before, {key: label.get_text() for key, label in self.window.values.items()}
         )
-        self.assertEqual(self.window.values["satisfied"].get_text(), "—")
+        self.assertEqual(changes, [])
+        self.assertEqual(list(self.window.history), history)
+        self.assertIs(self.window.startup.get_first_child(), startup)
+        self.assertEqual(self.window.last_success, 11)
+        self.assertIn("No fresh data", self.window.status.get_text())
+        self.screenshot("stale-data-retained.png")
+        self.window.apply(sample(at=15, udp=999))
+        self.assertEqual(self.window.values["rate"].get_text(), before["rate"])
+        self.assertIn("baseline", self.window.activity.get_text())
+        self.window.apply(sample(at=16, udp=1009))
+        self.assertEqual(self.window.values["rate"].get_text(), "10.0")
+        self.assertEqual(self.window.values["peak_qps"].get_text(), "20")
+        self.assertEqual(self.window.values["missed"].get_text(), "3")
+        # A confirmed new process must never inherit a stale frame or peaks.
+        self.window.apply(sample(at=17, pid=2, start=200))
         self.assertEqual(self.window.values["rate"].get_text(), "—")
-        self.assertIn("unavailable", self.window.status.get_text())
-        self.window.apply(DemoCollector().collect())
-        self.assertEqual(self.window.values["rate"].get_text(), "—")
-        self.assertIn("Receiving metrics", self.window.status.get_text())
+        self.assertEqual(self.window.values["peak_qps"].get_text(), "—")
+        self.assertEqual(len(self.window.history), 0)
+
+    def test_http_timeout_preserves_frame_and_main_loop_recovers(self):
+        self.window.pause.set_active(True)
+        self.wait_for(lambda: not self.window.busy)
+        with metrics_endpoint() as server:
+            self.window.collector = Collector(
+                metrics_port=server.server_port, timeout=0.2
+            )
+            self.window.request_sample(force=True)
+            self.wait_for(
+                lambda: self.window.snapshot is not None
+                and self.window.snapshot.port == server.server_port
+            )
+            self.assertEqual(self.window.values["udp"].get_text(), "10")
+            server.delay = 0.8
+            self.window.request_sample(force=True)
+            start = time.monotonic()
+            self.window.notebook.set_current_page(2)
+            self.window.notebook.set_current_page(0)
+            self.pump(0.04)
+            self.assertLess(time.monotonic() - start, 0.3)
+            self.wait_for(lambda: not self.window.busy)
+            self.assertIsNone(self.window.snapshot.metrics)
+            self.assertEqual(self.window.values["udp"].get_text(), "10")
+            self.assertIn("No fresh data", self.window.status.get_text())
+            server.delay = 0
+            self.window.request_sample(force=True)
+            self.wait_for(lambda: not self.window.busy)
+            self.assertIsNotNone(self.window.snapshot.metrics)
+            self.assertIn("Receiving metrics", self.window.status.get_text())
+
+    def test_process_load_remains_available_without_metrics(self):
+        self.window.pause.set_active(True)
+        self.wait_for(lambda: not self.window.busy)
+        self.window.apply(replace(sample(at=10), metrics=None))
+        self.window.apply(replace(sample(at=11, cpu=0.3), metrics=None))
+        self.assertEqual(self.window.values["cpu"].get_text(), "20.0%")
+        self.assertEqual(self.window.values["uptime"].get_text(), "0h 00m 30s")
+        self.assertEqual(self.window.values["pid"].get_text(), "1")
+        self.assertIn("MiB", self.window.values["memory"].get_text())
+        self.assertEqual(self.window.values["udp"].get_text(), "—")
+
+    def test_preferences_and_launch_validation_in_demo(self):
+        self.window.preference_spins["interval"].set_value(2.5)
+        self.window.preference_spins["timeout"].set_value(0.4)
+        self.window.preference_spins["history"].set_value(20)
+        self.window.auto_refresh.set_active(False)
+        self.window.show_chart.set_active(False)
+        self.assertEqual(self.window.interval, 2.5)
+        self.assertEqual(self.window.timeout, 0.4)
+        self.assertEqual(self.window.history.maxlen, 20)
+        self.assertTrue(self.window.pause.get_active())
+        self.assertFalse(self.window.chart.get_visible())
+        self.window.launch_checks["padding"].set_active(True)
+        self.assertIn("--edns-padding", self.window.preview_launch())
+        self.assertFalse(self.window.start_button.get_sensitive())
+        self.window.launch_entries["port"].set_text("53")
+        self.assertIsNone(self.window.preview_launch())
+        self.assertIn("1024", self.window.launch_status.get_text())
+        self.window.notebook.set_current_page(2)
+        self.screenshot("monitor-preferences.png")
+
+    def test_launch_and_stop_only_own_resolver(self):
+        with live_resolver() as (existing, existing_port, _):
+            self.window.close()
+            self.app.quit()
+            self.pump(0.05)
+            self.app = gui.build_application(gui.arguments(["--paused"]))
+            self.app.set_application_id(
+                "org.dnsproxy.LinuxMonitor.Test" + uuid.uuid4().hex
+            )
+            self.app.register(None)
+            self.app.activate()
+            self.window = self.app.window
+            port, metric = unused_ports()
+            for key, value in (
+                ("binary", str(BINARY)),
+                ("port", str(port)),
+                ("metrics_port", str(metric)),
+            ):
+                self.window.launch_entries[key].set_text(value)
+            self.window.start_resolver()
+            child = self.window.owned_process
+            self.assertIsNotNone(child)
+            try:
+                self.window.pause.set_active(False)
+                self.window.preference_spins["interval"].set_value(0.5)
+                self.wait_for(
+                    lambda: self.window.snapshot is not None
+                    and self.window.snapshot.metrics is not None
+                )
+                self.assertEqual(self.window.snapshot.process.pid, child.pid)
+                self.assertIn(
+                    "metrics responding", self.window.launch_status.get_text()
+                )
+                self.window.notebook.set_current_page(3)
+                self.screenshot("launch-resolver.png")
+                self.window.stop_resolver()
+                self.wait_for(lambda: child.poll() is not None)
+                self.assertIsNone(existing.poll())
+                send_query(existing_port)
+            finally:
+                if child.poll() is None:
+                    child.terminate()
+                child.wait(timeout=5)
 
     def test_selecting_two_live_instances_resets_rates_and_shows_build_info(self):
         with (

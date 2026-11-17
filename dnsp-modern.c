@@ -282,7 +282,7 @@ enum { LATENCY_BUCKETS=14 };
 static const double latency_bounds[LATENCY_BUCKETS]={
     .001,.0025,.005,.01,.025,.05,.1,.25,.5,1,2.5,5,10,60
 };
-typedef struct {uint64_t buckets[LATENCY_BUCKETS],count;double sum;} Histogram;
+typedef struct {uint64_t buckets[LATENCY_BUCKETS],count;double sum,max;} Histogram;
 typedef struct {
     uint64_t udp_queries,tcp_queries,queries_satisfied,invalid_queries,overload,upstream_requests,
       upstream_ok,upstream_failed,upstream_timeouts,invalid_responses,
@@ -572,6 +572,7 @@ static void free_query(Query *q) {
 static void observe_latency(Histogram *hist,double seconds) {
     if(seconds<0) seconds=0;
     hist->count++;hist->sum+=seconds;
+    if(seconds>hist->max) hist->max=seconds;
     for(size_t i=0;i<LATENCY_BUCKETS;i++) if(seconds<=latency_bounds[i]) hist->buckets[i]++;
 }
 static void observe_client_latency(uint64_t started_ms,bool tcp) {
@@ -1791,6 +1792,17 @@ static void metric_response(MetricClient *c) {
        !append_histogram(body,sizeof(body),&used,"dnsp_upstream_duration_seconds",NULL,&metrics.upstream_latency,false)) {
         close_metric(c);return;
     }
+    extra=snprintf(body+used,sizeof(body)-used,
+        "# HELP dnsp_upstream_duration_max_seconds Longest completed upstream attempt since startup.\n"
+        "# TYPE dnsp_upstream_duration_max_seconds gauge\n"
+        "dnsp_upstream_duration_max_seconds %.6f\n"
+        "# HELP dnsp_client_duration_max_seconds Longest fully written client reply since startup.\n"
+        "# TYPE dnsp_client_duration_max_seconds gauge\n"
+        "dnsp_client_duration_max_seconds{transport=\"udp\"} %.6f\n"
+        "dnsp_client_duration_max_seconds{transport=\"tcp\"} %.6f\n",
+        metrics.upstream_latency.max,metrics.client_latency[0].max,metrics.client_latency[1].max);
+    if(extra<0 || (size_t)extra>=sizeof(body)-used) {close_metric(c);return;}
+    used+=(size_t)extra;
     n=(int)used;
     METRIC("HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\n"
            "Connection: close\r\nContent-Length: %d\r\n\r\n",n);

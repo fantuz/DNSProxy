@@ -22,7 +22,7 @@ Event-driven DNS-over-HTTPS forwarder with UDP and TCP listeners, EDNS
 validation and Prometheus metrics. The systemd service is opt-in.
 
 %package gui
-Summary:        Read-only GTK 4 desktop monitor for DNSProxy
+Summary:        GTK 4 desktop monitor and user resolver launcher for DNSProxy
 BuildArch:      noarch
 Requires:       python3 >= 3.9
 Requires:       python3-gobject
@@ -32,7 +32,8 @@ Recommends:     %{name}
 
 %description gui
 View resolver instances, service state, traffic, latency and startup options.
-The monitor runs as an ordinary user and does not modify DNS configuration.
+The monitor runs as an ordinary user and does not modify system DNS configuration.
+A separate launch form can start and stop a user-owned resolver.
 
 %prep
 %autosetup

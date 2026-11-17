@@ -370,7 +370,8 @@ class Snapshot:
 
 
 class Collector:
-    def __init__(self, pid=None, metrics_port=None):
+    def __init__(self, pid=None, metrics_port=None, timeout=1.0):
+        self.timeout = timeout
         self.pid = pid
         self.metrics_port = metrics_port
         self.pinned_identity = None
@@ -435,7 +436,7 @@ class Collector:
                     None,
                     "Metrics disabled. Start dnsp-modern with -m PORT for live traffic.",
                 )
-            metrics = fetch_metrics(port)
+            metrics = fetch_metrics(port, self.timeout)
             # Process could exit/restart during the HTTP request. Never attribute
             # a sample to an old process identity or carry rates across restarts.
             if process and read_process(process.pid).identity != process.identity:
@@ -623,6 +624,7 @@ class DemoCollector:
             "dnsp_upstream_success_total": 2835,
             "dnsp_upstream_failures_total": 6,
             "dnsp_upstream_timeouts_total": 1,
+            "dnsp_upstream_duration_max_seconds": 0.6,
             "dnsp_upstream_duration_seconds_sum": 64.35,
             "dnsp_upstream_duration_seconds_count": 2841,
             'dnsp_upstream_http_responses_total{version="1"}': 0,
@@ -683,4 +685,9 @@ class DemoCollector:
         process = Process(
             0, 1, elapsed * 0.03, 19 * 1024 * 1024, 480 + elapsed, self.invocation
         )
-        return Snapshot(at, process, metrics, 9090)
+        samples = dict(metrics.samples)
+        for transport, maximum in (("udp", 0.08), ("tcp", 0.12)):
+            samples[
+                ("dnsp_client_duration_max_seconds", (("transport", transport),))
+            ] = maximum
+        return Snapshot(at, process, Metrics(samples), 9090)
