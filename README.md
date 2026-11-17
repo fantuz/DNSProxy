@@ -507,7 +507,7 @@ p50/p95/p99 latency. Invocation values distinguish explicit settings from defaul
 runs as an ordinary desktop user and reads the existing process and metrics
 listener. The C resolver runs independently of the monitor.
 
-![Linux GUI demo receiving metrics, with synthetic statistics](docs/images/linux-gui-poc-demo-overview.png)
+![Linux GUI with real local CI query activity and separated panels](docs/images/linux-gui-poc-live-activity.png)
 
 The screenshot shows **demo mode with synthetic values**. From a source
 checkout, install the optional desktop dependencies and try the demo:
@@ -631,3 +631,4 @@ independent of the listener family.
 See the [C maintenance guide](docs/C_MAINTENANCE.md) for repository layout
 criteria, C review checks, and commands to run before opening a PR.
 See the [security policy](SECURITY.md) for private vulnerability reporting.
+

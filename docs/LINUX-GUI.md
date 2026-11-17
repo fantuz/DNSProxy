@@ -14,10 +14,13 @@ the [Windows guide](WINDOWS.md).
 
 ## Preview
 
-These overview screenshots show the earlier layout from Linux CI in demo mode; all displayed values are
-synthetic. Live integration tests separately exercise the running C resolver.
+The current overview below comes from the native GTK regression using a real
+local resolver and 25 controlled DNS queries, including five NXDOMAIN replies.
+Its timestamps and rates are observed samples, with no Internet upstream.
 
-![Overview with query activity and daemon counters](images/linux-gui-poc-demo-overview.png)
+![Current monitor with live query activity, elapsed-time axes and separated information panels](images/linux-gui-poc-live-activity.png)
+
+The earlier startup-options screenshot uses explicitly synthetic demo data:
 
 ![Read-only startup options represented by On/Off controls](images/linux-gui-poc-demo-startup-options.png)
 
