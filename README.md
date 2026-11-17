@@ -509,8 +509,8 @@ listener. The C resolver runs independently of the monitor.
 
 ![Linux GUI with real local CI query activity and separated panels](docs/images/linux-gui-poc-live-activity.png)
 
-The screenshot shows **demo mode with synthetic values**. From a source
-checkout, install the optional desktop dependencies and try the demo:
+The screenshot shows real local queries from CI. To try explicitly labelled
+synthetic demo data from a source checkout, install the optional dependencies:
 
 ```sh
 sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0
