@@ -7,7 +7,9 @@ def scale_ceiling(peak):
     target = max(1.0, peak * 1.15)
     magnitude = 10 ** math.floor(math.log10(target))
     return next(
-        step * magnitude for step in (1, 1.5, 2, 3, 4, 5, 6, 8, 10) if step * magnitude >= target
+        step * magnitude
+        for step in (1, 1.5, 2, 3, 4, 5, 6, 8, 10)
+        if step * magnitude >= target
     )
 
 

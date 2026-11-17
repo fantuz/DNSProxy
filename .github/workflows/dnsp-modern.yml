@@ -20,6 +20,12 @@ name: DNSProxy modern - test and package
 permissions:
   contents: read
 
+# Superseded PR builds have no publication side effects. Release/manual runs
+# keep independent groups and retain the existing per-tag publication lock.
+concurrency:
+  group: dnsp-modern-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   DNSP_REQUIRE_IPV6: '1'
 

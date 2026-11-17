@@ -87,3 +87,7 @@ with warm caches. Record cache hits, restoration/saving overhead, group timings
 and the entire job duration. PR caches are scoped to that PR, so the first
 master run after merging may need its own cache fill. A cache hit alone does
 not establish a speedup. Publication still uses the exact tested artifacts.
+
+Obsolete validation runs for the same PR are cancelled when a newer commit
+arrives. Push, tag and manual publication runs have independent concurrency
+groups and retain the existing per-tag publication lock.
