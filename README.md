@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-modern.yml"><img src="https://github.com/fantuz/DNSProxy/actions/workflows/dnsp-modern.yml/badge.svg?branch=master" alt="Tests and packages" height="20"></a>
   <a href="https://github.com/fantuz/DNSProxy/actions/workflows/codeql.yml"><img src="https://github.com/fantuz/DNSProxy/actions/workflows/codeql.yml/badge.svg?branch=master" alt="CodeQL" height="20"></a>
-  <a href="https://github.com/fantuz/DNSProxy/releases/latest"><img src="https://img.shields.io/github/v/release/fantuz/DNSProxy?filter=v*-modern&amp;sort=date&amp;label=release" alt="Latest stable modern release" height="20"></a>
+  <a href="https://github.com/fantuz/DNSProxy/releases/latest"><img src="https://img.shields.io/github/v/release/fantuz/DNSProxy?filter=v*-modern&amp;sort=date&amp;label=release&amp;color=brightgreen" alt="Latest stable modern release" height="20"></a>
   <a href="https://github.com/fantuz/DNSProxy/releases"><img src="https://img.shields.io/github/downloads/fantuz/DNSProxy/total?label=downloads" alt="Downloads" height="20"></a>
   <br>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/fantuz/DNSProxy" alt="MIT license" height="20"></a>
