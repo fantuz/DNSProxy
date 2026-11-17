@@ -53,7 +53,7 @@ def draw(cr, width, height, values, times, interval, foreground=(0.2, 0.23, 0.26
         cr.line_to(x, bottom)
         cr.stroke()
         seconds = span * (1 - fraction)
-        caption = "Latest" if not seconds else f"−{seconds:g} s"
+        caption = "Latest" if not seconds else f"{seconds:.1f} s ago"
         text_width = cr.text_extents(caption)[2]
         offset = text_width if fraction == 1 else text_width / 2 if fraction else 0
         cr.set_source_rgba(*foreground, 0.7)
