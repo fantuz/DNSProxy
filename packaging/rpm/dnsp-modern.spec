@@ -32,7 +32,8 @@ Recommends:     %{name}
 
 %description gui
 View resolver instances, service state, traffic, latency and startup options.
-The monitor runs as an ordinary user and does not modify DNS configuration.
+The monitor runs as an ordinary user and does not modify system DNS configuration.
+A separate launch form can start and stop a user-owned resolver.
 
 %prep
 %autosetup
