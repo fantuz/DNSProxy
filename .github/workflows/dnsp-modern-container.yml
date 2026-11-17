@@ -61,7 +61,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/pip
-          key: dnsp-pip-v1-${{ runner.os }}-${{ runner.arch }}-system-${{ hashFiles('ci/requirements-*.txt') }}
+          key: dnsp-pip-v1-${{ runner.os }}-${{ runner.arch }}-system-protocol-${{ hashFiles('ci/requirements-*.txt') }}
       - name: Install image inspection and fixture tools
         run: |
           sudo apt-get update

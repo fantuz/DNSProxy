@@ -21,7 +21,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/pip
-          key: dnsp-pip-v1-${{ runner.os }}-${{ runner.arch }}-system-${{ hashFiles('ci/requirements-*.txt') }}
+          key: dnsp-pip-v1-${{ runner.os }}-${{ runner.arch }}-system-http2-${{ hashFiles('ci/requirements-*.txt') }}
       - name: Install benchmark server dependencies in isolated venv
         run: |
           python3 -m venv .bench-venv
