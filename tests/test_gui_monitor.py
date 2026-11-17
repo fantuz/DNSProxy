@@ -75,8 +75,8 @@ def metrics_endpoint():
 
 
 @contextmanager
-def live_resolver(metrics=True):
-    server = HTTP(("127.0.0.1", 0), DoH)
+def live_resolver(metrics=True, handler=DoH):
+    server = HTTP(("127.0.0.1", 0), handler)
     worker = threading.Thread(
         target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
     )
@@ -123,6 +123,44 @@ def send_query(port):
         answer = client.recv(4096)
         if answer[:2] != packet[:2] or answer[3] & 15:
             raise AssertionError("Invalid DNS answer")
+
+
+class LauncherTests(unittest.TestCase):
+    def test_validated_argv_preserves_spaces_without_shell(self):
+        from launcher import ResolverConfig
+
+        config = ResolverConfig(
+            binary="/some path/dnsp-modern",
+            padding=True,
+            http3=True,
+            backup_enabled=True,
+            hedge=True,
+        )
+        command = config.argv()
+        self.assertEqual(command[0], "/some path/dnsp-modern")
+        self.assertIn("--edns-padding", command)
+        self.assertIn("--upstream-hedge-ms", command)
+        self.assertIn("--upstream-http=prefer-h3", command)
+        self.assertEqual(
+            monitor.parse_invocation(command).number("--cache-entries"), 256
+        )
+
+    def test_invalid_configuration_never_produces_command(self):
+        from launcher import ResolverConfig
+
+        for settings in (
+            {"port": "53"},
+            {"listen": "example.com"},
+            {"metrics_port": "5300"},
+            {"cache_entries": "1025"},
+            {"hedge": True},
+            {"upstream": "http://example.com/"},
+            {"filtering": True},
+            {"bootstrap": "localhost"},
+            {"port": "5300; touch /tmp/x"},
+        ):
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                ResolverConfig(**settings).argv()
 
 
 class InvocationTests(unittest.TestCase):
@@ -470,6 +508,42 @@ class LiveMonitorTests(unittest.TestCase):
                 3,
             )
             self.assertGreater(after.process.memory_bytes, 0)
+            maximum = after.metrics.get("dnsp_upstream_duration_max_seconds")
+            self.assertGreaterEqual(
+                maximum, before.metrics.get("dnsp_upstream_duration_max_seconds")
+            )
+            self.assertGreaterEqual(
+                maximum,
+                after.metrics.get("dnsp_upstream_duration_seconds_sum")
+                / after.metrics.get("dnsp_upstream_duration_seconds_count"),
+            )
+            self.assertGreaterEqual(
+                after.metrics.get("dnsp_client_duration_max_seconds", transport="udp"),
+                0,
+            )
+            self.assertEqual(
+                after.metrics.get("dnsp_client_duration_max_seconds", transport="tcp"),
+                0,
+            )
+
+    def test_metrics_remain_available_during_nxdomain_burst(self):
+        with live_resolver() as (process, port, metric):
+            before = monitor.fetch_metrics(metric)
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+                client.settimeout(3)
+                for ident in range(48):
+                    client.sendto(query(qtype=65024, ident=ident), ("127.0.0.1", port))
+                snapshots = [monitor.fetch_metrics(metric) for _ in range(4)]
+                replies = [client.recv(4096) for _ in range(48)]
+            self.assertTrue(all(reply[3] & 15 == 3 for reply in replies))
+            self.assertTrue(
+                all(
+                    snapshot.get("dnsp_queries_total", transport="udp")
+                    >= before.get("dnsp_queries_total", transport="udp")
+                    for snapshot in snapshots
+                )
+            )
+            self.assertIsNone(process.poll())
 
     def test_daemon_without_metrics_still_exposes_settings_and_load(self):
         with live_resolver(metrics=False) as (process, _port, _metric):

@@ -370,7 +370,8 @@ class Snapshot:
 
 
 class Collector:
-    def __init__(self, pid=None, metrics_port=None):
+    def __init__(self, pid=None, metrics_port=None, timeout=1.0):
+        self.timeout = timeout
         self.pid = pid
         self.metrics_port = metrics_port
         self.pinned_identity = None
@@ -435,7 +436,7 @@ class Collector:
                     None,
                     "Metrics disabled. Start dnsp-modern with -m PORT for live traffic.",
                 )
-            metrics = fetch_metrics(port)
+            metrics = fetch_metrics(port, self.timeout)
             # Process could exit/restart during the HTTP request. Never attribute
             # a sample to an old process identity or carry rates across restarts.
             if process and read_process(process.pid).identity != process.identity:
