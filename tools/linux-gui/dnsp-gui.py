@@ -36,7 +36,10 @@ def arguments(argv=None):
         help="Read 127.0.0.1:PORT/metrics; never a remote host",
     )
     parser.add_argument(
-        "--interval", type=float, default=0.5, help="Refresh seconds, 0.25..30 (default 0.5)"
+        "--interval",
+        type=float,
+        default=0.5,
+        help="Refresh seconds, 0.25..30 (default 0.5)",
     )
     parser.add_argument(
         "--demo",
@@ -259,7 +262,9 @@ def build_application(options):
                     ],
                 )
             )
-            columns = Gtk.Grid(column_spacing=16, row_spacing=16, column_homogeneous=True)
+            columns = Gtk.Grid(
+                column_spacing=16, row_spacing=16, column_homogeneous=True
+            )
             self.information_grid = columns
             left, right = [], []
             left.append(
@@ -447,7 +452,9 @@ def build_application(options):
             ):
                 grid.attach(self.label(title), 0, row, 1, 1)
                 spin = Gtk.SpinButton.new_with_range(low, high, step)
-                spin.set_digits(0 if key == "history" else 2 if key == "interval" else 1)
+                spin.set_digits(
+                    0 if key == "history" else 2 if key == "interval" else 1
+                )
                 spin.set_value(value)
                 spin.connect("value-changed", self.preference_changed, key)
                 self.preference_spins[key] = spin
@@ -473,7 +480,9 @@ def build_application(options):
         def preference_changed(self, spin, key):
             if key == "history":
                 self.history = deque(self.history, maxlen=spin.get_value_as_int())
-                self.history_times = deque(self.history_times, maxlen=spin.get_value_as_int())
+                self.history_times = deque(
+                    self.history_times, maxlen=spin.get_value_as_int()
+                )
                 self.chart.queue_draw()
             elif key == "interval":
                 self.interval = spin.get_value()
@@ -1123,7 +1132,8 @@ def build_application(options):
                 f"{sum(value is not None for value in self.history)} samples · "
                 f"{self.history_times[-1] - self.history_times[0]:.1f} s recorded · "
                 f"scale 0–{scale_ceiling(peak):g} queries/s"
-                if self.history_times else "Waiting for activity history"
+                if self.history_times
+                else "Waiting for activity history"
             )
 
         def show_settings(self, invocation):
@@ -1206,8 +1216,13 @@ def build_application(options):
         def draw_history(self, area, cr, width, height):
             color = area.get_style_context().get_color()
             draw_chart(
-                cr, width, height, list(self.history), list(self.history_times),
-                self.interval, (color.red, color.green, color.blue),
+                cr,
+                width,
+                height,
+                list(self.history),
+                list(self.history_times),
+                self.interval,
+                (color.red, color.green, color.blue),
             )
 
         def close_monitor(self, *_):
@@ -1252,4 +1267,3 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

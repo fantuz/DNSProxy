@@ -6,11 +6,15 @@ import math
 def scale_ceiling(peak):
     target = max(1.0, peak * 1.15)
     magnitude = 10 ** math.floor(math.log10(target))
-    return next(step * magnitude for step in (1, 2, 5, 10) if step * magnitude >= target)
+    return next(
+        step * magnitude for step in (1, 1.5, 2, 3, 4, 5, 6, 8, 10) if step * magnitude >= target
+    )
 
 
 def geometry(values, times, width, height, interval=0.5):
-    values = [v if v is not None and math.isfinite(v) and v >= 0 else None for v in values]
+    values = [
+        v if v is not None and math.isfinite(v) and v >= 0 else None for v in values
+    ]
     peak = max((v for v in values if v is not None), default=0)
     ceiling = scale_ceiling(peak)
     if len(times) != len(values) or any(b < a for a, b in zip(times, times[1:])):
@@ -19,7 +23,9 @@ def geometry(values, times, width, height, interval=0.5):
     latest = times[-1] if times else 0
     left, top, right, bottom = 54, 18, max(54, width - 18), max(18, height - 30)
     points = [
-        None if value is None else (
+        None
+        if value is None
+        else (
             left + (stamp - latest + span) / span * (right - left),
             bottom - value / ceiling * (bottom - top),
         )

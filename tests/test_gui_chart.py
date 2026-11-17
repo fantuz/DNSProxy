@@ -9,11 +9,17 @@ from pathlib import Path
 import sys
 import unittest
 
-SOURCE = Path(os.environ.get("DNSP_GUI_SOURCE", Path(__file__).resolve().parents[1] / "tools/linux-gui"))
+SOURCE = Path(
+    os.environ.get(
+        "DNSP_GUI_SOURCE", Path(__file__).resolve().parents[1] / "tools/linux-gui"
+    )
+)
 sys.path.insert(0, str(SOURCE))
 from chart import draw, geometry, scale_ceiling  # noqa: E402
 
-spec = importlib.util.spec_from_file_location("gui_chart_options", SOURCE / "dnsp-gui.py")
+spec = importlib.util.spec_from_file_location(
+    "gui_chart_options", SOURCE / "dnsp-gui.py"
+)
 gui = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gui)
 
@@ -30,7 +36,9 @@ class ChartTests(unittest.TestCase):
         self.assertTrue(all(top <= y <= bottom for _, y in points))
 
     def test_missing_and_invalid_values_are_gaps(self):
-        _, _, _, points = geometry([1, None, math.nan, -1, math.inf, 2], list(range(6)), 800, 180)
+        _, _, _, points = geometry(
+            [1, None, math.nan, -1, math.inf, 2], list(range(6)), 800, 180
+        )
         self.assertTrue(all(point is None for point in points[1:5]))
         self.assertIsNotNone(points[-1])
         self.assertGreater(scale_ceiling(0), 0)
@@ -46,7 +54,14 @@ class ChartTests(unittest.TestCase):
         for width, height in ((700, 160), (1000, 220), (40, 20)):
             for values in ([], [3], [1, 2, None, 4, 2]):
                 surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
-                draw(cairo.Context(surface), width, height, values, list(range(len(values))), 0.5)
+                draw(
+                    cairo.Context(surface),
+                    width,
+                    height,
+                    values,
+                    list(range(len(values))),
+                    0.5,
+                )
                 surface.flush()
 
     def test_faster_refresh_limits_and_default(self):
