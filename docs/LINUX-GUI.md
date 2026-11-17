@@ -1,6 +1,6 @@
 # Linux desktop monitor
 
-This source tree includes an optional **read-only GTK 4 monitor** for `dnsp-modern`.
+This source tree includes an optional **GTK 4 monitor and ordinary-user launcher** for `dnsp-modern`.
 It helps explain a running resolver's configuration and activity. The C resolver
 keeps its existing event loop and dependencies. The optional desktop package is
 separate from the daemon package. GTK and Python are
@@ -14,7 +14,7 @@ the [Windows guide](WINDOWS.md).
 
 ## Preview
 
-These are actual Linux CI screenshots in demo mode; all displayed values are
+These overview screenshots show the earlier layout from Linux CI in demo mode; all displayed values are
 synthetic. Live integration tests separately exercise the running C resolver.
 
 ![Overview with query activity and daemon counters](images/linux-gui-poc-demo-overview.png)
@@ -114,13 +114,15 @@ Do not run the GUI with `sudo` or change the system DNS settings just to try it.
 
 | Area | Information |
 | --- | --- |
-| Overview | Query rate and bounded activity history; satisfied UDP/TCP query counts, active work and clients, coalescing, overload and truncation counters |
-| DoH upstream | Completed attempts, failures/timeouts, lifetime mean attempt duration, connection reuse, primary/backup attempts, actual HTTP/1/2/3 reply counters |
+| Overview | Query rate, peak sampled QPS and bounded activity history; satisfied UDP/TCP query counts, active work and clients, coalescing, overload and truncation counters |
+| DoH upstream | Completed attempts, failures/timeouts and failure ratio, lifetime mean and maximum attempt duration, connection reuse ratio, primary/backup attempts, actual HTTP/1/2/3 reply counters |
 | Cache and filtering | Cache hits/misses, blocked queries/aliases, loaded deny/allow entries and failed reloads |
-| Daemon load | Process CPU as a percentage of one core, resident memory, uptime, PID, running daemon/libcurl versions and built HTTP/2/3 support |
+| Daemon load | Process CPU as a percentage of one core, resident memory, sampled CPU/memory/inflight peaks, missed traffic samples, uptime, PID, running daemon/libcurl versions and built HTTP/2/3 support |
 | Service | Read-only `systemctl show dnsp-modern.service` state, including failed/missing/unavailable states and whether the unit owns a different PID |
 | Latency | Estimated client-reply and completed-upstream-attempt p50/p95/p99 over the last 60 sampling intervals |
 | Startup options | Disabled On/Off radio pairs and an invocation table showing explicit values versus defaults |
+| Preferences | Live refresh interval, socket timeout, bounded history size, automatic refresh and chart visibility |
+| Launch resolver | Validated CLI preview and start/stop of a separate unprivileged resolver |
 | How to read this | Counter meanings, limitations and troubleshooting |
 
 Network configuration appears in **Startup options**: listen addresses, DNS and
@@ -130,7 +132,7 @@ EDNS padding, blocklists, allowlists and delayed parallel upstream requests. Rep
 are preserved. User information and URL query strings are redacted from upstream
 URL displays. Unknown arguments trigger a warning without displaying their values.
 
-These controls **represent** the invocation. They do not edit it. Omitted flags
+The **Startup options** controls represent the monitored invocation. They do not edit it. The separate **Launch resolver** form configures a new ordinary-user process. Omitted flags
 are labelled as the current C defaults, rather than claimed to be runtime
 introspection of a different daemon version. CI checks schema coverage and key
 defaults against the current C source. Future CLI changes need corresponding
@@ -142,6 +144,54 @@ the monitor's on-demand mode. It does not start the daemon or open a window when
 query arrives. Query-triggered daemon startup would need separate service/socket
 activation design, especially for UDP and privileged port 53.
 
+## Configure monitoring in the window
+
+The **Preferences** tab applies changes immediately. Automatic refresh is a
+checkbox synchronized with Pause/Resume. Refresh now remains available while
+paused. Hide the chart to avoid chart redraws while continuing to collect counters.
+The CLI provides the same initial settings:
+
+```sh
+dnsp-gui --interval 0.5 --timeout 2 --history 120 --no-chart
+# Start paused and request a sample only when needed:
+dnsp-gui --paused
+```
+
+`--timeout` accepts 0.2–5 seconds per socket operation; `--history` accepts
+20–300 chart samples. The histogram percentile window stays at 60 sampling
+intervals. Refresh intervals are measured using actual elapsed time, so changing
+them does not invent QPS spikes. Peak QPS is the maximum **sampled interval
+average**, not an instantaneous per-packet peak. CPU, memory and inflight peaks
+are likewise sampled and reset when selecting a different resolver or observing
+a restart/counter reset. Exact maximum upstream-attempt and UDP/TCP-client reply
+durations are exported by the daemon since startup. Completed failed upstream
+attempts are included; cancelled losing parallel attempts are excluded.
+Older daemons without maximum gauges show dashes. Cache hit and failed-attempt
+ratios use hits/(hits+misses) and failures/(successes+failures); reuse is reused
+attempts/completed attempts. Zero denominators show dashes.
+
+## Configure and launch a resolver
+
+**Launch resolver** prepares a new invocation. Checkboxes enable metrics, cache,
+EDNS padding, HTTP/3 preference, backup upstream, delayed parallel requests and a
+blocklist. Fields select the executable, literal listen/bootstrap addresses,
+DNS/metrics ports, URLs, cache capacity, backup delay, blocklist and optional CA
+file. If changing upstream, update or clear its bootstrap address as well.
+Preview command validates these settings and displays a copyable CLI command.
+Start resolver uses the same argument list directly, with no shell. Demo mode
+allows preview but disables launching.
+
+The form defaults to loopback, DNS port 5300, metrics port 9090 and a 256-entry
+cache. It runs as your desktop user and accepts ports 1024–65535. It never edits
+an existing resolver/service, elevates privileges or changes system DNS. An
+occupied port or unsupported feature causes the new daemon to exit; its exit
+status appears in the form and diagnostic logs inherit the GUI's terminal or
+desktop journal. To see launch diagnostics directly, run `dnsp-gui` in a terminal.
+Stop launched resolver sends SIGTERM only to the child started by this window,
+even if you subsequently monitor another instance. Closing the GUI leaves that
+child running. Use existing systemd configuration procedures for the packaged
+system resolver or privileged port 53; those remain separate from this launcher.
+
 ## Behaviour and limits
 
 - Default refresh: one second; `--interval` accepts 0.5–30 seconds. Automatic
@@ -149,11 +199,18 @@ activation design, especially for UDP and privileged port 53.
   window leaves DNSProxy running.
 - One background collector at a time keeps HTTP I/O off the GTK main loop. HTTP
   socket timeout is one second; responses are limited to 64 KiB and 512 samples.
-  There is no pending-work backlog. Chart history is capped at 60 samples.
-- Missing metrics are dashes. Connection loss clears traffic values and marks
-  them unavailable; old history remains visibly separate from current data.
-  Reconnecting, changing process identity, or a counter reset starts a new rate
-  baseline. Pause/resume also resets the baseline.
+  There is no pending-work backlog. Chart history defaults to 60 samples and is bounded by the selected 20–300 limit.
+- A failed or delayed scrape retains the complete last valid frame, startup
+  settings and activity chart. **No fresh data** and the last-good-sample age
+  clearly mark stale statistics. Missed scrapes never insert false zeros into
+  the chart. Reconnection starts a new rate/percentile baseline; the last rate
+  stays visible with a baseline message until a new interval can be measured.
+  Selecting a different instance, a confirmed process restart or counter reset
+  clears that instance's frame and peaks. Pause/resume resets rate baselines.
+- Successful snapshots are assembled before updating widgets. Unchanged labels
+  are left alone; the interface never clears a frame before filling it. Completed
+  worker samples are delivered directly to GTK's main loop. Only one worker can
+  run, with no queued backlog, including while a scrape stalls.
 - A selected PID is checked against its executable and kernel start time. A
   reused PID requires **Reconnect**, or choosing the new process explicitly. Automatic selection
   reconnects after a restart when a single readable resolver exists. Without a
@@ -177,10 +234,15 @@ activation design, especially for UDP and privileged port 53.
   and DNS errors). Upstream observations cover completed attempts, including
   failures; cancelled losers are excluded. An idle window has no new latency
   observations. Above-range observations are labelled rather than clamped.
+- The GUI reads `/metrics`, not `/live`. The diagnostic HTTP listener shares the
+  C event loop with DNS and libcurl; UDP receive work is bounded per turn. Under
+  saturation a scrape can still miss its socket deadline. A responsive GUI does
+  not imply fresh resolver data, so freshness is always shown separately.
 - The instance picker and service state refresh every five seconds. The fixed
   systemctl status command has a 750 ms timeout and never invokes service controls.
   Histogram history stores at most 61 compact samples. Selection changes, counter
-  resets, disconnects and pause/resume clear latency and rate baselines.
+  resets, disconnects and pause/resume clear latency and rate baselines without
+  erasing the retained frame on a transient disconnect.
 - Interface bandwidth, wire byte counts, client names and queried domains are
   not exposed or collected. This monitor performs no packet capture and keeps
   no query log, persistent history or telemetry.
@@ -207,5 +269,5 @@ The monitor is a troubleshooting companion. GitHub CI validates installation,
 imports, launcher and desktop metadata on both CPU architectures, exercises
 switching between two live resolvers, and publishes GTK screenshots. Native
 Wayland tests and a measured monitor-overhead comparison remain useful follow-ups.
-Editing configuration or controlling a system service needs a separate design
-with authorization and validation.
+Editing system service configuration and privileged service controls remain
+separate from the ordinary-user launch form.

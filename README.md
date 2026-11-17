@@ -493,7 +493,12 @@ that measurement.
 
 ### Optional Linux desktop monitor
 
-The Linux-only GTK 4 monitor provides a read-only view of `dnsp-modern`:
+The Linux-only GTK 4 monitor shows live `dnsp-modern` statistics and retains the
+last valid display during slow or failed scrapes, clearly marking **No fresh data**.
+It includes sampled QPS/load peaks, exact lifetime latency maxima, live monitoring
+preferences and a validated launcher for a separate ordinary-user resolver. Existing
+services and system DNS stay under their usual configuration procedures.
+The monitor shows:
 startup options as On/Off radio buttons, incoming-query activity and history,
 upstream HTTP/1/2/3 counters, cache and blocklist statistics, CPU, memory and
 uptime. Select a resolver in the instance picker, inspect the packaged systemd

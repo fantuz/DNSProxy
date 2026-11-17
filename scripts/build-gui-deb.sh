@@ -26,8 +26,8 @@ Architecture: all
 Maintainer: DNSProxy contributors <noreply@github.com>
 Depends: python3 (>= 3.9), python3-gi, python3-gi-cairo, gir1.2-gtk-4.0, hicolor-icon-theme
 Recommends: dnsp-modern
-Description: Read-only GTK 4 desktop monitor for DNSProxy
+Description: GTK 4 desktop monitor and user resolver launcher for DNSProxy
  View resolver instances, service state, traffic, latency and startup options.
- The monitor runs as an ordinary user and does not modify DNS configuration.
+ The monitor runs as an ordinary user and does not modify system DNS configuration.
 END
 dpkg-deb --build --root-owner-group "$work" "dist/dnsp-modern-gui_${version}_all.deb"
