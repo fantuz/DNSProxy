@@ -516,4 +516,3 @@ if __name__ == "__main__":
     if not sys.platform.startswith("linux"):
         raise SystemExit("Linux only")
     unittest.main(verbosity=2)
-
