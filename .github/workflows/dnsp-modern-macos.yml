@@ -2,11 +2,19 @@ name: DNSProxy modern - native macOS
 
 "on":
   workflow_dispatch:
+    inputs:
+      measure_build:
+        description: Compare Apple Silicon build profiles
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       ref:
         type: string
         required: false
+      measure_build:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -32,10 +40,10 @@ jobs:
         with:
           python-version: '3.13'
       - name: Build and bundle the shared C resolver
-        if: matrix.arch != 'arm64'
+        if: matrix.arch != 'arm64' || !inputs.measure_build
         run: bash scripts/build-macos.sh
       - name: Measure and build the Apple Silicon release
-        if: matrix.arch == 'arm64'
+        if: matrix.arch == 'arm64' && inputs.measure_build
         run: python3 scripts/measure-macos-build.py
       - name: Extract and verify the release archive
         run: |

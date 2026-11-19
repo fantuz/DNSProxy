@@ -169,14 +169,16 @@ batches of two. It does not use `-mcpu=native`, a newer Apple chip's instruction
 set, fast-math or link-time optimization. The resolver is a single C translation
 unit and uses system libcurl, without a separately compiled dependency tree.
 
-The Apple Silicon CI job compares a sequential `-O2` baseline with the release
-profile on the same runner, then tests and uploads the release archive. Its
-`macos-build-arm64.json` artifact records both wall times, binary sizes, compiler
-identity and flags; per-task timing and build logs accompany it. This is one
-baseline/release pair in that order, including packaging and filesystem cache
-effects. It is diagnostic evidence, not a statistical benchmark or a guarantee
-of DNS throughput. Protocol and GUI acceptance checks use the resulting release
-binary.
+For pull requests that change the Mac build scripts or native workflow, CI
+compares the sequential `-O2` baseline with the release profile on the same
+Apple Silicon runner. A first release build warms the toolchain. Each profile
+then builds four times, with each taking the first position in two of the four
+pairs. The reported medians cover compilation, linking, executable checks,
+checksums and packaging. The report also records the first build separately,
+all eight measured times, executable sizes, compiler identity and flags in
+`macos-build-arm64.json`. The native workflow can also run this comparison
+on manual request. Routine release jobs build the release profile once.
+Protocol and GUI acceptance checks use the resulting release archive.
 
 CI extracts and tests the exact archive on each native architecture. It checks
 system-only dynamic dependencies, IPv4/IPv6 UDP/TCP, wildcard reply addresses,
