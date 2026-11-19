@@ -1,0 +1,183 @@
+name: DNSProxy bundled Windows desktop
+
+"on":
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: false
+      stage:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    if: inputs.stage == 'runtime'
+    name: GTK runtime ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: windows-2022
+            msystem: UCRT64
+            prefix: mingw-w64-ucrt-x86_64
+          - arch: arm64
+            runner: windows-11-arm
+            msystem: CLANGARM64
+            prefix: mingw-w64-clang-aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    env:
+      MSYSTEM: ${{ matrix.msystem }}
+      MSYS2_PATH_TYPE: minimal
+      CHERE_INVOKING: '1'
+      DNSP_GUI_ARCH: ${{ matrix.arch }}
+      DNSP_GUI_PREFIX: ${{ matrix.prefix }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Select the native runtime refresh window
+        id: epoch
+        shell: pwsh
+        run: |
+          "week=$([Math]::Floor([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / 604800))" >> $env:GITHUB_OUTPUT
+          "image=$env:ImageVersion" >> $env:GITHUB_OUTPUT
+      - name: Restore the native GTK tool environment
+        id: runtime-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/msys64
+          key: dnsp-gtk-v1-${{ matrix.runner }}-${{ matrix.msystem }}-${{ steps.epoch.outputs.image }}-${{ steps.epoch.outputs.week }}-${{ hashFiles('.github/workflows/dnsp-windows-gui.yml') }}
+      - name: Validate the cached environment
+        id: runtime-check
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'msys64'
+          $ready = '${{ steps.runtime-cache.outputs.cache-hit }}' -eq 'true' -and (Test-Path "$root/usr/bin/bash.exe")
+          if ($ready) {
+            & "$root/usr/bin/bash.exe" -leo pipefail -c 'pacman -Q git "${DNSP_GUI_PREFIX}-gtk4" "${DNSP_GUI_PREFIX}-python-gobject" "${DNSP_GUI_PREFIX}-python-cairo" >/dev/null && python -c "import gi,cairo; gi.require_version(\"Gtk\",\"4.0\"); from gi.repository import Gtk; assert Gtk.get_major_version()==4"'
+            $ready = $LASTEXITCODE -eq 0
+            $global:LASTEXITCODE = 0
+          }
+          if (-not $ready -and (Test-Path $root)) { Remove-Item -Recurse -Force $root }
+          "ready=$($ready.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+      - uses: msys2/setup-msys2@v2
+        if: steps.runtime-check.outputs.ready != 'true'
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          install: >-
+            git
+            ${{ matrix.prefix }}-gtk4
+            ${{ matrix.prefix }}-python-gobject
+            ${{ matrix.prefix }}-python-cairo
+      - name: Stage the private runtime, source, licenses and manifest
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP/msys64/usr/bin/bash.exe" -leo pipefail -c 'python scripts/build-windows-gui-bundle.py --architecture "$DNSP_GUI_ARCH" --output "dist/windows-gui-$DNSP_GUI_ARCH" --sources "dist/dnsp-modern-$(cat VERSION)-windows-$DNSP_GUI_ARCH-gui-sources" --version "$(cat VERSION)" --source-sha "$(git rev-parse HEAD)"'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Compress-Archive -Path "dist/windows-gui-${{ matrix.arch }}/*" -DestinationPath "dist/gtk-runtime-${{ matrix.arch }}.zip"
+      - name: Save the verified GTK environment
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/msys64
+          key: ${{ steps.runtime-cache.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@v6
+        with:
+          name: dnsp-gui-runtime-${{ matrix.arch }}
+          path: |
+            dist/gtk-runtime-${{ matrix.arch }}.zip
+            dist/dnsp-modern-*-windows-${{ matrix.arch }}-gui-sources.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  installer:
+    if: inputs.stage == 'installer'
+    name: Desktop installer ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: windows-2022
+          - arch: arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    env:
+      GDK_BACKEND: win32
+      GSK_RENDERER: cairo
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13.17'
+          architecture: x64
+      - uses: actions/download-artifact@v7
+        with:
+          name: dnsp-modern-windows-${{ matrix.arch }}-poc
+          path: dist
+      - uses: actions/download-artifact@v7
+        with:
+          name: dnsp-gui-runtime-${{ matrix.arch }}
+          path: dist
+      - name: Extract the tested CLI bundle and matching GTK runtime
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          Expand-Archive "dist/dnsp-modern-$version-windows-${{ matrix.arch }}-poc.zip" dist/windows
+          Expand-Archive "dist/gtk-runtime-${{ matrix.arch }}.zip" "dist/windows-gui-${{ matrix.arch }}"
+          $env:DNSP_TEST_BINARY = "$pwd/dist/windows/dnsp-modern.exe"
+          python tests/test_gui_platforms.py -v
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python tests/test_gui_process.py -v
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python tests/test_windows_gui_bundle.py -v
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python tests/test_gui_bootstrap.py -v
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Compile the desktop setup from the exact tested CLI and runtime
+        shell: pwsh
+        run: ./scripts/build-windows-installer.ps1 -Architecture '${{ matrix.arch }}' -GuiBundleDir "$pwd/dist/windows-gui-${{ matrix.arch }}"
+      - name: Install, test, upgrade and remove the bundled desktop
+        shell: pwsh
+        env:
+          DNSP_TEST_WINDOWS_ARCH: ${{ matrix.arch }}
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $env:DNSP_TEST_SOURCE_SHA = (git rev-parse HEAD).Trim()
+          $env:DNSP_TEST_GUI_INSTALLER = "$pwd/dist/dnsp-modern-$version-windows-${{ matrix.arch }}-gui-setup.exe"
+          $env:DNSP_TEST_GUI_SOURCES = "$pwd/dist/dnsp-modern-$version-windows-${{ matrix.arch }}-gui-sources.zip"
+          $python = (Get-Command python).Source
+          $env:Path = "$(Split-Path $python);$env:SystemRoot\System32;$env:SystemRoot"
+          & $python tests/test_windows_gui_installer.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Preserve only the tested desktop setup and matching runtime sources
+        uses: actions/upload-artifact@v6
+        with:
+          name: dnsp-modern-windows-${{ matrix.arch }}-gui
+          path: |
+            dist/dnsp-modern-*-windows-${{ matrix.arch }}-gui-setup.exe
+            dist/dnsp-modern-*-windows-${{ matrix.arch }}-gui-setup.exe.sha256
+            dist/dnsp-modern-*-windows-${{ matrix.arch }}-gui-sources.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Preserve native GUI and installer evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: dnsp-windows-gui-evidence-${{ matrix.arch }}
+          path: dist/windows-gui-installer-evidence/
+          if-no-files-found: warn
+          retention-days: 14

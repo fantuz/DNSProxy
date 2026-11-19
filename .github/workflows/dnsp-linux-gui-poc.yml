@@ -63,6 +63,9 @@ jobs:
           desktop-file-validate packaging/gui/org.dnsproxy.LinuxMonitor.desktop
           DNSP_GUI_SOURCE=/usr/share/dnsp-modern-gui /usr/bin/python3 tests/test_gui_chart.py
           DNSP_GUI_SOURCE=/usr/share/dnsp-modern-gui /usr/bin/python3 tests/test_gui_monitor.py
+          DNSP_GUI_SOURCE=/usr/share/dnsp-modern-gui /usr/bin/python3 tests/test_gui_platforms.py
+          DNSP_GUI_SOURCE=/usr/share/dnsp-modern-gui /usr/bin/python3 tests/test_gui_process.py
+          DNSP_GUI_SOURCE=/usr/share/dnsp-modern-gui /usr/bin/python3 tests/test_gui_settings.py
       - name: Test GTK with real incoming DNS queries and save screenshots
         env:
           DNSP_GUI_SOURCE: /usr/share/dnsp-modern-gui
@@ -73,6 +76,8 @@ jobs:
         run: |
           dbus-run-session -- xvfb-run -a -s '-screen 0 1280x960x24' \
             /usr/bin/python3 tests/test_gui_gtk.py
+          DNSP_GUI_SOURCE=/usr/share/dnsp-modern-gui dbus-run-session -- xvfb-run -a -s '-screen 0 1280x1100x24' \
+            /usr/bin/python3 tests/test_gui_native.py --binary "$PWD/dnsp-modern" --artifacts "$PWD/dist/gui-native-linux"
       - name: Bundle the desktop monitor sources
         if: always()
         run: |
@@ -86,5 +91,6 @@ jobs:
           path: |
             dist/dnsp-linux-gui-poc.tar.gz
             dist/gui-screenshots/*.png
+            dist/gui-native-linux/
           if-no-files-found: error
 

@@ -76,6 +76,9 @@ jobs:
           export DNSP_TEST_BINARY="$portable/dnsp-modern"
           export DNSP_GUI_SOURCE="$portable/gui"
           "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_macos_launcher.py -v
+          "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_platforms.py -v
+          "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_process.py -v
+          "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_settings.py -v
           "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_native.py \
             --binary "$portable/dnsp-modern" --artifacts "$PWD/dist/gui-native-macos-${{ matrix.arch }}"
       - uses: actions/upload-artifact@v6
