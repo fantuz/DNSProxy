@@ -247,6 +247,7 @@ def build_application(options):
                 )
 
             notebook = Gtk.Notebook()
+            notebook.set_scrollable(True)
             self.notebook = notebook
             notebook.set_vexpand(True)
             root.append(notebook)
@@ -275,15 +276,13 @@ def build_application(options):
                 cards.attach(box, col, 0, 1, 1)
             self.metric_cards = cards
             overview.append(cards)
-            overview.append(
-                self.group(
-                    "Recent interval · completed attempts and cache lookups",
-                    [
-                        ("health_failure", "Failed upstream attempts"),
-                        ("health_cache", "Cache hit ratio"),
-                        ("health_reuse", "Reused upstream attempts"),
-                    ],
-                )
+            interval_health = self.group(
+                "Recent interval · completed attempts and cache lookups",
+                [
+                    ("health_failure", "Failed upstream attempts"),
+                    ("health_cache", "Cache hit ratio"),
+                    ("health_reuse", "Reused upstream attempts"),
+                ],
             )
             self.chart_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
             self.chart_panel.add_css_class("info-panel")
@@ -364,6 +363,7 @@ def build_application(options):
             self.latency_panel.set_valign(Gtk.Align.FILL)
             self.charts_grid.append(self.latency_panel)
             overview.append(self.charts_grid)
+            overview.append(interval_health)
             overview.append(
                 self.group(
                     "Estimated latency · last 60 sampling intervals",

@@ -417,7 +417,26 @@ class NativeScenario:
         )
         assert "DEMO" in window.status.get_text()
         assert len(window.history) <= 20
+        assert window.notebook.get_scrollable()
         self.check("labelled demo data and bounded quarter-second sampling")
+        wait_for(
+            self.context,
+            lambda: window.telemetry_frame is not None
+            and window.telemetry_frame.status == "live",
+            "native interval telemetry",
+        )
+        assert window.values["recent_completed"].get_text() != "—"
+        assert window.values["cache_used"].get_text() != "— / —"
+        report = window.monitoring_report()
+        assert report["monitor"]["demo"]
+        assert report["monitor"]["latest_sample_succeeded"]
+        assert report["interval"]["seconds"] > 0
+        assert json.loads(json.dumps(report, allow_nan=False))["schema_version"] == 1
+        window.notebook.set_current_page(window.notebook.get_n_pages() - 1)
+        pump(self.context, 0.1)
+        self.screenshot("demo-monitoring.png")
+        window.notebook.set_current_page(0)
+        self.check("native interval monitoring and aggregate-only JSON report")
         window.pause.set_active(True)
         wait_for(self.context, lambda: not window.busy, "paused collector")
         original = window.snapshot
@@ -464,6 +483,8 @@ class NativeScenario:
         for width, height in ((1120, 920), (800, 680)):
             resize_window(window, width, height)
             pump(self.context, 0.25)
+            if width == 800:
+                assert window.get_width() <= 810, window.get_width()
             assert window.chart.get_width() > 200
             assert 160 <= window.chart.get_content_height() <= 240
             assert window.latency_chart.get_width() > 200
@@ -495,9 +516,19 @@ class NativeScenario:
         window.open_settings()
         editor = window.settings_window
         wait_for(self.context, editor.get_mapped, "native settings window")
-        assert {"binary", "upstream", "metrics_port", "blocklist"} <= set(
-            editor.entries
-        )
+        assert {
+            "binary",
+            "upstream",
+            "metrics_port",
+            "blocklist",
+            "allowlist",
+            "block_response",
+            "blocklist_reload_ms",
+            "tcp_max_per_source",
+            "doh_connect_ms",
+            "doh_timeout_ms",
+            "udp_reply_max",
+        } <= set(editor.entries)
         original_config = window.launch_config
         editor.entries["port"].set_text("0")
         editor.apply_button.emit("clicked")
@@ -560,6 +591,22 @@ class NativeScenario:
                 )
                 self.screenshot("live-traffic.png")
                 self.check("live UDP/TCP counters and measured client latency history")
+                wait_for(
+                    self.context,
+                    lambda: window.telemetry_frame is not None
+                    and window.telemetry_frame.status == "live",
+                    "live native interval and capacity metrics",
+                )
+                assert window.values["daemon_uptime"].get_text() != "—"
+                assert window.values["slot_pressure"].get_text().endswith("%")
+                assert window.values["tcp_pressure"].get_text().endswith("%")
+                report = window.monitoring_report()
+                assert report["gauges"]["queries_capacity"] == 128
+                assert report["gauges"]["tcp_capacity"] == 128
+                assert "argv" not in report and "logs" not in report
+                window.notebook.set_current_page(window.notebook.get_n_pages() - 1)
+                self.screenshot("live-monitoring.png")
+                self.check("real resolver capacity gauges and aggregate report")
                 window.disconnect_button.emit("clicked")
                 assert not window.monitor_connected
                 assert external.poll() is None
@@ -623,6 +670,13 @@ class NativeScenario:
                     ("port", str(port)),
                     ("metrics_port", str(metric)),
                     ("blocklist", str(blocklist)),
+                    ("max_host_connections", "3"),
+                    ("tcp_max_per_source", "4"),
+                    ("tcp_idle_ms", "2000"),
+                    ("tcp_io_ms", "2500"),
+                    ("doh_connect_ms", "700"),
+                    ("doh_timeout_ms", "1200"),
+                    ("udp_reply_max", "1024"),
                 ):
                     editor.entries[key].set_text(value)
                 editor.checks["filtering"].set_active(True)
@@ -653,6 +707,21 @@ class NativeScenario:
                     "GUI-owned native resolver and process metadata",
                     timeout=25,
                 )
+                invocation = window.snapshot.process.invocation
+                for option, value in (
+                    ("--max-host-connections", "3"),
+                    ("--tcp-max-per-source", "4"),
+                    ("--tcp-idle-ms", "2000"),
+                    ("--tcp-io-ms", "2500"),
+                    ("--doh-connect-ms", "700"),
+                    ("--doh-timeout-ms", "1200"),
+                    ("--udp-reply-max", "1024"),
+                ):
+                    assert invocation.get(option) == value, (
+                        option,
+                        invocation.get(option),
+                    )
+                self.check("advanced native options reach the owned resolver unchanged")
                 for _ in range(8):
                     query(port)
                     query(port, tcp=True)
