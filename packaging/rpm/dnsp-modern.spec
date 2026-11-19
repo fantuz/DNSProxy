@@ -53,7 +53,8 @@ install -Dpm 0644 packaging/systemd/dnsp-modern-dns-recovery.timer %{buildroot}%
 install -Dpm 0755 scripts/update-blocklist.py %{buildroot}%{_sbindir}/dnsp-update-blocklist
 install -Dpm 0755 packaging/gui/dnsp-gui %{buildroot}%{_bindir}/dnsp-gui
 install -d %{buildroot}%{_datadir}/dnsp-modern-gui
-install -pm 0644 tools/linux-gui/*.py %{buildroot}%{_datadir}/dnsp-modern-gui/
+install -pm 0644 tools/desktop-gui/*.py %{buildroot}%{_datadir}/dnsp-modern-gui/
+install -pm 0644 tools/desktop-gui/THIRD_PARTY_NOTICES.txt %{buildroot}%{_datadir}/dnsp-modern-gui/
 install -Dpm 0644 packaging/gui/org.dnsproxy.LinuxMonitor.desktop %{buildroot}%{_datadir}/applications/org.dnsproxy.LinuxMonitor.desktop
 install -Dpm 0644 packaging/gui/dnsp-modern.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/dnsp-modern.svg
 

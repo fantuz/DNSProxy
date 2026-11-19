@@ -1,0 +1,1270 @@
+#!/usr/bin/python3
+"""Optional Linux GTK 4 monitor. The resolver does not depend on this program."""
+
+from __future__ import annotations
+
+import argparse
+from collections import deque
+import math
+import sys
+import shutil
+import shlex
+import subprocess
+import threading
+import time
+
+from chart import draw as draw_chart, scale_ceiling
+
+from monitor import (
+    Collector,
+    DEFAULTS,
+    DemoCollector,
+    LatencyWindow,
+    Rates,
+    Snapshot,
+    display_value,
+)
+
+
+def arguments(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--pid", type=int, help="Inspect one dnsp-modern PID (otherwise auto-detect)"
+    )
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        help="Read 127.0.0.1:PORT/metrics; never a remote host",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=0.5,
+        help="Refresh seconds, 0.25..30 (default 0.5)",
+    )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Show labelled synthetic data without a running resolver",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=1,
+        help="Metrics socket timeout, 0.2..5 seconds",
+    )
+    parser.add_argument(
+        "--history", type=int, default=60, help="Chart samples, 20..300 (default 60)"
+    )
+    parser.add_argument(
+        "--paused", action="store_true", help="Start with on-demand sampling"
+    )
+    parser.add_argument("--no-chart", action="store_true", help="Hide activity chart")
+    options = parser.parse_args(argv)
+    if options.pid is not None and options.pid <= 0:
+        parser.error("--pid must be positive")
+    if options.metrics_port is not None and not 1 <= options.metrics_port <= 65535:
+        parser.error("--metrics-port must be 1..65535")
+    if not 0.25 <= options.interval <= 30:
+        parser.error("--interval must be 0.25..30 seconds")
+    if not 0.2 <= options.timeout <= 5:
+        parser.error("--timeout must be 0.2..5 seconds")
+    if not 20 <= options.history <= 300:
+        parser.error("--history must be 20..300 samples")
+    if options.demo and (options.pid or options.metrics_port):
+        parser.error("--demo cannot be combined with a live process or metrics port")
+    return options
+
+
+def load_gtk():
+    try:
+        import gi
+
+        gi.require_version("Gtk", "4.0")
+        from gi.repository import Gio, GLib, Gtk
+    except (ImportError, ValueError) as error:
+        raise RuntimeError(
+            "GTK 4 bindings are missing. On Debian/Ubuntu install "
+            "python3-gi python3-gi-cairo gir1.2-gtk-4.0, then run with /usr/bin/python3."
+        ) from error
+    return Gio, GLib, Gtk
+
+
+def number(value, suffix=""):
+    if value is None:
+        return "—"
+    return f"{value:,.0f}{suffix}"
+
+
+def build_application(options):
+    Gio, GLib, Gtk = load_gtk()
+
+    class Window(Gtk.ApplicationWindow):
+        def __init__(self, app):
+            super().__init__(application=app, title="DNSProxy · Linux monitor")
+            self.set_default_size(1120, 920)
+            self.collector = (
+                DemoCollector()
+                if options.demo
+                else Collector(options.pid, options.metrics_port, options.timeout)
+            )
+            self.rates = Rates()
+            self.latencies = LatencyWindow()
+            self.selected_pid = options.pid
+            self.instance_ids = [None]
+            self.instance_labels = []
+            self.updating_instances = False
+            self.history = deque(maxlen=options.history)
+            self.history_times = deque(maxlen=options.history)
+            self.history_gap = False
+            self.good_snapshot = None
+            self.peak_qps = self.peak_cpu = self.peak_memory = self.peak_inflight = None
+            self.missed_samples = 0
+            self.owned_process = None
+            self.busy = False
+            self.closed = False
+            self.epoch = 0
+            self.last_started = 0
+            self.last_success = None
+            self.signature = object()
+            self.values = {}
+            self.snapshot = None
+            self.interval = options.interval
+            self.timeout = options.timeout
+            self.set_titlebar(Gtk.HeaderBar())
+            from gi.repository import Gdk
+
+            provider = Gtk.CssProvider()
+            self.css_provider = provider
+            provider.load_from_data(
+                b"""
+                .metric { font-variant-numeric: tabular-nums; }
+                .metric-card, .info-panel {
+                    padding: 16px;
+                    border: 1px solid alpha(currentColor, 0.12);
+                    border-radius: 10px;
+                    background-color: alpha(currentColor, 0.025);
+                }
+                .metric-card { padding: 14px 16px; }
+                .section-heading { font-size: 14px; font-weight: 700; }
+                .section-rule { margin-top: 2px; margin-bottom: 2px; }
+                .stale { opacity: 0.72; }
+                """
+            )
+            Gtk.StyleContext.add_provider_for_display(
+                Gdk.Display.get_default(),
+                provider,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+            )
+            root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+            for side in ("top", "bottom", "start", "end"):
+                getattr(root, "set_margin_" + side)(16)
+            self.set_child(root)
+
+            toolbar = Gtk.Box(spacing=12)
+            self.status = self.label("Connecting…", "title-3")
+            self.status.set_hexpand(True)
+            toolbar.append(self.status)
+            self.pause = Gtk.ToggleButton(label="Pause")
+            self.pause.set_tooltip_text(
+                "Pause automatic sampling; Refresh now still takes one sample"
+            )
+            self.pause.connect("toggled", self.pause_changed)
+            toolbar.append(self.pause)
+            self.refresh = Gtk.Button(label="Refresh now")
+            self.refresh.connect("clicked", lambda *_: self.request_sample(force=True))
+            toolbar.append(self.refresh)
+            connection = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            connection.add_css_class("info-panel")
+            self.connection_panel = connection
+            connection.append(toolbar)
+            root.append(connection)
+            self.detail = self.label("Detecting local DNSProxy")
+            self.detail.set_wrap(True)
+            connection.append(self.detail)
+            picker = Gtk.Box(spacing=12)
+            picker.append(self.label("Resolver instance"))
+            self.instance_selector = Gtk.DropDown.new_from_strings(
+                ["Automatic selection"]
+            )
+            self.instance_selector.set_hexpand(True)
+            self.instance_selector.set_sensitive(not options.demo)
+            self.instance_selector.connect("notify::selected", self.instance_changed)
+            picker.append(self.instance_selector)
+            reconnect = Gtk.Button(label="Reconnect")
+            reconnect.set_sensitive(not options.demo)
+            reconnect.connect("clicked", lambda *_: self.instance_changed(force=True))
+            picker.append(reconnect)
+            connection.append(picker)
+            if options.demo:
+                connection.append(
+                    self.label(
+                        "DEMO · All values are synthetic. No DNS requests or listeners are created.",
+                        "warning",
+                    )
+                )
+
+            notebook = Gtk.Notebook()
+            self.notebook = notebook
+            notebook.set_vexpand(True)
+            root.append(notebook)
+            overview = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+            self.overview = overview
+            cards = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True)
+            for col, (key, title) in enumerate(
+                (
+                    ("rate", "Queries / second"),
+                    ("peak_qps", "Peak sampled QPS"),
+                    ("satisfied", "Satisfied queries"),
+                    ("latency", "Mean upstream time"),
+                )
+            ):
+                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+                box.set_hexpand(True)
+                box.add_css_class("metric-card")
+                caption = self.label(title, "dim-label")
+                caption.set_wrap(True)
+                box.append(caption)
+                value = self.label("—", "title-2")
+                value.add_css_class("metric")
+                value.set_width_chars(8)
+                self.values[key] = value
+                box.append(value)
+                cards.attach(box, col, 0, 1, 1)
+            self.metric_cards = cards
+            overview.append(cards)
+            self.chart_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            self.chart_panel.add_css_class("info-panel")
+            chart_heading = Gtk.Box(spacing=12)
+            title = self.label("Query activity", "section-heading")
+            title.set_hexpand(True)
+            chart_heading.append(title)
+            chart_heading.append(self.label("QUERIES / SECOND", "dim-label"))
+            self.chart_panel.append(chart_heading)
+            self.activity = self.label("Waiting for the first sample")
+            self.chart_panel.append(self.activity)
+            self.chart = Gtk.DrawingArea()
+            self.chart.set_content_height(200)
+            self.chart.set_hexpand(True)
+            self.chart.set_draw_func(self.draw_history)
+            self.chart.set_tooltip_text(
+                "Observed query rates against elapsed time. Gaps separate paused or failed sampling; no synthetic points are inserted."
+            )
+            self.chart_panel.append(self.chart)
+            self.chart_scale = self.label("Waiting for activity history", "dim-label")
+            self.chart_panel.append(self.chart_scale)
+            overview.append(self.chart_panel)
+            overview.append(
+                self.group(
+                    "Estimated latency · last 60 sampling intervals",
+                    [
+                        ("client_percentiles", "Client reply p50 / p95 / p99"),
+                        ("upstream_percentiles", "Completed attempt p50 / p95 / p99"),
+                    ],
+                )
+            )
+            columns = Gtk.Grid(
+                column_spacing=16, row_spacing=16, column_homogeneous=True
+            )
+            self.information_grid = columns
+            left, right = [], []
+            left.append(
+                self.group(
+                    "DNS traffic",
+                    [
+                        ("udp", "UDP queries"),
+                        ("tcp", "TCP queries"),
+                        ("inflight", "In flight"),
+                        ("clients", "TCP clients"),
+                        ("coalesced", "Coalesced UDP queries"),
+                        ("invalid", "Invalid queries / responses"),
+                        ("overload", "Overload rejections"),
+                        ("truncated", "Truncated UDP replies"),
+                        ("peak_inflight", "Peak sampled in flight"),
+                        ("client_max", "Max client reply · daemon lifetime"),
+                    ],
+                )
+            )
+            left.append(
+                self.group(
+                    "Cache and filtering",
+                    [
+                        ("cache", "Cache hits / misses"),
+                        ("cache_ratio", "Cache hit ratio"),
+                        ("blocked", "Blocked queries / aliases"),
+                        ("lists", "Deny / allow entries"),
+                        ("reload_errors", "Blocklist reload failures"),
+                    ],
+                )
+            )
+            right.append(
+                self.group(
+                    "DoH upstream",
+                    [
+                        ("requests", "Attempts"),
+                        ("upstream_ok", "Successful / failed attempts"),
+                        ("timeouts", "Timeouts"),
+                        ("upstream_max", "Max attempt · daemon lifetime"),
+                        ("failure_ratio", "Failed completed attempts"),
+                        ("reuse_ratio", "Reused attempts / completed attempts"),
+                        ("http", "HTTP/1 · HTTP/2 · HTTP/3 replies"),
+                        ("reuse", "Reused requests / new connections"),
+                        ("roles", "Primary / backup attempts"),
+                        ("hedges", "Parallel backups / backup wins"),
+                    ],
+                )
+            )
+            right.append(
+                self.group(
+                    "Daemon load",
+                    [
+                        ("cpu", "CPU (% of one core)"),
+                        ("peak_cpu", "Peak sampled CPU"),
+                        ("memory", "Resident memory"),
+                        ("peak_memory", "Peak sampled memory"),
+                        ("missed", "Missed traffic samples · session"),
+                        ("uptime", "Process uptime"),
+                        ("pid", "Process ID"),
+                        ("service", "Packaged systemd service"),
+                        ("build", "Daemon / libcurl version"),
+                        ("capabilities", "Built HTTP/2 · HTTP/3 support"),
+                    ],
+                )
+            )
+            for row, (left_panel, right_panel) in enumerate(zip(left, right)):
+                left_panel.set_valign(Gtk.Align.FILL)
+                right_panel.set_valign(Gtk.Align.FILL)
+                columns.attach(left_panel, 0, row, 1, 1)
+                columns.attach(right_panel, 1, row, 1, 1)
+            overview.append(columns)
+            notebook.append_page(self.scroll(overview), self.label("Overview"))
+            self.startup = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            self.startup.append(self.label("Waiting for a readable DNSProxy process…"))
+            notebook.append_page(
+                self.scroll(self.startup), self.label("Startup options")
+            )
+            self.add_preferences(notebook)
+            self.add_launcher(notebook)
+            notes = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+            for text in (
+                "This monitor reads /proc and the existing loopback /metrics listener. It does not change "
+                "a monitored service or system DNS. The Launch resolver tab can start a separate ordinary-user process.",
+                "Incoming-query activity is inferred from counter changes between samples. This is not a "
+                "packet capture: client addresses, query names and query contents are neither collected nor shown.",
+                "The HTTP version preference is a startup setting. Actual HTTP/1, HTTP/2 and HTTP/3 reply "
+                "counters show what libcurl used; preferring HTTP/3 does not prove that HTTP/3 was negotiated.",
+                "Mean upstream time is the lifetime mean across completed attempts, including failures. "
+                "Satisfied queries count complete NOERROR or NXDOMAIN replies written to client sockets; "
+                "truncated replies, other DNS errors and local policy blocks are excluded. "
+                "Attempts, client queries, coalesced queries and cache hits have different denominators.",
+                "Traffic bytes and system interface throughput are not exposed by the daemon. They are not estimated "
+                "from query counts. An unavailable metric is shown as a dash, rather than a zero.",
+                "Pause switches to on-demand sampling with Refresh now. Automatic polling also stops while the "
+                "window is unmapped. Closing the GUI leaves DNSProxy running.",
+                "Use the instance selector when several resolvers run. Service state is read independently "
+                "from dnsp-modern.service and never changes the daemon. If /proc is restricted, --metrics-port PORT offers "
+                "traffic-only monitoring without root privileges or inferred startup settings.",
+                "Percentiles are estimates interpolated from bounded histogram buckets over recent samples. "
+                "Client timings include complete UDP/TCP replies, cache hits, policy blocks and DNS errors. "
+                "Attempt timings include completed failures but exclude cancelled losing races. No query log is collected. "
+                "A dash means insufficient samples or an older daemon without histograms; above range means the final unbounded bucket.",
+            ):
+                label = self.label(text)
+                label.set_wrap(True)
+                notes.append(label)
+            notebook.append_page(self.scroll(notes), self.label("How to read this"))
+            self.freshness = self.label(
+                "Sampling every " + str(self.interval) + " s · Read only", "dim-label"
+            )
+            root.append(self.freshness)
+            self.connect("close-request", self.close_monitor)
+            self.connect("unmap", self.reset_baseline)
+            self.pause.set_active(options.paused)
+            self.chart_panel.set_visible(not options.no_chart)
+            self.chart.set_visible(not options.no_chart)
+            self.chart_scale.set_visible(not options.no_chart)
+            self.tick_id = GLib.timeout_add(50, self.tick)
+
+        @staticmethod
+        def label(text, css=None):
+            label = Gtk.Label(label=text, xalign=0)
+            label.set_selectable(True)
+            if css:
+                label.add_css_class(css)
+            return label
+
+        @staticmethod
+        def scroll(child):
+            container = Gtk.ScrolledWindow()
+            container.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            for side in ("top", "bottom", "start", "end"):
+                getattr(child, "set_margin_" + side)(12)
+            container.set_child(child)
+            return container
+
+        def group(self, title, rows):
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            box.add_css_class("info-panel")
+            box.append(self.label(title, "section-heading"))
+            rule = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+            rule.add_css_class("section-rule")
+            box.append(rule)
+            grid = Gtk.Grid(column_spacing=16, row_spacing=9)
+            for row, (key, caption) in enumerate(rows):
+                label = self.label(caption)
+                label.set_wrap(True)
+                label.set_hexpand(True)
+                grid.attach(label, 0, row, 1, 1)
+                value = self.label("—", "metric")
+                value.set_width_chars(15)
+                value.set_xalign(1)
+                self.values[key] = value
+                grid.attach(value, 1, row, 1, 1)
+            box.append(grid)
+            return box
+
+        def add_preferences(self, notebook):
+            page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+            page.append(
+                self.label("Monitor preferences · apply immediately", "heading")
+            )
+            grid = Gtk.Grid(column_spacing=24, row_spacing=16)
+            self.preference_spins = {}
+            for row, (key, title, low, high, step, value) in enumerate(
+                (
+                    (
+                        "interval",
+                        "Refresh interval (seconds)",
+                        0.25,
+                        30,
+                        0.25,
+                        self.interval,
+                    ),
+                    (
+                        "timeout",
+                        "Metrics socket timeout (seconds)",
+                        0.2,
+                        5,
+                        0.2,
+                        self.timeout,
+                    ),
+                    ("history", "Chart samples", 20, 300, 10, options.history),
+                )
+            ):
+                grid.attach(self.label(title), 0, row, 1, 1)
+                spin = Gtk.SpinButton.new_with_range(low, high, step)
+                spin.set_digits(
+                    0 if key == "history" else 2 if key == "interval" else 1
+                )
+                spin.set_value(value)
+                spin.connect("value-changed", self.preference_changed, key)
+                self.preference_spins[key] = spin
+                grid.attach(spin, 1, row, 1, 1)
+            page.append(grid)
+            self.auto_refresh = Gtk.CheckButton(label="Automatic refresh")
+            self.auto_refresh.set_active(not options.paused)
+            self.auto_refresh.connect(
+                "toggled", lambda button: self.pause.set_active(not button.get_active())
+            )
+            page.append(self.auto_refresh)
+            self.show_chart = Gtk.CheckButton(label="Show activity chart")
+            self.show_chart.set_active(not options.no_chart)
+            self.show_chart.connect("toggled", self.chart_visibility_changed)
+            page.append(self.show_chart)
+            note = self.label(
+                "A timeout retains the last statistics and marks them as stale. Peak sampled values belong to the selected resolver in this GUI session; exact latency maxima belong to the daemon lifetime. Changing the refresh interval changes rate averaging and sampled peaks."
+            )
+            note.set_wrap(True)
+            page.append(note)
+            notebook.append_page(self.scroll(page), self.label("Preferences"))
+
+        def preference_changed(self, spin, key):
+            if key == "history":
+                self.history = deque(self.history, maxlen=spin.get_value_as_int())
+                self.history_times = deque(
+                    self.history_times, maxlen=spin.get_value_as_int()
+                )
+                self.chart.queue_draw()
+            elif key == "interval":
+                self.interval = spin.get_value()
+            else:
+                self.timeout = spin.get_value()
+                # The next HTTP request uses the new socket timeout; an
+                # already running request keeps its existing deadline.
+                self.collector.timeout = self.timeout
+
+        def chart_visibility_changed(self, button):
+            self.chart_panel.set_visible(button.get_active())
+            self.chart.set_visible(button.get_active())
+            self.chart_scale.set_visible(button.get_active())
+            if button.get_active():
+                self.chart.queue_draw()
+
+        def add_launcher(self, notebook):
+            from launcher import ResolverConfig
+
+            config = ResolverConfig(binary=shutil.which("dnsp-modern") or "dnsp-modern")
+            page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            note = self.label(
+                "Start a separate resolver as your desktop user. Existing services and system DNS are untouched. Ports must be 1024 or higher. Stop affects only a process started by this window; closing the window leaves it running. Logs inherit the GUI's terminal or desktop journal."
+            )
+            note.set_wrap(True)
+            page.append(note)
+            grid = Gtk.Grid(column_spacing=18, row_spacing=10)
+            self.launch_entries, self.launch_checks = {}, {}
+            for row, (key, title) in enumerate(
+                (
+                    ("binary", "Executable"),
+                    ("listen", "Listen address"),
+                    ("port", "DNS port"),
+                    ("metrics_port", "Metrics port"),
+                    ("upstream", "DoH upstream URL"),
+                    ("bootstrap", "Bootstrap address"),
+                    ("cache_entries", "Cache entries"),
+                    ("backup", "Backup DoH URL"),
+                    ("backup_bootstrap", "Backup bootstrap"),
+                    ("hedge_ms", "Parallel request delay (ms)"),
+                    ("blocklist", "Blocklist file"),
+                    ("ca_file", "Custom CA file (optional)"),
+                )
+            ):
+                grid.attach(self.label(title), 0, row, 1, 1)
+                entry = Gtk.Entry()
+                entry.set_text(getattr(config, key))
+                entry.set_hexpand(True)
+                self.launch_entries[key] = entry
+                grid.attach(entry, 1, row, 1, 1)
+            page.append(grid)
+            switches = Gtk.FlowBox()
+            switches.set_selection_mode(Gtk.SelectionMode.NONE)
+            for key, title in (
+                ("metrics", "Metrics"),
+                ("cache", "Cache"),
+                ("padding", "EDNS padding"),
+                ("http3", "Prefer HTTP/3"),
+                ("backup_enabled", "Backup upstream"),
+                ("hedge", "Delayed parallel requests"),
+                ("filtering", "Blocklist"),
+            ):
+                check = Gtk.CheckButton(label=title)
+                check.set_active(getattr(config, key))
+                self.launch_checks[key] = check
+                switches.append(check)
+            page.append(switches)
+            self.launch_command = Gtk.Entry()
+            self.launch_command.set_editable(False)
+            self.launch_command.set_placeholder_text(
+                "Preview produces a validated, copyable CLI command"
+            )
+            page.append(self.launch_command)
+            buttons = Gtk.Box(spacing=12)
+            for title, handler in (
+                ("Preview command", self.preview_launch),
+                ("Start resolver", self.start_resolver),
+                ("Stop launched resolver", self.stop_resolver),
+            ):
+                button = Gtk.Button(label=title)
+                button.connect("clicked", handler)
+                buttons.append(button)
+                if title.startswith("Stop"):
+                    self.stop_button = button
+                    button.set_sensitive(False)
+                if title.startswith("Start"):
+                    self.start_button = button
+                    button.set_sensitive(not options.demo)
+            page.append(buttons)
+            self.launch_status = self.label(
+                "Ready · configuration applies to a new process only"
+            )
+            self.launch_status.set_wrap(True)
+            page.append(self.launch_status)
+            # Keep actions and feature switches discoverable before the long
+            # form, including on a compact desktop.
+            page.reorder_child_after(buttons, note)
+            page.reorder_child_after(self.launch_status, buttons)
+            page.reorder_child_after(self.launch_command, self.launch_status)
+            page.reorder_child_after(switches, self.launch_command)
+            notebook.append_page(self.scroll(page), self.label("Launch resolver"))
+
+        def launch_argv(self):
+            from launcher import ResolverConfig
+
+            fields = {
+                key: entry.get_text().strip()
+                for key, entry in self.launch_entries.items()
+            }
+            fields.update(
+                {key: check.get_active() for key, check in self.launch_checks.items()}
+            )
+            return ResolverConfig(**fields).argv()
+
+        def preview_launch(self, *_):
+            try:
+                command = self.launch_argv()
+                self.launch_command.set_text(shlex.join(command))
+                self.launch_status.set_text(
+                    "Validated invocation · select the command to copy it"
+                )
+                return command
+            except (ValueError, OSError) as error:
+                self.launch_command.set_text("")
+                self.launch_status.set_text(str(error))
+                return None
+
+        def start_resolver(self, *_):
+            if options.demo or self.owned_process is not None:
+                return
+            command = self.preview_launch()
+            if command is None:
+                return
+            try:
+                child = subprocess.Popen(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except (OSError, ValueError) as error:
+                self.launch_status.set_text(f"Could not start resolver: {error}")
+                return
+            self.owned_process = child
+            self.start_button.set_sensitive(False)
+            self.stop_button.set_sensitive(True)
+            self.launch_status.set_text(
+                f"Started PID {child.pid} · waiting for readiness; logs use the inherited terminal/journal"
+            )
+            self.selected_pid = child.pid
+            self.collector = Collector(child.pid, timeout=self.timeout)
+            self.reset_baseline()
+            self.history.clear()
+            self.history_times.clear()
+            self.good_snapshot = self.snapshot = None
+            self.last_success = None
+            self.peak_qps = self.peak_cpu = self.peak_memory = self.peak_inflight = None
+            for value in self.values.values():
+                self.set_label(value, "—")
+            self.request_sample(force=True)
+
+        def stop_resolver(self, *_):
+            if self.owned_process is not None and self.owned_process.poll() is None:
+                self.owned_process.terminate()
+                self.stop_button.set_sensitive(False)
+                self.launch_status.set_text(
+                    "Stop requested · waiting for the launched resolver to exit"
+                )
+
+        def check_launched_resolver(self):
+            if self.owned_process is not None:
+                code = self.owned_process.poll()
+                if code is not None:
+                    self.launch_status.set_text(
+                        f"Launched resolver exited with status {code}; check its terminal/journal for details"
+                    )
+                    self.owned_process = None
+                    self.start_button.set_sensitive(True)
+                    self.stop_button.set_sensitive(False)
+
+        def pause_changed(self, *_):
+            self.history_gap = True
+            self.epoch += 1
+            self.rates.reset()
+            self.latencies.reset()
+            self.pause.set_label("Resume" if self.pause.get_active() else "Pause")
+            if hasattr(self, "auto_refresh"):
+                self.auto_refresh.set_active(not self.pause.get_active())
+            self.last_started = 0
+
+        def reset_baseline(self, *_):
+            self.history_gap = True
+            self.epoch += 1
+            self.rates.reset()
+            self.latencies.reset()
+            self.last_started = 0
+
+        def instance_changed(self, *_args, force=False):
+            if self.updating_instances or options.demo:
+                return
+            index = self.instance_selector.get_selected()
+            if index >= len(self.instance_ids):
+                return
+            pid = self.instance_ids[index]
+            if pid == self.selected_pid and not force:
+                return
+            self.selected_pid = pid
+            self.collector = Collector(
+                pid, options.metrics_port if pid is None else None, self.timeout
+            )
+            self.reset_baseline()
+            self.history.clear()
+            self.history_times.clear()
+            self.good_snapshot = None
+            self.peak_qps = self.peak_cpu = self.peak_memory = self.peak_inflight = None
+            self.missed_samples = 0
+            self.snapshot = None
+            self.last_success = None
+            for value in self.values.values():
+                value.set_text("—")
+            self.status.set_text("Connecting…")
+            self.detail.set_text("Reading the selected instance")
+            self.show_settings(None)
+            self.chart.queue_draw()
+            self.request_sample(force=True)
+
+        def show_instances(self, snapshot):
+            rows = list(snapshot.instances)
+            if snapshot.process and all(p.pid != snapshot.process.pid for p in rows):
+                rows.append(snapshot.process)
+            ids = [None] + [p.pid for p in rows]
+            labels = [
+                f"Traffic only · port {options.metrics_port}"
+                if options.metrics_port
+                else "Automatic selection"
+            ]
+            labels += [
+                f"PID {p.pid} · DNS port {p.invocation.get('-p')} · metrics {p.invocation.get('-m')}"
+                for p in rows
+            ]
+            if self.selected_pid and self.selected_pid not in ids:
+                ids.append(self.selected_pid)
+                labels.append(f"Selected PID {self.selected_pid} · unavailable")
+            if labels == self.instance_labels and ids == self.instance_ids:
+                return
+            self.updating_instances = True
+            self.instance_ids, self.instance_labels = ids, labels
+            self.instance_selector.set_model(Gtk.StringList.new(labels))
+            self.instance_selector.set_selected(
+                ids.index(self.selected_pid) if self.selected_pid in ids else 0
+            )
+            self.updating_instances = False
+
+        def request_sample(self, force=False):
+            if self.closed or self.busy or (self.pause.get_active() and not force):
+                return
+            self.busy = True
+            self.last_started = time.monotonic()
+            epoch = self.epoch
+            collector = self.collector
+
+            def work():
+                try:
+                    result = collector.collect()
+                except Exception as error:
+                    result = Snapshot(
+                        time.monotonic(),
+                        None,
+                        None,
+                        None,
+                        f"Monitor collection failed: {type(error).__name__}",
+                    )
+                if not self.closed:
+                    GLib.idle_add(self.finish_sample, epoch, result)
+
+            # One bounded worker at a time; GTK is touched only on the main loop.
+            threading.Thread(target=work, name="dnsp-monitor", daemon=True).start()
+
+        def finish_sample(self, epoch, result):
+            self.busy = False
+            if not self.closed and epoch == self.epoch:
+                self.apply(result)
+            return False
+
+        def tick(self):
+            if self.closed:
+                return False
+            self.check_launched_resolver()
+            if self.chart.get_visible() and self.chart.get_width() > 0:
+                height = max(160, min(240, round(self.chart.get_width() / 4.5)))
+                if self.chart.get_content_height() != height:
+                    self.chart.set_content_height(height)
+            now = time.monotonic()
+            if (
+                self.get_mapped()
+                and not self.pause.get_active()
+                and now - self.last_started >= self.interval
+            ):
+                self.request_sample()
+            mode = (
+                "On demand" if self.pause.get_active() else f"Every {self.interval:g} s"
+            )
+            if self.last_success is not None and now - self.last_success > max(
+                2 * self.interval, self.timeout + 0.75
+            ):
+                self.set_label(self.status, "No fresh data · last values retained")
+                self.overview.add_css_class("stale")
+            age = (
+                f" · Last good traffic sample {int(now - self.last_success)} s ago"
+                if self.last_success
+                else ""
+            )
+            self.set_label(self.freshness, f"{mode}{age}")
+            return True
+
+        @staticmethod
+        def set_label(label, text):
+            if label.get_text() != text:
+                label.set_text(text)
+
+        def apply(self, snapshot):
+            previous = self.good_snapshot
+            # An absent /proc read is not proof of a different resolver. Clear
+            # retained values only after a confirmed identity/endpoint change.
+            changed = previous and (
+                (
+                    snapshot.process is not None
+                    and snapshot.identity != previous.identity
+                )
+                or (snapshot.port is not None and snapshot.port != previous.port)
+                or (
+                    snapshot.metrics is not None
+                    and snapshot.identity != previous.identity
+                )
+            )
+            if previous and snapshot.metrics and previous.identity == snapshot.identity:
+                changed = changed or any(
+                    snapshot.metrics.get("dnsp_queries_total", transport=t)
+                    < previous.metrics.get("dnsp_queries_total", transport=t)
+                    for t in ("udp", "tcp")
+                )
+            if changed:
+                self.history.clear()
+                self.history_times.clear()
+                self.rates.reset()
+                self.latencies.reset()
+                self.good_snapshot = None
+                self.last_success = None
+                self.peak_qps = self.peak_cpu = self.peak_memory = (
+                    self.peak_inflight
+                ) = None
+                for value in self.values.values():
+                    self.set_label(value, "—")
+                self.chart.queue_draw()
+            self.snapshot = snapshot
+            process, metrics = snapshot.process, snapshot.metrics
+            self.show_instances(snapshot)
+            if not metrics:
+                self.history_gap = True
+                self.missed_samples += 1
+                self.latencies.reset()
+                retained = self.good_snapshot is not None
+                if retained:
+                    self.rates.reset()
+                    cpu = None
+                else:
+                    _, _, cpu = self.rates.update(snapshot)
+                self.set_label(
+                    self.status,
+                    "No fresh data · last values retained"
+                    if retained
+                    else "Traffic unavailable",
+                )
+                self.set_label(self.detail, snapshot.error or "Waiting for metrics")
+                self.set_label(
+                    self.activity,
+                    "No fresh data · chart and statistics held"
+                    if retained
+                    else "Waiting for the first traffic sample",
+                )
+                self.overview.add_css_class("stale")
+                if not retained:
+                    self.show_settings(process.invocation if process else None)
+                    if process:
+                        self.set_label(self.values["pid"], str(process.pid))
+                        self.set_label(
+                            self.values["memory"],
+                            f"{process.memory_bytes / 1048576:.1f} MiB",
+                        )
+                        self.set_label(
+                            self.values["cpu"],
+                            f"{cpu:.1f}%" if cpu is not None else "—",
+                        )
+                        hours, rest = divmod(int(process.uptime), 3600)
+                        self.set_label(
+                            self.values["uptime"],
+                            f"{hours}h {rest // 60:02d}m {rest % 60:02d}s",
+                        )
+                        if snapshot.service:
+                            self.set_label(
+                                self.values["service"],
+                                snapshot.service.describe(process),
+                            )
+                if (
+                    self.owned_process is not None
+                    and process
+                    and process.pid == self.owned_process.pid
+                ):
+                    self.set_label(
+                        self.launch_status,
+                        f"Running PID {process.pid} · traffic metrics unavailable",
+                    )
+                return
+            self.overview.remove_css_class("stale")
+            self.good_snapshot = snapshot
+            if (
+                self.owned_process is not None
+                and process
+                and process.pid == self.owned_process.pid
+            ):
+                self.set_label(
+                    self.launch_status,
+                    f"Running PID {process.pid} · metrics responding",
+                )
+            rate, delta, cpu = self.rates.update(snapshot)
+            percentile_values = self.latencies.update(snapshot)
+            self.last_success = snapshot.at
+            self.set_label(
+                self.status, ("DEMO · " if options.demo else "") + "Receiving metrics"
+            )
+            self.set_label(
+                self.detail,
+                f"127.0.0.1:{snapshot.port}/metrics · "
+                + (
+                    f"DNSProxy PID {process.pid}"
+                    if process and process.pid
+                    else "Process settings unavailable"
+                ),
+            )
+            # Compute a complete frame, then update only changed labels. Never
+            # blank the displayed frame between two successful snapshots.
+            before = {key: label.get_text() for key, label in self.values.items()}
+            frame = {key: "—" for key in self.values}
+            if (
+                previous
+                and not changed
+                and self.rates.previous is snapshot
+                and rate is None
+            ):
+                for key in ("client_percentiles", "upstream_percentiles"):
+                    frame[key] = before[key]
+            frame["rate"] = f"{rate:,.1f}" if rate is not None else before["rate"]
+            frame["memory"] = (
+                f"{process.memory_bytes / 1048576:.1f} MiB" if process else "—"
+            )
+            frame["cpu"] = f"{cpu:.1f}%" if cpu is not None else before["cpu"]
+            frame["pid"] = str(process.pid) if process and process.pid else "—"
+            if snapshot.service:
+                frame["service"] = snapshot.service.describe(process)
+            for key, values in zip(
+                ("client_percentiles", "upstream_percentiles"), percentile_values
+            ):
+                if values is not None:
+                    frame[key] = " / ".join(
+                        (
+                            "above range" if math.isinf(v) else f"{1000 * v:.1f} ms"
+                            for v in values
+                        )
+                    )
+            if process:
+                hours, rest = divmod(int(process.uptime), 3600)
+                frame["uptime"] = f"{hours}h {rest // 60:02d}m {rest % 60:02d}s"
+            self.show_settings(process.invocation if process else None)
+            if metrics:
+                get = metrics.get
+
+                def put(key, name, **labels):
+                    frame[key] = number(get(name, **labels))
+
+                def pair(key, first, second):
+                    frame[key] = number(get(first)) + " / " + number(get(second))
+
+                put("satisfied", "dnsp_queries_satisfied_total")
+                for key, name in (
+                    ("udp", "dnsp_queries_total"),
+                    ("tcp", "dnsp_queries_total"),
+                ):
+                    put(key, name, transport=key)
+                for key, name in (
+                    ("inflight", "dnsp_queries_inflight"),
+                    ("clients", "dnsp_tcp_clients"),
+                    ("coalesced", "dnsp_udp_queries_coalesced_total"),
+                    ("overload", "dnsp_overload_total"),
+                    ("truncated", "dnsp_truncated_responses_total"),
+                    ("requests", "dnsp_upstream_requests_total"),
+                    ("timeouts", "dnsp_upstream_timeouts_total"),
+                    ("reload_errors", "dnsp_blocklist_reload_failures_total"),
+                ):
+                    put(key, name)
+                pair("cache", "dnsp_cache_hits_total", "dnsp_cache_misses_total")
+                frame["hedges"] = (
+                    number(get("dnsp_upstream_hedges_started_total"))
+                    + " / "
+                    + number(get("dnsp_upstream_hedge_wins_total", role="backup"))
+                )
+                info = [
+                    dict(labels)
+                    for (name, labels), value in metrics.samples.items()
+                    if name == "dnsp_build_info" and value == 1
+                ]
+                if len(info) == 1:
+                    frame["build"] = (
+                        info[0].get("version", "unknown")
+                        + " / "
+                        + info[0].get("libcurl", "unknown")
+                    )
+                    frame["capabilities"] = (
+                        info[0].get("http2", "unknown")
+                        + " · "
+                        + info[0].get("http3", "unknown")
+                    )
+                pair(
+                    "blocked",
+                    "dnsp_blocked_queries_total",
+                    "dnsp_blocked_aliases_total",
+                )
+                pair(
+                    "invalid",
+                    "dnsp_invalid_queries_total",
+                    "dnsp_invalid_responses_total",
+                )
+                pair(
+                    "reuse",
+                    "dnsp_upstream_reused_requests_total",
+                    "dnsp_upstream_new_connections_total",
+                )
+                pair(
+                    "upstream_ok",
+                    "dnsp_upstream_success_total",
+                    "dnsp_upstream_failures_total",
+                )
+                frame["http"] = " · ".join(
+                    (
+                        number(get("dnsp_upstream_http_responses_total", version=v))
+                        for v in ("1", "2", "3")
+                    )
+                )
+                for key, name, label, variants in (
+                    ("lists", "dnsp_blocklist_entries", "action", ("deny", "allow")),
+                    (
+                        "roles",
+                        "dnsp_upstream_endpoint_requests_total",
+                        "role",
+                        ("primary", "backup"),
+                    ),
+                ):
+                    frame[key] = " / ".join(
+                        (number(get(name, **{label: v})) for v in variants)
+                    )
+                duration, count = (
+                    get("dnsp_upstream_duration_seconds_sum"),
+                    get("dnsp_upstream_duration_seconds_count"),
+                )
+                if duration is not None and count:
+                    frame["latency"] = f"{1000 * duration / count:.1f} ms"
+
+            def peak(attr, value):
+                old = getattr(self, attr)
+                if value is not None:
+                    setattr(self, attr, value if old is None else max(old, value))
+                return getattr(self, attr)
+
+            frame["peak_qps"] = number(peak("peak_qps", rate))
+            frame["peak_cpu"] = number(peak("peak_cpu", cpu), "%")
+            memory = process.memory_bytes / 1048576 if process else None
+            maximum = peak("peak_memory", memory)
+            frame["peak_memory"] = f"{maximum:.1f} MiB" if maximum is not None else "—"
+            frame["peak_inflight"] = number(
+                peak("peak_inflight", metrics.get("dnsp_queries_inflight"))
+            )
+            frame["missed"] = number(self.missed_samples)
+            maximum = metrics.get("dnsp_upstream_duration_max_seconds")
+            frame["upstream_max"] = (
+                f"{maximum * 1000:.1f} ms"
+                if maximum is not None
+                and metrics.get("dnsp_upstream_duration_seconds_count")
+                else "—"
+            )
+            maxima = [
+                metrics.get("dnsp_client_duration_max_seconds", transport=t)
+                for t in ("udp", "tcp")
+            ]
+            frame["client_max"] = (
+                f"{max(maxima) * 1000:.1f} ms"
+                if all((v is not None for v in maxima))
+                and sum(
+                    metrics.get("dnsp_client_duration_seconds_count", transport=t) or 0
+                    for t in ("udp", "tcp")
+                )
+                else "—"
+            )
+            for key, first, second in (
+                ("cache_ratio", "dnsp_cache_hits_total", "dnsp_cache_misses_total"),
+                (
+                    "failure_ratio",
+                    "dnsp_upstream_failures_total",
+                    "dnsp_upstream_success_total",
+                ),
+                (
+                    "reuse_ratio",
+                    "dnsp_upstream_reused_requests_total",
+                    "dnsp_upstream_duration_seconds_count",
+                ),
+            ):
+                a, b = metrics.get(first), metrics.get(second)
+                frame[key] = (
+                    f"{100 * a / (b if key == 'reuse_ratio' else a + b):.1f}%"
+                    if a is not None
+                    and b is not None
+                    and (b if key == "reuse_ratio" else a + b)
+                    else "—"
+                )
+            for key, text in frame.items():
+                self.set_label(self.values[key], text)
+            self.activity.set_text(
+                "Traffic unavailable — last history retained"
+                if not metrics
+                else "Collecting baseline…"
+                if delta is None
+                else f"● {int(delta):,} incoming queries since last sample"
+                if delta
+                else "○ Idle · no incoming queries since last sample"
+            )
+            if rate is not None:
+                if self.history_gap and self.history:
+                    self.history.append(None)
+                    self.history_times.append(snapshot.at)
+                self.history_gap = False
+                self.history.append(rate)
+                self.history_times.append(snapshot.at)
+                if self.chart.get_visible():
+                    self.chart.queue_draw()
+            peak = max(
+                (value for value in self.history if value is not None), default=0
+            )
+            self.chart_scale.set_text(
+                f"{sum(value is not None for value in self.history)} samples · "
+                f"{self.history_times[-1] - self.history_times[0]:.1f} s recorded · "
+                f"scale 0–{scale_ceiling(peak):g} queries/s"
+                if self.history_times
+                else "Waiting for activity history"
+            )
+
+        def show_settings(self, invocation):
+            signature = (
+                (
+                    tuple(invocation.values.items()),
+                    frozenset(invocation.explicit),
+                    bool(invocation.unknown),
+                )
+                if invocation
+                else None
+            )
+            if (
+                signature == self.signature
+                and self.startup.get_first_child() is not None
+            ):
+                return
+            self.signature = signature
+            while self.startup.get_first_child():
+                self.startup.remove(self.startup.get_first_child())
+            if invocation is None:
+                self.startup.append(
+                    self.label(
+                        "Startup options unavailable. Attach to a readable process with --pid PID."
+                    )
+                )
+                return
+            hint = self.label(
+                "Read-only startup settings. Omitted flags use the current C defaults; "
+                "these are not measurements of negotiated transport or dynamic policy state."
+            )
+            hint.set_wrap(True)
+            self.startup.append(hint)
+            if invocation.unknown:
+                self.startup.append(
+                    self.label(
+                        "Unrecognised arguments present: defaults may differ in this daemon version.",
+                        "warning",
+                    )
+                )
+            grid = Gtk.Grid(column_spacing=24, row_spacing=8)
+            for row, (caption, enabled) in enumerate(invocation.toggles().items()):
+                grid.attach(self.label(caption), 0, row, 1, 1)
+                on, off = Gtk.CheckButton(label="On"), Gtk.CheckButton(label="Off")
+                off.set_group(on)
+                on.set_active(enabled)
+                off.set_active(not enabled)
+                on.set_sensitive(False)
+                off.set_sensitive(False)
+                grid.attach(on, 1, row, 1, 1)
+                grid.attach(off, 2, row, 1, 1)
+            self.startup.append(grid)
+            self.startup.append(self.label("Invocation values", "heading"))
+            values = Gtk.Grid(column_spacing=18, row_spacing=8)
+            for row, option in enumerate(DEFAULTS):
+                values.attach(self.label(option, "monospace"), 0, row, 1, 1)
+                text = (
+                    ", ".join(
+                        display_value(option, value)
+                        for value in invocation.values[option]
+                    )
+                    or "Disabled / unset"
+                )
+                value = self.label(text)
+                value.set_wrap(True)
+                value.set_hexpand(True)
+                values.attach(value, 1, row, 1, 1)
+                values.attach(
+                    self.label(
+                        "Explicit" if option in invocation.explicit else "Default",
+                        "dim-label",
+                    ),
+                    2,
+                    row,
+                    1,
+                    1,
+                )
+            self.startup.append(values)
+
+        def draw_history(self, area, cr, width, height):
+            color = area.get_style_context().get_color()
+            draw_chart(
+                cr,
+                width,
+                height,
+                list(self.history),
+                list(self.history_times),
+                self.interval,
+                (color.red, color.green, color.blue),
+            )
+
+        def close_monitor(self, *_):
+            self.closed = True
+            from gi.repository import Gdk
+
+            Gtk.StyleContext.remove_provider_for_display(
+                Gdk.Display.get_default(), self.css_provider
+            )
+            GLib.source_remove(self.tick_id)
+            return False
+
+    class Application(Gtk.Application):
+        def __init__(self):
+            super().__init__(
+                application_id="org.dnsproxy.LinuxMonitor",
+                flags=Gio.ApplicationFlags.NON_UNIQUE,
+            )
+            self.window = None
+
+        def do_activate(self):
+            if self.window is None:
+                self.window = Window(self)
+            self.window.present()
+            self.window.refresh.grab_focus()
+
+    return Application()
+
+
+def main():
+    options = arguments()
+    if not sys.platform.startswith("linux"):
+        print("This desktop monitor currently supports Linux only.", file=sys.stderr)
+        return 2
+    try:
+        app = build_application(options)
+    except RuntimeError as error:
+        print(error, file=sys.stderr)
+        return 2
+    return app.run([])
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

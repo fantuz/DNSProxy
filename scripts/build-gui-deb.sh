@@ -11,7 +11,8 @@ mkdir -p "$work/DEBIAN" "$work/usr/bin" "$work/usr/share/dnsp-modern-gui" \
     "$work/usr/share/applications" "$work/usr/share/icons/hicolor/scalable/apps" \
     "$work/usr/share/doc/dnsp-modern-gui/images" dist
 install -m 0755 packaging/gui/dnsp-gui "$work/usr/bin/dnsp-gui"
-install -m 0644 tools/linux-gui/*.py "$work/usr/share/dnsp-modern-gui/"
+install -m 0644 tools/desktop-gui/*.py "$work/usr/share/dnsp-modern-gui/"
+install -m 0644 tools/desktop-gui/THIRD_PARTY_NOTICES.txt "$work/usr/share/doc/dnsp-modern-gui/THIRD_PARTY_NOTICES.txt"
 install -m 0644 packaging/gui/*.desktop "$work/usr/share/applications/"
 install -m 0644 packaging/gui/dnsp-modern.svg "$work/usr/share/icons/hicolor/scalable/apps/"
 install -m 0644 docs/LINUX-GUI.md "$work/usr/share/doc/dnsp-modern-gui/README.md"

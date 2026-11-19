@@ -18,7 +18,7 @@ import unittest
 from unittest.mock import patch
 
 BASE = Path(__file__).resolve().parents[1]
-GUI_SOURCE = Path(os.environ.get("DNSP_GUI_SOURCE", BASE / "tools/linux-gui"))
+GUI_SOURCE = Path(os.environ.get("DNSP_GUI_SOURCE", BASE / "tools/desktop-gui"))
 sys.path.insert(0, str(GUI_SOURCE))
 import monitor  # noqa: E402 - optional tool lives outside the tests package
 from test_modern import (  # noqa: E402

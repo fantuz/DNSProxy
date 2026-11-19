@@ -106,10 +106,10 @@ jobs:
           check_paths protocols "${common[@]}" ci/ bench/ tests/test_benchmark.py tests/test_http3.py \
             tests/test_modern.py .dockerignore .github/workflows/dnsp-modern-benchmark.yml
           check_paths windows "${common[@]}" bench/ tests/ packaging/windows/ docs/WINDOWS.md \
-            scripts/build-windows.sh scripts/build-windows-installer.ps1 scripts/bundle-windows.py scripts/run-windows-tests.py ci/ scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-windows.yml
+            scripts/build-windows.sh scripts/build-windows-installer.ps1 scripts/bundle-windows.py scripts/build-windows-gui-bundle.py packaging/windows/gui-bootstrap.py tools/desktop-gui/ scripts/run-windows-tests.py ci/ scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-windows.yml
           check_paths macos "${common[@]}" bench/ tests/ packaging/macos/ docs/MACOS.md \
-            scripts/build-macos.sh scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-macos.yml
-          check_paths gui "${common[@]}" packaging/gui/ scripts/build-gui-deb.sh scripts/test-gui-package.py tools/linux-gui/ tests/test_gui_monitor.py tests/test_gui_gtk.py \
+            scripts/build-macos.sh tools/desktop-gui/ scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-macos.yml
+          check_paths gui "${common[@]}" packaging/gui/ scripts/build-gui-deb.sh scripts/test-gui-package.py tools/desktop-gui/ tools/linux-gui/ tests/test_gui_monitor.py tests/test_gui_gtk.py \
             docs/LINUX-GUI.md docs/images/ .github/workflows/dnsp-linux-gui-poc.yml
           check_paths containers "${common[@]}" ci/ Dockerfile .dockerignore compose.yaml packaging/container/ \
             tests/test_container.py tests/test_oci_bundle.py tests/test_oci_publish.py tests/test_modern.py tests/test_policy.py tests/test_http3.py \

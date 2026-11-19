@@ -16,7 +16,7 @@ git archive --format=tar.gz --prefix="dnsp-modern-$version/" HEAD -- \
     tests/host_capabilities.py tests/test_host_capabilities.py tests/test_hedging.py \
     scripts/update-blocklist.py docs/BLOCKLISTS.md \
     packaging/README-packaging.md packaging/systemd/ packaging/linux/dnsp-configure-dns \
-    tools/linux-gui/ packaging/gui/ docs/LINUX-GUI.md docs/images/linux-gui-poc-*.png \
+    tools/desktop-gui/ packaging/gui/ docs/LINUX-GUI.md docs/images/linux-gui-poc-*.png \
     > "$work/SOURCES/dnsp-modern-$version.tar.gz"
 
 rpmbuild -bb --define "_topdir $work" --define "dnsp_version $version" packaging/rpm/dnsp-modern.spec

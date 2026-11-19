@@ -4,6 +4,7 @@ name: DNSProxy Linux desktop monitor
   push:
     branches: [codex/linux-gui-poc, master]
     paths:
+      - tools/desktop-gui/**
       - tools/linux-gui/**
       - tests/test_gui_*.py
       - docs/LINUX-GUI.md
@@ -50,8 +51,8 @@ jobs:
         run: |
           /usr/bin/python3 -m venv "$RUNNER_TEMP/gui-lint"
           "$RUNNER_TEMP/gui-lint/bin/pip" install ruff==0.14.4
-          "$RUNNER_TEMP/gui-lint/bin/ruff" format --diff tools/linux-gui tests/test_gui_*.py
-          "$RUNNER_TEMP/gui-lint/bin/ruff" check --select E4,E7,E9,F tools/linux-gui tests/test_gui_*.py
+          "$RUNNER_TEMP/gui-lint/bin/ruff" format --diff tools/desktop-gui tests/test_gui_*.py
+          "$RUNNER_TEMP/gui-lint/bin/ruff" check --select E4,E7,E9,F tools/desktop-gui tests/test_gui_*.py
           git diff --check
       - name: Build the resolver and install the optional desktop package
         run: |
@@ -77,7 +78,7 @@ jobs:
         run: |
           mkdir -p dist
           tar -czf dist/dnsp-linux-gui-poc.tar.gz --exclude=__pycache__ \
-            tools/linux-gui docs/LINUX-GUI.md docs/images/linux-gui-poc-*.png
+            tools/desktop-gui docs/LINUX-GUI.md docs/images/linux-gui-poc-*.png
       - uses: actions/upload-artifact@v6
         if: always()
         with:
