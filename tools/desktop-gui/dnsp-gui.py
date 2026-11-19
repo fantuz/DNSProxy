@@ -183,6 +183,7 @@ def build_application(options):
 
             toolbar = Gtk.Box(spacing=12)
             self.status = self.label("Connecting…", "title-3")
+            self.status.set_wrap(True)
             self.status.set_hexpand(True)
             toolbar.append(self.status)
             self.pause = Gtk.ToggleButton(label="Pause")
@@ -878,7 +879,15 @@ def build_application(options):
             )
             note.set_wrap(True)
             page.append(note)
-            buttons = Gtk.Box(spacing=12)
+            buttons = Gtk.FlowBox(
+                min_children_per_line=1,
+                max_children_per_line=4,
+                column_spacing=8,
+                row_spacing=4,
+                selection_mode=Gtk.SelectionMode.NONE,
+                activate_on_single_click=False,
+                halign=Gtk.Align.START,
+            )
             for title, handler in (
                 ("Resolver options…", self.open_settings),
                 ("Preview command", self.preview_launch),

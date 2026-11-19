@@ -343,6 +343,32 @@ class GuiTests(unittest.TestCase):
         self.pump(0.1)
         self.screenshot("balanced-information-panels.png")
 
+    def test_compact_window_with_stale_status_and_wider_font(self):
+        settings = self.Gtk.Settings.get_default()
+        original_font = settings.get_property("gtk-font-name")
+        self.addCleanup(settings.set_property, "gtk-font-name", original_font)
+        settings.set_property("gtk-font-name", "DejaVu Sans 12")
+        self.window.pause.set_active(True)
+        self.wait_for(lambda: not self.window.busy)
+        self.window.apply(sample(at=time.monotonic()))
+        self.window.apply(replace(sample(at=time.monotonic()), metrics=None))
+        self.assertIn("last values retained", self.window.status.get_text())
+        self.window.set_default_size(800, 680)
+        self.wait_for(lambda: self.window.get_width() <= 810)
+
+        launch = self.window.start_button.get_ancestor(self.Gtk.ScrolledWindow)
+        self.window.notebook.set_current_page(self.window.notebook.page_num(launch))
+        self.pump(0.1)
+        self.assertLessEqual(self.window.get_width(), 810)
+        self.assertEqual(launch.get_hadjustment().get_value(), 0)
+        for control in (self.window.start_button, self.window.stop_button):
+            ok, bounds = control.compute_bounds(launch)
+            self.assertTrue(ok)
+            self.assertGreaterEqual(bounds.get_x(), 0)
+            self.assertLessEqual(
+                bounds.get_x() + bounds.get_width(), launch.get_width()
+            )
+
     def test_quarter_second_sampling_updates_without_a_backlog(self):
         self.window.pause.set_active(True)
         self.wait_for(lambda: not self.window.busy)
