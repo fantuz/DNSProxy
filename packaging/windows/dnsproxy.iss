@@ -68,8 +68,12 @@ var
   ConfigPath, ErrorPath: String;
 
 function SelectedParameter(const Name, Default: String): Boolean;
+var
+  Value: String;
 begin
-  Result := ExpandConstant('{param:' + Name + '|' + Default + '}') = '1';
+  Value := ExpandConstant('{param:' + Name + '|' + Default + '}');
+  if (Value <> '0') and (Value <> '1') then RaiseException('Use 0 or 1 for /' + Name + '.');
+  Result := Value = '1';
 end;
 
 function Flag(Value: Boolean): String;
@@ -192,8 +196,8 @@ begin
     Exit;
   end;
   WriteOptions;
+  Prepared := True;
   Result := RunHelper('Prepare', ExpandConstant('{tmp}\Setup-DNSProxy.ps1'));
-  if Result = '' then Prepared := True;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

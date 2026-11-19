@@ -64,6 +64,9 @@ class InstallerTests(unittest.TestCase):
     def uninstall(self, succeeds=True):
         self.invoke(self.app / 'unins000.exe', succeeds=succeeds)
         if succeeds:
+            deadline = time.monotonic() + 10
+            while (self.app / 'unins000.exe').exists() and time.monotonic() < deadline:
+                time.sleep(.1)
             self.assertIsNone(self.service())
             self.assertFalse((self.app / 'bin/dnsp-modern.exe').exists())
             self.assertFalse(self.state.exists())
@@ -125,6 +128,7 @@ class InstallerTests(unittest.TestCase):
         user.EnumChildWindows.argtypes = [wintypes.HWND, callback_type, wintypes.LPARAM]
         user.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
         user.SendMessageW.restype = wintypes.LPARAM
+        user.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 
         def windows(parent=None):
             found = []
@@ -155,7 +159,8 @@ class InstallerTests(unittest.TestCase):
 
         def click(caption, parent):
             handle = wait_for(lambda entry: entry[1].replace('&', '').startswith(caption), parent)
-            user.SendMessageW(handle, 0x00F5, 0, 0)  # BM_CLICK
+            # Asynchronous: Cancel can open a modal confirmation dialog.
+            user.PostMessageW(handle, 0x00F5, 0, 0)  # BM_CLICK
 
         def screenshot(name):
             path = self.quoted(self.evidence / name)

@@ -51,7 +51,7 @@ function Get-OwnedRecord {
 
 function Read-SetupOptions {
     $values = @{}
-    foreach ($line in Get-Content -LiteralPath $ConfigFile) {
+    foreach ($line in Get-Content -LiteralPath $ConfigFile -Encoding UTF8) {
         $pair = $line -split '=', 2
         if ($pair.Count -ne 2 -or $pair[0] -notin @('Service','Port','Upstream','BootstrapAddress','IPv6','AutoStart','StartNow') -or $values.ContainsKey($pair[0])) {
             throw 'Invalid setup options file.'

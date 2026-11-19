@@ -43,7 +43,7 @@ multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
 
 The optional [Linux desktop monitor](#optional-linux-desktop-monitor) shows
 startup settings, live query activity, latency and daemon statistics. Windows
-provides [console launchers and service controls](docs/WINDOWS.md); a Windows
+provides [console launchers, a setup wizard and service controls](docs/WINDOWS.md); a Windows
 graphical monitor remains a future addition.
 
 [Windows setup guide](docs/WINDOWS.md)
@@ -61,6 +61,10 @@ entire archive and double-click **Start-DNSProxy.cmd**. Keep `dnsp-modern.exe`,
 its DLLs and the certificate bundle together. The native Windows build uses the
 same C resolver as Linux; the setup guide covers service installation,
 Administrator options, DNS adapter configuration and rollback.
+The [standard setup EXE](docs/WINDOWS.md#standard-setup-installer) adds Windows Apps
+and Start Menu entries, with optional configurable Windows service registration.
+Installer availability and CI downloads are described in that guide; existing
+published releases keep their original assets.
 
 **macOS 15+:** choose the **Intel** or **Apple Silicon** archive in the download
 table, extract it into its own folder and run **Start-DNSProxy.command**. Both
@@ -598,7 +602,8 @@ the same C resolver. Both architectures are available from v4.5.0 onward. See th
 Set the next version in `VERSION` and merge to `master` to publish once the
 Linux package matrix, sanitizer job, and native Windows build and tests pass.
 The release requires eight Linux daemon packages, four architecture-independent
-GUI packages, two Windows ZIPs and two macOS archives, all covered by `SHA256SUMS`. See the
+GUI packages, two Windows ZIPs, two tested Windows setup EXEs and two macOS archives,
+all covered by `SHA256SUMS`. See the
 [packaging guide](packaging/README-packaging.md) for installation, local
 builds, and manual release recovery.
 

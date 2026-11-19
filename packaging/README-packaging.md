@@ -83,7 +83,7 @@ do not replace its stub listener or symlink as part of service setup.
 | Ubuntu 24.04 | DEB | amd64 | arm64 |
 | Debian 13 | DEB | amd64 | arm64 |
 | Rocky Linux 9 | RPM | x86_64 | aarch64 |
-| Windows | Portable ZIP | amd64 | arm64 (Windows 11) |
+| Windows | Setup EXE / portable ZIP | amd64 | arm64 (Windows 11) |
 | macOS 15+ | Portable tar.gz | x86_64 (Intel) | arm64 (Apple Silicon) |
 
 The [macOS archives](../docs/MACOS.md) use Apple's system libcurl and include a
@@ -137,7 +137,7 @@ v4.6.0 onward. Successful CI builds also provide package artifacts.
    `master`.
 2. The first successful build for the new version creates the matching
    `vVERSION-modern` tag at the tested commit and publishes a regular GitHub release
-   with eight Linux daemon packages, four optional GUI packages, Windows AMD64/ARM64 ZIPs, two native macOS
+   with eight Linux daemon packages, four optional GUI packages, Windows AMD64/ARM64 ZIPs and setup EXEs, two native macOS
    archives, and `SHA256SUMS`. Publication waits for the native Windows and both
    macOS builds and extracted-package tests, as well as Linux packaging and
    sanitizers. Other commits at the published version
@@ -148,7 +148,7 @@ v4.6.0 onward. Successful CI builds also provide package artifacts.
    highest release tag. The workflow stages a commit that changes only
    `VERSION`. All eight Linux package builds, Windows and both macOS builds/tests,
    and the sanitizer job check out that commit before the workflow tags it and publishes
-   the complete set of 16 packages plus `SHA256SUMS`. Both CPU architectures
+   the complete set of 18 packages plus `SHA256SUMS`. Both CPU architectures
    also install and validate the optional GUI packages. A blank
    field uses the `VERSION` from `master`. Pushing an explicit tag also works
    when it matches the tagged commit's `VERSION`.
@@ -197,6 +197,11 @@ Windows downloads are available from v4.0.3 onward as
 `dnsp-modern-VERSION-windows-arm64-poc.zip` for Windows 11 ARM64; releases through
 v4.4.0 have only the AMD64 ZIP. Both architectures are covered by `SHA256SUMS`.
 See the [Windows guide](../docs/WINDOWS.md) for PowerShell verification and setup.
+The standard setup EXEs add Start Menu/Apps registration and optional service
+configuration. Releases built with this installer change include both matching
+`dnsp-modern-VERSION-windows-ARCH-setup.exe` files; older releases remain unchanged.
+Native install/upgrade/uninstall acceptance gates publication, and aggregate
+checksums cover the same installer bytes tested by that run.
 macOS downloads are available from v4.2.0 onward as
 `dnsp-modern-VERSION-macos-x86_64.tar.gz` and
 `dnsp-modern-VERSION-macos-arm64.tar.gz`, also covered by `SHA256SUMS`.
