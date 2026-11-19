@@ -1,6 +1,8 @@
 """Acceptance checks for the extracted native macOS launcher."""
 import os
 from pathlib import Path
+import platform
+import re
 import signal
 import socket
 import struct
@@ -13,6 +15,20 @@ import unittest
 
 @unittest.skipUnless(sys.platform == 'darwin', 'Native macOS package acceptance')
 class MacOSTests(unittest.TestCase):
+    def test_packaged_architecture_and_deployment_target(self):
+        binary = Path(os.environ['DNSP_TEST_BINARY']).resolve()
+        for name in ('dnsp-modern', 'dnsp-macos'):
+            with self.subTest(executable=name):
+                executable = binary.parent / name
+                architectures = subprocess.check_output(
+                    ['lipo', '-archs', str(executable)], text=True).strip()
+                self.assertEqual(architectures, platform.machine())
+                load_commands = subprocess.check_output(
+                    ['otool', '-l', str(executable)], text=True)
+                minimums = re.findall(r'^\s*minos\s+(\S+)', load_commands, re.M)
+                self.assertEqual(len(minimums), 1, load_commands)
+                self.assertEqual(tuple(int(part) for part in minimums[0].split('.'))[:2], (15, 0))
+
     def test_launcher_from_another_directory_and_clean_shutdown(self):
         binary = Path(os.environ['DNSP_TEST_BINARY']).resolve()
         # A missing question with QDCOUNT=1 produces FORMERR without an upstream request.

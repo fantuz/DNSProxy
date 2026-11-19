@@ -7,8 +7,10 @@ See the [4.10.0 release notes](releases/4.10.0.md).
 
 DNSProxy uses the same C resolver on macOS, Linux and Windows. Native packages
 are built separately for **Intel (x86-64)** and **Apple Silicon (arm64)**, with
-**macOS 15 or newer** as the minimum. Intel and Apple Silicon are both tested on
-macOS 15 in CI. Older macOS versions are not covered by these packages.
+**macOS 15 or newer** as the deployment target. Native CI uses macOS 15 for
+Intel and macOS 26 for Apple Silicon; the latter does not verify every supported
+older macOS version or physical Apple chip. Older macOS versions are not covered
+by these packages.
 
 ## Download and start
 
@@ -42,6 +44,8 @@ TLS and HTTP capabilities depend on the installed macOS libcurl;
 `./dnsp-modern --version` reports them. HTTP/2 is
 tested on both architectures. HTTP/3 is not guaranteed by these packages.
 `BUILD-INFO.txt` records the source commit, architecture and build environment.
+It also records the compiler profile and flags. Each executable contains only
+its advertised native architecture; the build rejects Rosetta-translated shells.
 
 ## Port 53 and system DNS
 
@@ -158,6 +162,21 @@ Install Apple's Command Line Tools (`xcode-select --install`), then run:
 ```sh
 bash scripts/build-macos.sh
 ```
+
+The release build retains `-O2`, explicitly selects the native architecture and
+uses the system linker's dead-code stripping. Independent compiler jobs run in
+batches of two. It does not use `-mcpu=native`, a newer Apple chip's instruction
+set, fast-math or link-time optimization. The resolver is a single C translation
+unit and uses system libcurl, without a separately compiled dependency tree.
+
+The Apple Silicon CI job compares a sequential `-O2` baseline with the release
+profile on the same runner, then tests and uploads the release archive. Its
+`macos-build-arm64.json` artifact records both wall times, binary sizes, compiler
+identity and flags; per-task timing and build logs accompany it. This is one
+baseline/release pair in that order, including packaging and filesystem cache
+effects. It is diagnostic evidence, not a statistical benchmark or a guarantee
+of DNS throughput. Protocol and GUI acceptance checks use the resulting release
+binary.
 
 CI extracts and tests the exact archive on each native architecture. It checks
 system-only dynamic dependencies, IPv4/IPv6 UDP/TCP, wildcard reply addresses,

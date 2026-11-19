@@ -151,8 +151,8 @@ jobs:
           $env:DNSP_GUI_SOURCE = "$pwd/dist/windows-gui-${{ matrix.arch }}/app"
           $privatePython = "$pwd/dist/windows-gui-${{ matrix.arch }}/runtime/bin/python.exe"
           $desktopFailed = $false
-          foreach ($desktopTest in @('tests/test_gui_platforms.py', 'tests/test_gui_process.py', 'tests/test_windows_gui_bundle.py', 'tests/test_gui_bootstrap.py')) {
-            if ($desktopTest -in @('tests/test_gui_platforms.py', 'tests/test_gui_process.py')) {
+          foreach ($desktopTest in @('tests/test_gui_platforms.py', 'tests/test_gui_process.py', 'tests/test_gui_settings.py', 'tests/test_gui_telemetry.py', 'tests/test_windows_gui_bundle.py', 'tests/test_gui_bootstrap.py')) {
+            if ($desktopTest -in @('tests/test_gui_platforms.py', 'tests/test_gui_process.py', 'tests/test_gui_settings.py', 'tests/test_gui_telemetry.py')) {
               & $privatePython -I -B $desktopTest -v
             } else {
               python $desktopTest -v

@@ -83,6 +83,24 @@ role-labelled wins and `dnsp_upstream_hedges_inflight`. Compare percentiles and
 upstream request volume with the default sequential mode before enabling it
 permanently. See [the upstream policy](UPSTREAM_FAILOVER.md).
 
+## Inspect live capacity
+
+| Gauge | Meaning |
+| --- | --- |
+| `dnsp_uptime_seconds` | Monotonic resolver uptime since the listeners were initialized |
+| `dnsp_cache_entries` | Occupied cache slots whose expiry is later than the scrape time |
+| `dnsp_cache_capacity` | Configured cache slot count; zero means disabled |
+| `dnsp_queries_inflight` | Active logical queries, excluding parallel backup attempts |
+| `dnsp_upstream_attempts_inflight` | All active attempts, including parallel backups |
+| `dnsp_queries_capacity` | Maximum shared slots for logical queries and parallel backups |
+| `dnsp_tcp_clients` / `dnsp_tcp_clients_capacity` | Current and maximum accepted TCP client connections |
+
+Compare active attempts with the shared slot capacity when diagnosing overload;
+parallel backups use slots independently of their primary attempt. Cache
+occupancy is a read-only view: scraping does not refresh TTLs or remove expired
+data. The [desktop monitoring tab](DESKTOP-GUI.md#interval-monitoring-and-diagnostics)
+combines these gauges with interval outcomes, policy freshness and TCP errors.
+
 ## Choose a test suite
 
 | Test | Coverage |

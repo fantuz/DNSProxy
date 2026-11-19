@@ -502,6 +502,29 @@ class Collector:
             return snapshot(None, str(error))
 
 
+def same_instance(previous, snapshot):
+    """Check process identity and observable metrics epoch without guessing.
+
+    Traffic-only monitoring has no PID identity: resolver uptime and monotonic
+    counters provide restart evidence. Missing metrics do not prove a restart.
+    """
+    if previous is None or previous.identity != snapshot.identity:
+        return False
+    if previous.metrics is None or snapshot.metrics is None:
+        return True
+    before = previous.metrics.get("dnsp_uptime_seconds")
+    current = snapshot.metrics.get("dnsp_uptime_seconds")
+    if before is not None and current is not None and current < before:
+        return False
+    for key, value in snapshot.metrics.samples.items():
+        name, _labels = key
+        if name.endswith(("_total", "_count", "_sum", "_bucket")):
+            old_value = previous.metrics.samples.get(key)
+            if old_value is not None and value < old_value:
+                return False
+    return True
+
+
 class Rates:
     def __init__(self):
         self.previous = None
@@ -511,7 +534,7 @@ class Rates:
 
     def update(self, snapshot):
         old, self.previous = self.previous, snapshot
-        if not old or old.identity != snapshot.identity:
+        if not same_instance(old, snapshot):
             return None, None, None
         dt = snapshot.at - old.at
         if dt <= 0:
@@ -603,10 +626,12 @@ class LatencyWindow:
     def __init__(self):
         self.history = deque(maxlen=61)
         self.identity = None
+        self.previous = None
 
     def reset(self):
         self.history.clear()
         self.identity = None
+        self.previous = None
 
     def update(self, snapshot):
         if snapshot.metrics is None:
@@ -620,7 +645,13 @@ class LatencyWindow:
             ),
             _histogram(snapshot.metrics, "dnsp_upstream_duration_seconds", ({},)),
         )
-        if self.identity != snapshot.identity:
+        if self.identity != snapshot.identity or (
+            self.previous is not None
+            and (
+                not same_instance(self.previous, snapshot)
+                or snapshot.at <= self.previous.at
+            )
+        ):
             self.reset()
         if self.history:
             for old, new in zip(self.history[-1], current):
@@ -632,6 +663,7 @@ class LatencyWindow:
                     self.reset()
                     break
         self.identity = snapshot.identity
+        self.previous = snapshot
         self.history.append(current)
         if len(self.history) < 2:
             return None, None
@@ -669,30 +701,62 @@ class DemoCollector:
         at = time.monotonic()
         elapsed = at - self.started
         count = 4200 + int(elapsed * 8)
+        completed = 2841 + int(elapsed * 6)
+        failures = 6 + int(elapsed / 30)
+        successful = completed - failures
+        backup_completed = 1 + int(elapsed / 10)
+        connections = 4 + int(elapsed / 60)
         values = {
             'dnsp_queries_total{transport="udp"}': count,
             'dnsp_queries_total{transport="tcp"}': 180 + int(elapsed),
             "dnsp_queries_satisfied_total": count + 174 + int(elapsed),
             "dnsp_cache_hits_total": count // 3,
             "dnsp_cache_misses_total": count * 2 // 3,
-            "dnsp_blocked_queries_total": 124,
+            "dnsp_blocked_queries_total": 124 + int(elapsed / 30),
             "dnsp_blocked_aliases_total": 9,
             "dnsp_queries_inflight": 2,
             "dnsp_tcp_clients": 3,
-            "dnsp_upstream_requests_total": 2841,
-            "dnsp_upstream_success_total": 2835,
-            "dnsp_upstream_failures_total": 6,
-            "dnsp_upstream_timeouts_total": 1,
+            "dnsp_upstream_requests_total": completed + 2,
+            "dnsp_upstream_success_total": successful,
+            "dnsp_upstream_failures_total": failures,
+            "dnsp_upstream_timeouts_total": 1 + int(elapsed / 60),
             "dnsp_upstream_duration_max_seconds": 0.6,
-            "dnsp_upstream_duration_seconds_sum": 64.35,
-            "dnsp_upstream_duration_seconds_count": 2841,
-            'dnsp_upstream_http_responses_total{version="1"}': 0,
-            'dnsp_upstream_http_responses_total{version="2"}': 2835,
+            "dnsp_upstream_duration_seconds_sum": completed * 0.05,
+            "dnsp_upstream_duration_seconds_count": completed,
+            'dnsp_upstream_http_responses_total{version="1"}': 15,
+            'dnsp_upstream_http_responses_total{version="2"}': successful - 15,
             'dnsp_upstream_http_responses_total{version="3"}': 0,
-            "dnsp_upstream_new_connections_total": 4,
-            "dnsp_upstream_reused_requests_total": 2837,
-            'dnsp_upstream_endpoint_requests_total{role="primary"}': 2840,
-            'dnsp_upstream_endpoint_requests_total{role="backup"}': 1,
+            "dnsp_upstream_new_connections_total": connections,
+            "dnsp_upstream_reused_requests_total": successful - connections,
+            'dnsp_upstream_endpoint_requests_total{role="primary"}': completed
+            + 2
+            - backup_completed,
+            'dnsp_upstream_endpoint_requests_total{role="backup"}': backup_completed,
+            'dnsp_upstream_endpoint_replies_total{role="primary"}': successful
+            - backup_completed,
+            'dnsp_upstream_endpoint_replies_total{role="backup"}': backup_completed,
+            'dnsp_upstream_endpoint_failures_total{role="primary"}': failures,
+            'dnsp_upstream_endpoint_failures_total{role="backup"}': 0,
+            'dnsp_upstream_hedge_wins_total{role="primary"}': 19 + int(elapsed / 10),
+            'dnsp_upstream_hedge_wins_total{role="backup"}': 1 + int(elapsed / 30),
+            "dnsp_upstream_hedges_started_total": 20
+            + int(elapsed / 10)
+            + int(elapsed / 30),
+            "dnsp_upstream_hedges_suppressed_total": 2,
+            "dnsp_upstream_hedges_cancelled_total": 19 + int(elapsed / 10),
+            "dnsp_upstream_hedges_inflight": 0,
+            "dnsp_uptime_seconds": 480 + elapsed,
+            "dnsp_cache_entries": 96 + int(elapsed) % 12,
+            "dnsp_cache_capacity": 256,
+            "dnsp_upstream_attempts_inflight": 2,
+            "dnsp_queries_capacity": 128,
+            "dnsp_tcp_clients_capacity": 128,
+            "dnsp_tcp_connections_accepted_total": 42 + int(elapsed / 20),
+            "dnsp_tcp_connections_closed_total": 39 + int(elapsed / 20),
+            'dnsp_tcp_connections_rejected_total{reason="source_limit"}': 0,
+            'dnsp_tcp_connections_rejected_total{reason="capacity"}': 0,
+            "dnsp_tcp_idle_timeouts_total": 2,
+            "dnsp_tcp_io_timeouts_total": 0,
             "dnsp_invalid_queries_total": 0,
             "dnsp_invalid_responses_total": 0,
             "dnsp_overload_total": 0,
@@ -700,8 +764,23 @@ class DemoCollector:
             "dnsp_udp_queries_coalesced_total": 94,
             'dnsp_blocklist_entries{action="deny"}': 100000,
             'dnsp_blocklist_entries{action="allow"}': 12,
+            "dnsp_blocklist_generation": 3,
+            "dnsp_blocklist_memory_bytes": 5400000,
+            "dnsp_blocklist_age_seconds": 90 + elapsed,
+            "dnsp_blocklist_reload_success_total": 3,
             "dnsp_blocklist_reload_failures_total": 0,
         }
+        for phase, observations, duration in (
+            ("queue", completed, 0.001),
+            ("tls", connections, 0.012),
+            ("first_byte", completed, 0.024),
+        ):
+            values[f'dnsp_upstream_phase_duration_seconds_count{{phase="{phase}"}}'] = (
+                observations
+            )
+            values[f'dnsp_upstream_phase_duration_seconds_sum{{phase="{phase}"}}'] = (
+                observations * duration
+            )
         values[
             'dnsp_build_info{version="demo",libcurl="demo",http2="yes",http3="no"}'
         ] = 1
@@ -713,7 +792,7 @@ class DemoCollector:
                 180 + int(elapsed),
                 0.025,
             ),
-            ("dnsp_upstream_duration_seconds", "", 2841 + int(elapsed * 5), 0.05),
+            ("dnsp_upstream_duration_seconds", "", completed, 0.05),
         ):
             for bound in (
                 0.001,

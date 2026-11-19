@@ -89,6 +89,14 @@ CA bundles and executables. **Validate and apply** rejects invalid values withou
 changing the current configuration. Unchanged redacted endpoint values retain
 their original URL rather than overwriting hidden credentials/query parameters.
 
+The editor also exposes the resolver's advanced startup parameters: multiple
+IPv4/IPv6 listeners, multiple blocklists and allowlists, the block response mode
+and reload interval, upstream connection limits, per-source TCP limits, TCP and
+DoH deadlines, and the UDP reply ceiling. Enter one policy file path per line;
+spaces in a path remain part of that argument. Listener addresses can be
+separated by commas or newlines. Values are validated against CLI bounds and
+deadline dependencies before a new process is launched.
+
 Use **Start resolver** in the Launch resolver tab. The default is DNS port 5300
 with loopback metrics on 9090, avoiding a conflict with a service on port 53.
 Linux/macOS ordinary-user launches require ports at least 1024; Windows permits
@@ -116,6 +124,43 @@ Histories and logs are bounded. Paused, unavailable or failed samples create
 gaps; stale views retain their last known values. Closing
 or unmapping the window stops automatic sampling. See the [Linux monitor guide](LINUX-GUI.md)
 for histogram interpretation and metric meanings.
+
+## Interval monitoring and diagnostics
+
+The overview's **Recent interval** panel separates current upstream failure,
+cache-hit and connection-reuse ratios from the lifetime totals below it. The
+**Monitoring** tab provides the following additional readings:
+
+| Area | Indicators |
+| --- | --- |
+| Sample health | Interval state and duration, last good sample age, collection duration and detected resolver resets |
+| Completed attempts | Success, failure and timeout counts and percentages; connection reuse; actual HTTP/1, HTTP/2 and HTTP/3 reply counts |
+| Upstream endpoints | Primary and backup attempts, replies and failures; race wins; started, suppressed and cancelled hedges |
+| Transfer phases | Mean queue, TLS and first-byte durations, calculated from each phase's own observations |
+| Cache and filtering | Interval cache hits/misses, live cache occupancy/capacity, blocked queries and aliases, coalesced UDP queries, policy generation/age/memory and reload results |
+| Capacity and TCP | Active upstream attempts against the shared query-slot limit, TCP clients/capacity, overload rejections, source/capacity rejections and idle/I/O timeouts |
+
+An interval requires two consecutive successful samples. Pause, disconnect,
+collection failure, process changes and observed counter resets require a new
+baseline. When exposed by the resolver, monotonic uptime also detects restarts
+for traffic-only monitoring. A failure retains the last readings with a stale
+indicator and advancing sample age. Unsupported metrics remain unavailable;
+idle intervals have zero counts and no ratio where the denominator is zero.
+
+Success, failure, timeout and reuse percentages use completed upstream attempts
+as their denominator, not newly started requests. Cache hit ratio uses cache
+lookups. Cancelled losing hedges are not failed completed attempts. Active
+attempt capacity includes parallel backup requests because they occupy the
+same bounded pool. Cache occupancy excludes expired entries, even before a
+subsequent query reuses their slots. The newer gauges are absent from older
+resolvers; their remaining traffic metrics can still be monitored.
+
+In **Diagnostics**, **Export monitoring snapshot…** saves a JSON report containing
+aggregate metrics, sample age, interval status, build capabilities and available
+process resource readings. The export includes whether the monitor is paused,
+disconnected or displaying a retained sample. It excludes upstream URLs, startup
+arguments, file paths, query names and resolver output. The log remains a
+separate bounded view.
 
 ## Native validation and packaging
 
