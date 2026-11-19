@@ -297,6 +297,7 @@ typedef struct {
     uint64_t hedges_started,hedges_suppressed,hedges_cancelled,hedge_primary_wins,hedge_backup_wins;
 } Metrics;
 static Metrics metrics;
+static uint64_t resolver_started_ms;
 static Query *active;
 static size_t active_count;
 static CURLM *multi;
@@ -1587,6 +1588,16 @@ static size_t tcp_open_count(void) {
     size_t n=0;for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) n++;
     return n;
 }
+static size_t cache_live_count(uint64_t now) {
+    /* The direct-mapped cache leaves expired bytes in place. Count only entries
+     * that could still be replayed; sampling never mutates or refreshes them. */
+    size_t live=0;
+    for(size_t i=0;answer_cache && i<cache_entries;i++) {
+        const CacheEntry *entry=&answer_cache[i];
+        if(entry->key_len && now>=entry->received_ms && now<entry->expires_ms) live++;
+    }
+    return live;
+}
 static void report_status(uint64_t uptime_ms,const char *bindip,int port,int metrics_port,
                           const char *http_preference,int max_host_connections) {
     fprintf(stderr,"level=info event=stats uptime_ms=%" PRIu64
@@ -1792,7 +1803,26 @@ static void metric_response(MetricClient *c) {
        !append_histogram(body,sizeof(body),&used,"dnsp_upstream_duration_seconds",NULL,&metrics.upstream_latency,false)) {
         close_metric(c);return;
     }
+    uint64_t uptime_now=clock_ms();
     extra=snprintf(body+used,sizeof(body)-used,
+        "# HELP dnsp_uptime_seconds Monotonic seconds since resolver listeners were initialized.\n"
+        "# TYPE dnsp_uptime_seconds gauge\n"
+        "dnsp_uptime_seconds %.3f\n"
+        "# HELP dnsp_cache_entries Live unexpired entries in the direct-mapped answer cache.\n"
+        "# TYPE dnsp_cache_entries gauge\n"
+        "dnsp_cache_entries %zu\n"
+        "# HELP dnsp_cache_capacity Configured answer-cache slots; zero disables caching.\n"
+        "# TYPE dnsp_cache_capacity gauge\n"
+        "dnsp_cache_capacity %zu\n"
+        "# HELP dnsp_queries_capacity Shared active-request slots, including parallel backup attempts.\n"
+        "# TYPE dnsp_queries_capacity gauge\n"
+        "dnsp_queries_capacity %d\n"
+        "# HELP dnsp_upstream_attempts_inflight Active upstream attempts, including parallel backups.\n"
+        "# TYPE dnsp_upstream_attempts_inflight gauge\n"
+        "dnsp_upstream_attempts_inflight %zu\n"
+        "# HELP dnsp_tcp_clients_capacity Maximum simultaneous DNS TCP clients.\n"
+        "# TYPE dnsp_tcp_clients_capacity gauge\n"
+        "dnsp_tcp_clients_capacity %d\n"
         "# HELP dnsp_upstream_duration_max_seconds Longest completed upstream attempt since startup.\n"
         "# TYPE dnsp_upstream_duration_max_seconds gauge\n"
         "dnsp_upstream_duration_max_seconds %.6f\n"
@@ -1800,6 +1830,8 @@ static void metric_response(MetricClient *c) {
         "# TYPE dnsp_client_duration_max_seconds gauge\n"
         "dnsp_client_duration_max_seconds{transport=\"udp\"} %.6f\n"
         "dnsp_client_duration_max_seconds{transport=\"tcp\"} %.6f\n",
+        uptime_now>=resolver_started_ms?(double)(uptime_now-resolver_started_ms)/1000.0:0.0,
+        cache_live_count(policy_now),cache_entries,MAX_ACTIVE,active_count,MAX_CLIENTS,
         metrics.upstream_latency.max,metrics.client_latency[0].max,metrics.client_latency[1].max);
     if(extra<0 || (size_t)extra>=sizeof(body)-used) {close_metric(c);return;}
     used+=(size_t)extra;
@@ -2192,7 +2224,7 @@ static int dnsp_run(int argc,char **argv) {
     }
     const char *http_preference=prefer_h3?"h3":"http/1.1";
     if(!primary.loopback_http && upstream_http_version==CURL_HTTP_VERSION_2TLS) http_preference="h2";
-    uint64_t started_ms=clock_ms();
+    resolver_started_ms=clock_ms();
     for(size_t i=0;i<bind_count;i++) fprintf(stderr,"level=info event=listening address=%s port=%d metrics_port=%d upstream_scheme=%s"
             " http_preference=%s backup=%s libcurl_build=%s libcurl_runtime=%s\n",
             bindips[i],port,metrics_port,primary.loopback_http?"http":"https",http_preference,
@@ -2207,7 +2239,7 @@ static int dnsp_run(int argc,char **argv) {
         if(atomic_load_explicit(&report_requested,memory_order_relaxed)) {
             atomic_store_explicit(&report_requested,false,memory_order_relaxed);
             for(size_t i=0;i<bind_count;i++)
-                report_status(now-started_ms,bindips[i],port,metrics_port,http_preference,max_host_connections);
+                report_status(now-resolver_started_ms,bindips[i],port,metrics_port,http_preference,max_host_connections);
         }
         if(curl_deadline>=0 && (int64_t)now>=curl_deadline) {
             metrics.timer_fires++;
