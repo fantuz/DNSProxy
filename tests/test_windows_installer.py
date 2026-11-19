@@ -292,8 +292,9 @@ class InstallerTests(unittest.TestCase):
             # a user-writable directory or substitute the SCM command.
             directory = Path(temporary)
             (directory / 'sc.exe').write_bytes(b'not an executable')
-            poisoned = {'ProgramFiles': str(directory / 'program'), 'ProgramData': str(directory / 'data'),
-                        'PATH': str(directory) + ';' + self.environment['PATH']}
+            poisoned = {'PROGRAMFILES': str(directory / 'program'), 'PROGRAMDATA': str(directory / 'data'),
+                        'PATH': str(directory) + ';' + self.environment['PATH'],
+                        'PSMODULEPATH': os.environ.get('PSMODULEPATH', '')}
             self.check_automatic_service(poisoned)
             self.assertFalse((directory / 'program').exists())
             self.assertFalse((directory / 'data').exists())

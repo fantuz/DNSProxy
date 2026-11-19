@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 $env:ProgramFiles = [Environment]::GetFolderPath('ProgramFiles')
 $env:ProgramData = [Environment]::GetFolderPath('CommonApplicationData')
 $env:SystemRoot = [Environment]::GetFolderPath('Windows')
-$env:Path = (Join-Path $env:SystemRoot 'System32') + ';' + $env:SystemRoot
+$env:Path = [IO.Path]::Combine($env:SystemRoot, 'System32') + ';' + $env:SystemRoot
 # Setup may be launched from PowerShell 7. Windows PowerShell must load its own
 # built-in management modules, rather than inherit incompatible pwsh assemblies.
 $env:PSModulePath = "$PSHOME\Modules;" + [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
