@@ -70,9 +70,111 @@ HTTP/2 and HTTP/3 capabilities. HTTP/3 remains opt-in with
 
 `Start-DNSProxy.cmd` opens the resolver in a console. `Start-DNSProxy.ps1`
 accepts launch options and can request UAC elevation. Service installation and
-DNS configuration use the PowerShell commands below. These tools currently
-provide no graphical settings or statistics window; the GTK desktop monitor is
+DNS configuration use the PowerShell commands below. The setup wizard below
+provides installation and service settings; it does not include a statistics window. The GTK desktop monitor is
 [available on Linux](LINUX-GUI.md).
+
+## Standard setup installer
+
+The native Windows workflow also builds
+`dnsp-modern-VERSION-windows-amd64-setup.exe` and
+`dnsp-modern-VERSION-windows-arm64-setup.exe`. Choose the setup EXE matching your
+processor, verify it against `SHA256SUMS`, and run it. Setup requests administrator
+elevation and installs into the protected `%ProgramFiles%\DNSProxy` directory.
+It bundles the resolver, native DLLs, CA certificates, licenses and scripts;
+Python, MSYS2 and a separate service wrapper are not required.
+
+**Availability:** successful builds of this installer change provide the EXEs
+inside the existing `dnsp-modern-windows-ARCH-poc` Actions artifacts. Subsequent
+releases built with this packaging include both setup EXEs beside the portable
+ZIPs. Existing releases, including 4.9.0, retain their original assets.
+
+The wizard adds Start Menu shortcuts and a single Windows Apps uninstall entry.
+The **Register DNSProxy as a Windows service** checkbox is initially off. Leave it
+off to use the console launcher, or select it to configure the background server:
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| DNS port | `53` | UDP and TCP listener port |
+| HTTPS upstream URL | `https://cloudflare-dns.com/dns-query` | DoH endpoint, without embedded credentials |
+| Numeric bootstrap IP | `1.1.1.1` | Address of that upstream, avoiding a DNS lookup loop |
+| IPv6 loopback | Enabled | Also listen on `::1`, alongside `127.0.0.1` |
+| Start automatically with Windows | Enabled | Automatic SCM startup; clearing it selects Manual |
+| Start after installation | Enabled | Start now; clearing it leaves the new service stopped |
+
+The service uses the existing native SCM adapter, `NT AUTHORITY\LocalService`,
+restricted program/configuration permissions, crash recovery and rotating logs.
+The resolver remains local only. No firewall exception or adapter DNS change is
+made. A port conflict or invalid upstream/bootstrap setting blocks installation
+before replacing files. Startup still performs its own listener checks; if a
+fresh service fails to start, its registration/state are rolled back and setup
+reports failure. Installed application files can remain for repair or removal.
+
+Service installs show a **Windows Services** shortcut in place of the console
+launcher, avoiding a second instance on the same port. Manage the service through
+that shortcut, `Get-Service DNSProxy`, `Start-Service`
+and `Stop-Service`. Logs are in `%ProgramData%\DNSProxy\logs\service.log`.
+The console shortcut is provided when service registration is not selected.
+The installed reversible DNS helper is
+`%ProgramFiles%\DNSProxy\bin\Set-DNSProxyDns.ps1`. Its automatic adapter integration
+requires an automatic service on port 53 and both loopback families. A custom
+port, Manual startup or IPv4-only choice requires explicit client configuration.
+
+### Upgrade, cancellation and uninstall
+
+Run the new setup EXE in the existing location. The installer verifies ownership
+before stopping an existing setup-managed service. It retains the exact service
+command, startup mode, protected state and logs, and restores its previous
+running/stopped state after replacing files. Existing-service options are retained
+rather than reconfigured by the wizard or silent-install arguments. To change
+those options, restore adapter DNS, uninstall, and install again with the desired
+settings. Portable PowerShell installations are not silently adopted: restore DNS
+and remove them with their original uninstall script first.
+
+Cancelling the wizard before installation changes no service. An interrupted
+upgrade attempts to resume a previously running owned service; durable resume
+state is retained if that recovery fails. After resolving the file/startup error,
+rerun setup or use the installed `Setup-DNSProxy.ps1 -Action Resume` as Administrator.
+Obsolete files listed in the previous bundle's checksum manifest are removed
+only if their contents are unchanged. Unowned/modified files are retained.
+
+Remove the application through Windows Apps or **Uninstall DNSProxy** in the
+Start Menu. Before any service stop/removal, upgrade and uninstall refuse an
+active `dns-state.json` recovery record and show the DNS restore command. Restore
+the managed adapter configuration and retry. Manually changed adapter settings
+also need restoring; the installer cannot infer their previous values. Uninstall
+removes the owned service, installed files and managed service state/logs. Copy
+logs you need before uninstalling. It does not remove unrelated services or data.
+
+### Unattended setup and build evidence
+
+For an elevated deployment with the same wizard defaults, including dual-stack
+loopback, automatic startup and immediate start:
+
+```powershell
+.\dnsp-modern-VERSION-windows-amd64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SERVICE=1
+```
+
+Optional arguments are `/PORT=53`, `/UPSTREAM=https://dns.google/dns-query`,
+`/BOOTSTRAP=8.8.8.8`, `/IPV6=0`, `/AUTOSTART=0` and `/STARTNOW=0`.
+Pass URL and matching bootstrap together. Omitting `/SERVICE=1` installs only
+the application. Silent upgrades preserve an existing service automatically.
+The destination is fixed in protected Program Files; conflicting `/DIR` values
+are rejected. Nonzero setup exit codes indicate failure. Configuration is passed
+through a data file, never interpolated into a PowerShell command.
+
+CI compiles the wizard with pinned, SHA-256-verified Inno Setup 6.6.1. Both native
+architectures run the real setup EXE with MSYS2 removed from PATH. Acceptance
+opens/cancels the wizard and saves screenshots, checks the optional-service
+default, service options, local HTTPS DNS queries, retained configuration and logs
+on reinstall, stopped-service preservation, stale-file cleanup, ownership/port
+conflicts, DNS-state guards and uninstall. Installer logs and screenshots are
+retained in `dnsp-windows-installer-evidence-ARCH` for 14 days. Publication includes
+the same tested installer bytes and requires both architectures to pass.
+
+Setup EXEs, resolver binaries and PowerShell scripts are currently unsigned,
+as are the portable bundles. Authenticode signing is a separate step; the
+installer does not claim a verified publisher.
 
 ## Administrator option and port conflicts
 
@@ -225,8 +327,8 @@ discovery with both valid and invalid TLS hostnames. The required
 **DNSProxy PR checks** status includes Windows when applicable.
 The Linux packages and tests also validate changes to the shared core.
 
-Both architecture bundles are unsigned portable Windows builds, without an
-MSI/MSIX installer. CI executes the resolver, Python protocol fixtures, platform
+Both architecture bundles are unsigned native Windows builds, offered as portable
+ZIPs and standard setup EXEs; no MSI/MSIX package is produced. CI executes the resolver, Python protocol fixtures, platform
 probes, and service acceptance on Windows Server 2022 AMD64 and Windows 11 ARM64.
 It also verifies the extracted bundle's checksums and PE architecture.
 On the ARM64 runner, the Python test driver uses x64 emulation because the QUIC
@@ -247,11 +349,11 @@ loopback aliases such as `127.0.0.2` are not supported for wildcard replies via
 `IP_PKTINFO`. CI tests source preservation using `127.0.0.1` and an actual
 adapter address (`DNSP_TEST_SECOND_ADDRESS`), without changing adapter settings.
 
-Next decisions: signed installer and broader desktop acceptance. New releases
-include both Windows ZIPs alongside eight Linux daemon packages, four optional
+Next decisions: Authenticode signing and broader desktop acceptance. New releases
+include both Windows ZIPs and both tested setup EXEs alongside eight Linux daemon packages, four optional
 Linux GUI packages (from v4.6.0) and two native macOS archives. Publication waits
 for native Windows/macOS builds, portable bundle tests, Linux packages and
-sanitizers; all sixteen packages are included in the release's `SHA256SUMS`.
+sanitizers; all eighteen packages are included in the release's `SHA256SUMS`.
 The platform coverage and unsigned-build limitations above apply to these
 regular releases.
 

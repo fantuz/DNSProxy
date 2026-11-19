@@ -53,6 +53,9 @@ fails the workflow. A five-minute per-suite limit terminates its process tree.
 Port-53 launchers, DNS configuration/rollback and SCM acceptance remain serial
 after the groups. Their recovery delays and assertions are unchanged. The
 workflow still extracts the actual ZIP and removes MSYS2 from the test PATH.
+The same job then compiles and tests a setup EXE from that native bundle. Installer
+acceptance remains serial because it owns the fixed DNSProxy SCM service and
+Program Files directory. It does not repeat compilation of the C resolver.
 
 The `dnsp-windows-test-logs-*` artifacts contain group output and `timings.json`;
 the job summary lists elapsed times and failures. `--workers 1` gives a serial

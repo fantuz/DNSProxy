@@ -1,12 +1,19 @@
 #Requires -Version 5.1
 #Requires -RunAsAdministrator
 [CmdletBinding()]
-param([ValidatePattern('^[A-Za-z0-9_-]{1,64}$')][string]$ServiceName = 'DNSProxy')
+param(
+    [ValidatePattern('^[A-Za-z0-9_-]{1,64}$')][string]$ServiceName = 'DNSProxy',
+    [switch]$KeepProgramFiles
+)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'ServiceFiles.ps1')
 $program = Join-Path $env:ProgramFiles $ServiceName
 $state = Join-Path $env:ProgramData $ServiceName
 $record = Get-Content -LiteralPath (Join-Path $state 'installation.json') -Raw | ConvertFrom-Json
+if ($record.ManagedBy -eq 'InnoSetup') {
+    if (-not $KeepProgramFiles -or $ServiceName -ne 'DNSProxy') { throw 'Remove this installation through Windows Apps or its setup uninstaller.' }
+    $program = Join-Path $program 'bin'
+} elseif ($KeepProgramFiles) { throw 'Keeping program files is reserved for the setup uninstaller.' }
 $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
 if ($record.SchemaVersion -ne 1 -or $record.ServiceName -ne $ServiceName -or
     $record.BinaryPath -ne (Join-Path $program 'dnsp-modern.exe') -or
@@ -24,9 +31,11 @@ if ($service) {
     if ($LASTEXITCODE) { throw "Service deletion failed: $LASTEXITCODE" }
 }
 # Files may still be held briefly while SCM releases the stopped process.
-for ($attempt=0; $attempt -lt 20; $attempt++) {
-    try { Remove-ServiceDirectory $program; break }
-    catch { if ($attempt -eq 19) { throw }; Start-Sleep -Milliseconds 100 }
+if (-not $KeepProgramFiles) {
+    for ($attempt=0; $attempt -lt 20; $attempt++) {
+        try { Remove-ServiceDirectory $program; break }
+        catch { if ($attempt -eq 19) { throw }; Start-Sleep -Milliseconds 100 }
+    }
 }
 # Do not follow reparse points planted in the service-writable log directory.
 Remove-ServiceDirectory $state
