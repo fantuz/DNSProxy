@@ -133,6 +133,8 @@ paths unavailable. Tests check architecture, manifests, licenses/sources,
 private-DLL loading, rejection of replacement while the GUI is running,
 stale-file removal, retained user data, component opt-out and uninstall. Publication requires both
 desktop installer jobs to pass and publishes their exact tested bytes.
+The suite also launches the installed Start Menu shortcut and exercises owned
+process controls through the private GUI interpreter without an initial console.
 
 Mac tests use the GUI source and launcher extracted from the actual release
 archive, on both Intel and Apple Silicon. The functional CI matrix does not cover

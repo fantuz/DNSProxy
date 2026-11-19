@@ -14,10 +14,13 @@ import os
 from pathlib import Path, PurePosixPath
 import runpy
 import shutil
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
 import time
+import traceback
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -138,7 +141,7 @@ def verify_shortcut(app, environment):
         "$path=Join-Path $folder 'DNSProxy desktop.lnk'; "
         "if (-not (Test-Path -LiteralPath $path)) { throw 'Missing desktop shortcut' }; "
         "$link=(New-Object -ComObject WScript.Shell).CreateShortcut($path); "
-        "@{Target=$link.TargetPath; Arguments=$link.Arguments; WorkingDirectory=$link.WorkingDirectory} "
+        "@{Path=$path; Target=$link.TargetPath; Arguments=$link.Arguments; WorkingDirectory=$link.WorkingDirectory} "
         "| ConvertTo-Json"
     )
     result = json.loads(powershell(script, environment).stdout)
@@ -150,6 +153,236 @@ def verify_shortcut(app, environment):
     assert str(app / "gui/app/gui-bootstrap.py") in result["Arguments"]
     assert Path(result["WorkingDirectory"]).resolve() == (app / "gui").resolve()
     return result
+
+
+SHORTCUT_SMOKE = r"""
+import atexit
+import ctypes
+from ctypes import wintypes as w
+import json
+from pathlib import Path
+import sys
+import time
+
+class Execute(ctypes.Structure):
+    _fields_ = [
+        ('cbSize', w.DWORD), ('fMask', w.ULONG), ('hwnd', w.HWND),
+        ('lpVerb', w.LPCWSTR), ('lpFile', w.LPCWSTR),
+        ('lpParameters', w.LPCWSTR), ('lpDirectory', w.LPCWSTR),
+        ('nShow', ctypes.c_int), ('hInstApp', w.HINSTANCE),
+        ('lpIDList', w.LPVOID), ('lpClass', w.LPCWSTR),
+        ('hkeyClass', w.HKEY), ('dwHotKey', w.DWORD),
+        ('hIcon', w.HANDLE), ('hProcess', w.HANDLE),
+    ]
+
+shell = ctypes.WinDLL('shell32', use_last_error=True)
+kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+user = ctypes.WinDLL('user32', use_last_error=True)
+ole = ctypes.WinDLL('ole32', use_last_error=True)
+ole.CoInitializeEx.argtypes = [w.LPVOID, w.DWORD]
+ole.CoInitializeEx.restype = w.LONG
+ole.CoUninitialize.argtypes = []
+ole.CoUninitialize.restype = None
+assert ole.CoInitializeEx(None, 2 | 4) in (0, 1), 'Shortcut shell COM initialization failed'
+atexit.register(ole.CoUninitialize)
+callback = ctypes.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
+shell.ShellExecuteExW.argtypes = [ctypes.POINTER(Execute)]
+shell.ShellExecuteExW.restype = w.BOOL
+kernel.GetProcessId.argtypes = [w.HANDLE]
+kernel.GetProcessId.restype = w.DWORD
+kernel.QueryFullProcessImageNameW.argtypes = [w.HANDLE, w.DWORD, w.LPWSTR, ctypes.POINTER(w.DWORD)]
+kernel.QueryFullProcessImageNameW.restype = w.BOOL
+kernel.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
+kernel.WaitForSingleObject.restype = w.DWORD
+kernel.GetExitCodeProcess.argtypes = [w.HANDLE, ctypes.POINTER(w.DWORD)]
+kernel.GetExitCodeProcess.restype = w.BOOL
+kernel.TerminateProcess.argtypes = [w.HANDLE, w.UINT]
+kernel.TerminateProcess.restype = w.BOOL
+kernel.CloseHandle.argtypes = [w.HANDLE]
+kernel.CloseHandle.restype = w.BOOL
+user.EnumWindows.argtypes = [callback, w.LPARAM]
+user.EnumWindows.restype = w.BOOL
+user.GetWindowThreadProcessId.argtypes = [w.HWND, ctypes.POINTER(w.DWORD)]
+user.GetWindowThreadProcessId.restype = w.DWORD
+user.IsWindowVisible.argtypes = [w.HWND]
+user.IsWindowVisible.restype = w.BOOL
+for method in ('GetWindowTextW', 'GetClassNameW'):
+    getattr(user, method).argtypes = [w.HWND, w.LPWSTR, ctypes.c_int]
+    getattr(user, method).restype = ctypes.c_int
+user.PostMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
+user.PostMessageW.restype = w.BOOL
+user.SendMessageTimeoutW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM, w.UINT, w.UINT, ctypes.POINTER(ctypes.c_size_t)]
+user.SendMessageTimeoutW.restype = w.LPARAM
+
+request = Execute()
+request.cbSize = ctypes.sizeof(request)
+request.fMask = 0x40 | 0x100 | 0x400  # Process handle, synchronous handoff, no shell error UI.
+request.lpVerb = 'open'
+request.lpFile = sys.argv[1]
+request.nShow = 1
+if not shell.ShellExecuteExW(ctypes.byref(request)):
+    raise ctypes.WinError(ctypes.get_last_error())
+assert request.hProcess, 'Shortcut did not return its target process handle'
+pid = 0
+
+def windows():
+    found = []
+    if not pid:
+        return found
+    @callback
+    def visit(handle, _data):
+        owner = w.DWORD()
+        user.GetWindowThreadProcessId(handle, ctypes.byref(owner))
+        if owner.value == pid and user.IsWindowVisible(handle):
+            title, kind = ctypes.create_unicode_buffer(4096), ctypes.create_unicode_buffer(256)
+            user.GetWindowTextW(handle, title, len(title))
+            user.GetClassNameW(handle, kind, len(kind))
+            found.append({'handle':handle,'title':title.value,'class':kind.value})
+        return True
+    assert user.EnumWindows(visit, 0)
+    return found
+
+evidence = {'shortcut':sys.argv[1], 'passed':False}
+try:
+    pid = kernel.GetProcessId(request.hProcess)
+    assert pid, 'Shortcut returned no target PID'
+    evidence['pid'] = pid
+    image, length = ctypes.create_unicode_buffer(32768), w.DWORD(32768)
+    assert kernel.QueryFullProcessImageNameW(request.hProcess, 0, image, ctypes.byref(length))
+    assert Path(image.value).resolve() == Path(sys.argv[2]).resolve(), image.value
+    evidence['image'] = image.value
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        assert kernel.WaitForSingleObject(request.hProcess, 0) == 258, 'Shortcut GUI exited before showing its window'
+        visible = windows()
+        matching = [item for item in visible if item['title'] == 'DNSProxy · Desktop monitor']
+        if matching:
+            assert len(matching) == 1, matching
+            window = matching[0]
+            result = ctypes.c_size_t()
+            assert user.SendMessageTimeoutW(window['handle'], 0, 0, 0, 2, 2000, ctypes.byref(result)), 'Shortcut window stopped responding'
+            evidence['window'] = window
+            assert user.PostMessageW(window['handle'], 0x10, 0, 0)  # WM_CLOSE.
+            assert kernel.WaitForSingleObject(request.hProcess, 15000) == 0, 'Shortcut window did not close cleanly'
+            exit_code = w.DWORD()
+            assert kernel.GetExitCodeProcess(request.hProcess, ctypes.byref(exit_code))
+            assert exit_code.value == 0, exit_code.value
+            evidence['exit_code'] = exit_code.value
+            evidence['passed'] = True
+            break
+        time.sleep(.1)
+    assert evidence['passed'], 'Shortcut did not show its expected GTK window: ' + repr(windows())
+finally:
+    Path(sys.argv[3]).write_text(json.dumps(evidence, indent=2)+'\n', encoding='utf-8')
+    if kernel.WaitForSingleObject(request.hProcess, 0) == 258:
+        for window in windows():
+            user.PostMessageW(window['handle'], 0x10, 0, 0)
+        if kernel.WaitForSingleObject(request.hProcess, 5000) == 258:
+            kernel.TerminateProcess(request.hProcess, 1)
+            kernel.WaitForSingleObject(request.hProcess, 5000)
+    kernel.CloseHandle(request.hProcess)
+"""
+
+
+def exercise_shortcut(gui, app, shortcut, state, artifacts, environment):
+    """Open the shipping .lnk and close only its actual native GTK window."""
+    fixtures = runpy.run_path(str(ROOT / "tests/test_modern.py"))
+    port, _ = fixtures["unused_ports"]()
+    blocklist = state / "shortcut-fixture-blocklist.txt"
+    blocklist.write_text("blocked.example\n", encoding="utf-8")
+    question = struct.pack("!HHHHHH", 0x1267, 0x0100, 1, 0, 0, 0) + (
+        b"\x07blocked\x07example\x00\x00\x01\x00\x01"
+    )
+
+    def query():
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+            client.settimeout(1)
+            client.sendto(question, ("127.0.0.1", port))
+            answer = client.recv(4096)
+        assert answer[:2] == question[:2] and answer[3] & 15 == 5
+
+    with (artifacts / "shortcut-external-resolver.txt").open("wb") as log:
+        external = subprocess.Popen(
+            [
+                str(app / "bin/dnsp-modern.exe"),
+                "-l",
+                "127.0.0.1",
+                "-p",
+                str(port),
+                "--blocklist",
+                str(blocklist),
+                "--blocklist-reload-ms",
+                "0",
+            ],
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=log,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        try:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and external.poll() is None:
+                try:
+                    query()
+                    break
+                except (OSError, AssertionError):
+                    time.sleep(0.1)
+            else:
+                raise AssertionError("Independent shortcut fixture did not start")
+            report = artifacts / "shortcut-startup.json"
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    "-c",
+                    SHORTCUT_SMOKE,
+                    shortcut["Path"],
+                    str(gui / "runtime/bin/pythonw.exe"),
+                    str(report),
+                ],
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            timed_out = False
+            try:
+                stdout, stderr = process.communicate(timeout=65)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                subprocess.run(
+                    [
+                        str(Path(os.environ["SystemRoot"]) / "System32/taskkill.exe"),
+                        "/PID",
+                        str(process.pid),
+                        "/T",
+                        "/F",
+                    ],
+                    capture_output=True,
+                    timeout=20,
+                )
+                stdout, stderr = process.communicate(timeout=20)
+            (artifacts / "shortcut-stdout.txt").write_text(stdout, encoding="utf-8")
+            (artifacts / "shortcut-stderr.txt").write_text(stderr, encoding="utf-8")
+            assert not timed_out and process.returncode == 0, stdout + stderr
+            evidence = json.loads(report.read_text(encoding="utf-8"))
+            assert evidence["passed"]
+            assert external.poll() is None, (
+                "Closing the shortcut stopped another resolver"
+            )
+            query()
+            evidence["unrelated_resolver_survived"] = True
+            return evidence
+        finally:
+            if external.poll() is None:
+                external.terminate()
+            external.wait(timeout=10)
 
 
 @contextmanager
@@ -310,6 +543,75 @@ def exercise_native_gui(gui, app, artifacts, name, environment):
     return result
 
 
+def exercise_no_console_controls(gui, app, artifacts, environment):
+    """Run real owned start/stop/window-close with pythonw and no console."""
+    destination = artifacts / "native-no-console-controls"
+    destination.mkdir(exist_ok=True)
+    stdout_path, stderr_path = (
+        destination / "stdout.txt",
+        destination / "stderr.txt",
+    )
+    environment = dict(environment)
+    environment.update(
+        DNSP_GUI_TEST_NO_CONSOLE="1",
+        DNSP_GUI_TEST_STDOUT=str(stdout_path),
+        DNSP_GUI_TEST_STDERR=str(stderr_path),
+    )
+    harness = ROOT / "tests/test_gui_native.py"
+    wrapper = (
+        "import ctypes,json,os,runpy,sys; "
+        "from ctypes import wintypes as w; "
+        "sys.stdout=open(os.environ['DNSP_GUI_TEST_STDOUT'],'a',encoding='utf-8',buffering=1); "
+        "sys.stderr=open(os.environ['DNSP_GUI_TEST_STDERR'],'a',encoding='utf-8',buffering=1); "
+        "kernel=ctypes.WinDLL('kernel32',use_last_error=True); "
+        "kernel.GetConsoleProcessList.argtypes=[ctypes.POINTER(w.DWORD),w.DWORD]; "
+        "kernel.GetConsoleProcessList.restype=w.DWORD; "
+        "assert kernel.GetConsoleProcessList((w.DWORD*1)(),1)==0,'pythonw unexpectedly inherited a console'; "
+        f"sys.argv={[str(harness), '--binary', str(app / 'bin/dnsp-modern.exe'), '--artifacts', str(destination), '--scenario', 'controls']!r}; "
+        f"runpy.run_path({str(harness)!r},run_name='__main__'); "
+        "assert kernel.GetConsoleProcessList((w.DWORD*1)(),1)>0,'OwnedResolver did not allocate its private console'; "
+        "sys.stdout.flush(); sys.stderr.flush()"
+    )
+    with stdout_path.open("wb") as stdout_log, stderr_path.open("wb") as stderr_log:
+        process = subprocess.Popen(
+            [str(gui / "runtime/bin/pythonw.exe"), "-I", "-B", "-c", wrapper],
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout_log,
+            stderr=stderr_log,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        timed_out = False
+        try:
+            process.wait(timeout=240)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            subprocess.run(
+                [
+                    str(Path(os.environ["SystemRoot"]) / "System32/taskkill.exe"),
+                    "/PID",
+                    str(process.pid),
+                    "/T",
+                    "/F",
+                ],
+                capture_output=True,
+                timeout=20,
+            )
+            process.wait(timeout=20)
+    assert not timed_out and process.returncode == 0, stdout_path.read_text(
+        encoding="utf-8", errors="replace"
+    ) + stderr_path.read_text(encoding="utf-8", errors="replace")
+    result = json.loads(
+        (destination / "results-controls.json").read_text(encoding="utf-8")
+    )
+    assert result["passed"] and result["platform"] == "win32", result
+    assert result["initial_console"]["attached"] is False, result
+    assert result["console_before_owned_start"]["attached"] is False, result
+    assert result["console_after_owned_start"]["attached"] is True, result
+    assert result["console_after_owned_start"]["visible"] is False, result
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -407,8 +709,64 @@ def main():
                 evidence["runtime"] = probe_private_runtime(
                     gui, user_state, isolated, args.msys_prefix
                 )
-                evidence["native_initial"] = exercise_native_gui(
-                    gui, app, artifacts, "native-initial", isolated
+                initial_probes = (
+                    (
+                        "native_initial",
+                        exercise_native_gui,
+                        (gui, app, artifacts, "native-initial", isolated),
+                    ),
+                    (
+                        "shortcut_startup",
+                        exercise_shortcut,
+                        (
+                            gui,
+                            app,
+                            evidence["shortcut"],
+                            user_state,
+                            artifacts,
+                            isolated,
+                        ),
+                    ),
+                    (
+                        "native_no_console_controls",
+                        exercise_no_console_controls,
+                        (gui, app, artifacts, isolated),
+                    ),
+                )
+                probe_failures = {}
+                for name, probe, arguments in initial_probes:
+                    try:
+                        evidence[name] = probe(*arguments)
+                        print(name + ": passed", flush=True)
+                    except Exception:
+                        detail = traceback.format_exc()
+                        probe_failures[name] = detail
+                        evidence[name] = {"passed": False, "error": detail}
+                        print(name + ": failed", flush=True)
+                (artifacts / "initial-probes.json").write_text(
+                    json.dumps(
+                        {
+                            "passed": not probe_failures,
+                            "probes": {
+                                name: evidence[name] for name, _, _ in initial_probes
+                            },
+                        },
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                if probe_failures:
+                    raise AssertionError(
+                        "Initial desktop probes failed:\n"
+                        + "\n".join(
+                            name + ":\n" + detail
+                            for name, detail in probe_failures.items()
+                        )
+                    )
+                assert (
+                    retained.read_text(encoding="utf-8")
+                    == "Keep user preferences and exports."
                 )
                 validate_inventory(gui, version, source_sha, args.architecture)
                 obsolete_app = gui / "app/obsolete-ci-fixture.py"

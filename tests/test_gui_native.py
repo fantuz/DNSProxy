@@ -39,6 +39,25 @@ def invalid_port_error():
     return f"DNS port for a user process must be {minimum}..65535"
 
 
+def windows_console_state():
+    import ctypes
+    from ctypes import wintypes as w
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetConsoleProcessList.argtypes = [ctypes.POINTER(w.DWORD), w.DWORD]
+    kernel.GetConsoleProcessList.restype = w.DWORD
+    kernel.GetConsoleWindow.argtypes = []
+    kernel.GetConsoleWindow.restype = w.HWND
+    user = ctypes.WinDLL("user32", use_last_error=True)
+    user.IsWindowVisible.argtypes = [w.HWND]
+    user.IsWindowVisible.restype = w.BOOL
+    window = kernel.GetConsoleWindow()
+    return {
+        "attached": bool(kernel.GetConsoleProcessList((w.DWORD * 1)(), 1)),
+        "visible": bool(window and user.IsWindowVisible(window)),
+    }
+
+
 def runtime_from_environment():
     """Restore private DLL directories in every isolated Windows test process."""
     global RUNTIME_NAMESPACE
@@ -235,27 +254,38 @@ def receive(connection, length):
 
 
 @contextmanager
-def resolver(binary, blocklist, fixtures):
+def resolver(binary, blocklist, fixtures, *, no_console=False):
     port, metric = fixtures.unused_ports()
     with tempfile.TemporaryFile() as log:
-        process = fixtures.spawn_proxy(
-            [
-                str(binary),
-                "-l",
-                "127.0.0.1",
-                "-p",
-                str(port),
-                "-m",
-                str(metric),
-                "--bootstrap-address",
-                "1.1.1.1",
-                "--blocklist",
-                str(blocklist),
-                "--blocklist-reload-ms",
-                "0",
-            ],
-            stderr=log,
-        )
+        command = [
+            str(binary),
+            "-l",
+            "127.0.0.1",
+            "-p",
+            str(port),
+            "-m",
+            str(metric),
+            "--bootstrap-address",
+            "1.1.1.1",
+            "--blocklist",
+            str(blocklist),
+            "--blocklist-reload-ms",
+            "0",
+        ]
+        if no_console:
+            assert sys.platform == "win32"
+            # spawn_proxy allocates a console for its CTRL_BREAK fixtures.
+            # Keep this independent fixture detached so only the production
+            # GUI-owned Start path can allocate the pythonw host's console.
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=log,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        else:
+            process = fixtures.spawn_proxy(command, stderr=log)
         try:
             deadline = time.monotonic() + 15
             while process.poll() is None and time.monotonic() < deadline:
@@ -273,9 +303,12 @@ def resolver(binary, blocklist, fixtures):
             yield process, port, metric
         finally:
             if process.poll() is None:
-                if sys.platform == "win32":
+                if sys.platform == "win32" and not no_console:
                     process.send_signal(signal.CTRL_BREAK_EVENT)
                 else:
+                    # The detached Windows fixture has no console to receive
+                    # CTRL_BREAK. Terminate only this test-created fixture;
+                    # GUI-owned children must still stop gracefully below.
                     process.terminate()
             try:
                 process.wait(timeout=5)
@@ -547,10 +580,18 @@ class NativeScenario:
                 self.check("closing a monitor leaves its external resolver running")
 
     def controls(self):
+        no_console = os.environ.get("DNSP_GUI_TEST_NO_CONSOLE") == "1"
+        if no_console:
+            assert sys.platform == "win32"
+            initial_console = windows_console_state()
+            assert not initial_console["attached"], initial_console
+            self.evidence["initial_console"] = initial_console
         with tempfile.TemporaryDirectory(prefix="dnsp GUI owned paths ") as directory:
             blocklist = Path(directory) / "blocked domains.txt"
             blocklist.write_text("blocked.example\n")
-            with resolver(self.options.binary, blocklist, self.fixtures) as (
+            with resolver(
+                self.options.binary, blocklist, self.fixtures, no_console=no_console
+            ) as (
                 external,
                 external_port,
                 _,
@@ -590,7 +631,17 @@ class NativeScenario:
                 assert not editor.get_visible()
                 assert window.launch_config.blocklist == str(blocklist)
                 window.pause.set_active(False)
+                if no_console:
+                    before_start = windows_console_state()
+                    assert not before_start["attached"], before_start
+                    self.evidence["console_before_owned_start"] = before_start
                 window.start_resolver()
+                if no_console:
+                    owned_console = windows_console_state()
+                    assert owned_console["attached"], owned_console
+                    assert not owned_console["visible"], owned_console
+                    self.evidence["console_after_owned_start"] = owned_console
+                    self.check("pythonw owned start allocates a hidden private console")
                 child = window.owned_process
                 assert child is not None and child.pid > 0
                 wait_for(
@@ -761,6 +812,10 @@ def main():
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument("--scenario", choices=("all", *SCENARIOS), default="all")
     options = parser.parse_args()
+    if os.environ.get("DNSP_GUI_TEST_NO_CONSOLE") == "1" and (
+        sys.platform != "win32" or options.scenario != "controls"
+    ):
+        parser.error("No-console acceptance requires Windows and --scenario controls")
     options.binary = options.binary.resolve()
     options.artifacts = options.artifacts.resolve()
     if not options.binary.is_file():
