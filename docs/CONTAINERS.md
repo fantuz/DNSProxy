@@ -13,9 +13,10 @@ the Debian 13 libcurl also supports optional HTTP/3 with HTTP/2 fallback.
 
 ## Run a release image
 
-Release images start with **4.7.0**. After the first publication, the package
-owner must [set GHCR visibility to Public](https://github.com/users/fantuz/packages/container/dnsproxy/settings)
-once to enable anonymous pulls. Then run the pinned release:
+Release images start with **4.7.0**. Anonymous pulls require public package
+visibility, configurable by the owner in
+[GHCR package settings](https://github.com/users/fantuz/packages/container/dnsproxy/settings).
+Run the pinned release:
 
 ```sh
 docker run -d --name dnsproxy --read-only --cap-drop=ALL \
@@ -207,8 +208,7 @@ using `GITHUB_TOKEN` and verifies the registry digest. No registry credentials
 are needed for PR builds. Staging `build-RUN-ATTEMPT` tags record uploads; stable
 version tags cannot be replaced and aliases cannot roll back on an older rerun.
 
-**One-time owner setting:** GitHub initially creates new container packages as
-private. After the first publication, open the
+**Package visibility:** For a private container package, open the
 [DNSProxy package settings](https://github.com/users/fantuz/packages/container/dnsproxy/settings),
 set visibility to **Public**, and confirm the linked repository is
 `fantuz/DNSProxy`. Allow that repository's Actions to write the package if it
@@ -218,5 +218,5 @@ a machine without registry credentials before announcing it.
 Release builds refresh apt packages without the PR build cache. The Debian base
 index is pinned in `Dockerfile`; refresh that digest and publish a new patch
 release for future base/security updates. Exact version tags remain immutable.
-OCI source labels and checked digests are included; cryptographic signatures,
-SBOMs and build provenance attestations are follow-ups, not currently advertised.
+OCI source labels and checked digests are included. The publication workflow
+does not produce cryptographic signatures, SBOMs or build provenance attestations.

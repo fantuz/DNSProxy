@@ -1,14 +1,15 @@
 # Native Windows builds
 
-This build runs `dnsp-modern.c` directly on Windows x86-64 and ARM64. DNS parsing, cache,
+The native build runs `dnsp-modern.c` on Windows x86-64 and ARM64. DNS parsing, cache,
 failover, EDNS, limits, metrics, and libcurl connection management are shared
 with Linux. There is no second resolver tree, Cygwin runtime, WSL requirement,
 or protocol rewrite. `dnsp-platform.h` adapts the OS interfaces.
 
 ## Download and start
 
-From v4.0.3 onward, open [GitHub Releases](https://github.com/fantuz/DNSProxy/releases)
-and choose the ZIP for your **Settings → System → About → System type**:
+Windows AMD64 portable ZIPs are published from v4.0.3 onward. Open
+[GitHub Releases](https://github.com/fantuz/DNSProxy/releases) and select the ZIP
+matching **Settings → System → About → System type**:
 
 | System type | Download |
 | --- | --- |
@@ -24,7 +25,7 @@ Download **SHA256SUMS** from the same release as the ZIP. Check the ZIP's hash a
 Get-FileHash .\dnsp-modern-4.0.3-windows-amd64-poc.zip -Algorithm SHA256
 ```
 
-For an unreleased build, open a successful **DNSProxy modern - test and package**
+For a source snapshot, open a successful **DNSProxy modern - test and package**
 Actions run and download **dnsp-modern-windows-amd64-poc** or
 **dnsp-modern-windows-arm64-poc**, matching your processor. Each artifact
 contains the portable ZIP and its `.zip.sha256` checksum file. Release v4.0.2
@@ -35,8 +36,8 @@ Extract the portable ZIP into a folder, keeping the EXE, DLLs and CA bundle
 together. MSYS2, Python, and development tools are only build/test dependencies.
 `BUILD-INFO.txt` inside the ZIP identifies the version and exact source commit.
 
-Double-click **Start-DNSProxy.cmd**. It listens on **127.0.0.1:53**, using UDP
-and TCP, and forwards to Cloudflare over HTTPS. It enables 256 cache slots and
+Double-click **Start-DNSProxy.cmd**. It listens on **127.0.0.1:53** and **[::1]:53**,
+using UDP and TCP, and forwards to Cloudflare over HTTPS. It enables 256 cache slots and
 loopback metrics at <http://127.0.0.1:9090/metrics>. Keep the console open; Ctrl+C
 stops the proxy. This does not change Windows DNS settings.
 
@@ -71,23 +72,27 @@ HTTP/2 and HTTP/3 capabilities. HTTP/3 remains opt-in with
 `Start-DNSProxy.cmd` opens the resolver in a console. `Start-DNSProxy.ps1`
 accepts launch options and can request UAC elevation. Service installation and
 DNS configuration use the PowerShell commands below. The setup wizard below
-provides installation and service settings; it does not include a statistics window. The GTK desktop monitor is
-[available on Linux](LINUX-GUI.md).
+provides installation and service settings. The optional
+[bundled desktop interface](DESKTOP-GUI.md) provides live traffic/latency charts,
+grouped startup options and diagnostics on both Windows architectures.
 
 ## Standard setup installer
 
-The native Windows workflow also builds
+The resolver/service setup filenames are
 `dnsp-modern-VERSION-windows-amd64-setup.exe` and
 `dnsp-modern-VERSION-windows-arm64-setup.exe`. Choose the setup EXE matching your
-processor, verify it against `SHA256SUMS`, and run it. Setup requests administrator
+processor and verify its checksum before running it. CI artifacts include an
+`.exe.sha256` sidecar; release packages use `SHA256SUMS`. Setup requests administrator
 elevation and installs into the protected `%ProgramFiles%\DNSProxy` directory.
 It bundles the resolver, native DLLs, CA certificates, licenses and scripts;
 Python, MSYS2 and a separate service wrapper are not required.
 
-**Availability:** successful builds of this installer change provide the EXEs
-inside the existing `dnsp-modern-windows-ARCH-poc` Actions artifacts. Subsequent
-releases built with this packaging include both setup EXEs beside the portable
-ZIPs. Existing releases, including 4.9.0, retain their original assets.
+**Availability:** successful Windows workflow runs provide resolver/service
+setup EXEs in `dnsp-modern-windows-ARCH-poc` artifacts. The bundled desktop
+variant uses the filename `dnsp-modern-VERSION-windows-ARCH-gui-setup.exe` and
+includes the private GUI runtime. Release v4.9.0-modern contains portable ZIPs;
+it does not contain either setup variant. The release asset list and each
+artifact's source revision identify the applicable distribution.
 
 The wizard adds Start Menu shortcuts and a single Windows Apps uninstall entry.
 The **Register DNSProxy as a Windows service** checkbox is initially off. Leave it
@@ -101,11 +106,12 @@ off to use the console launcher, or select it to configure the background server
 | IPv6 loopback | Enabled | Also listen on `::1`, alongside `127.0.0.1` |
 | Start automatically with Windows | Enabled | Automatic SCM startup; clearing it selects Manual |
 | Start after installation | Enabled | Start now; clearing it leaves the new service stopped |
+| Loopback metrics port | `0` in resolver/service setup; `9090` in desktop setup | Read-only traffic metrics on `127.0.0.1`; `0` disables the listener |
 
 The service uses the existing native SCM adapter, `NT AUTHORITY\LocalService`,
 restricted program/configuration permissions, crash recovery and rotating logs.
-The resolver remains local only. No firewall exception or adapter DNS change is
-made. A port conflict or invalid upstream/bootstrap setting blocks installation
+The service accepts DNS requests on loopback only. Installation adds no firewall
+exception or adapter DNS change. A port conflict or invalid upstream/bootstrap setting blocks installation
 before replacing files. Startup still performs its own listener checks; if a
 fresh service fails to start, its registration/state are rolled back and setup
 reports failure. Installed application files can remain for repair or removal.
@@ -122,7 +128,7 @@ port, Manual startup or IPv4-only choice requires explicit client configuration.
 
 ### Upgrade, cancellation and uninstall
 
-Run the new setup EXE in the existing location. The installer verifies ownership
+Run the setup EXE for the target version in the existing location. The installer verifies ownership
 before stopping an existing setup-managed service. It retains the exact service
 command, startup mode, protected state and logs, and restores its previous
 running/stopped state after replacing files. Existing-service options are retained
@@ -156,7 +162,9 @@ loopback, automatic startup and immediate start:
 ```
 
 Optional arguments are `/PORT=53`, `/UPSTREAM=https://dns.google/dns-query`,
-`/BOOTSTRAP=8.8.8.8`, `/IPV6=0`, `/AUTOSTART=0` and `/STARTNOW=0`.
+`/BOOTSTRAP=8.8.8.8`, `/IPV6=0`, `/AUTOSTART=0`, `/STARTNOW=0` and
+`/METRICSPORT=9090`. The metrics port must differ from the DNS port; `0` disables
+metrics. The desktop setup variant includes the GUI component and its runtime.
 Pass URL and matching bootstrap together. Omitting `/SERVICE=1` installs only
 the application. Silent upgrades preserve an existing service automatically.
 The destination is fixed in protected Program Files; conflicting `/DIR` values
@@ -172,9 +180,8 @@ conflicts, DNS-state guards and uninstall. Installer logs and screenshots are
 retained in `dnsp-windows-installer-evidence-ARCH` for 14 days. Publication includes
 the same tested installer bytes and requires both architectures to pass.
 
-Setup EXEs, resolver binaries and PowerShell scripts are currently unsigned,
-as are the portable bundles. Authenticode signing is a separate step; the
-installer does not claim a verified publisher.
+Setup EXEs, resolver binaries and PowerShell scripts are unsigned, as are the
+portable bundles. They do not provide Authenticode publisher verification.
 
 ## Administrator option and port conflicts
 
@@ -227,7 +234,8 @@ Windows DNS server may receive queries directly; use DNSProxy's
 `--backup-upstream` and matching `--backup-bootstrap-address` for encrypted
 upstream failover instead.
 
-**Restore the previous settings before stopping DNSProxy or rebooting.** If
+**For foreground-only operation, restore the previous settings before stopping
+DNSProxy or rebooting.** If
 the adapter previously obtained DNS automatically:
 
 ```powershell
@@ -236,8 +244,10 @@ Clear-DnsClientCache
 ```
 
 For previous static DNS, restore the recorded addresses with `-ServerAddresses`
-instead. Resetting to DHCP does not restore static settings. The foreground launcher does not change adapters. Service installation is a
-separate explicit step described below.
+instead. Resetting to DHCP does not restore static settings. The foreground
+launcher does not change adapters. A persistent automatic service can retain
+explicitly configured adapter settings across reboot; service installation and
+reversible adapter integration are described separately below.
 
 ## Persistent Windows Service
 
@@ -251,12 +261,14 @@ Stop-Service DNSProxy
 Start-Service DNSProxy
 ```
 
-The installer copies the bundle into `Program Files\DNSProxy`, registers an
+The PowerShell installer copies the bundle into `Program Files\DNSProxy`, registers an
 SCM service with automatic startup, and starts it as `NT AUTHORITY\LocalService`.
 It listens on `127.0.0.1:53` and `[::1]:53`, uses a numeric upstream bootstrap
 address, and leaves adapter DNS settings unchanged. On an IPv6-disabled machine,
 install with `-ListenAddress 127.0.0.1`. Optional parameters include `-Port`,
-`-Upstream`, `-BootstrapAddress`, `-ServiceName`, and `-NoStart`.
+`-Upstream`, `-BootstrapAddress`, `-ServiceName`, `-StartupType`, `-MetricsPort`
+and `-NoStart`. Metrics are disabled by default; `-MetricsPort 9090` enables a
+read-only listener on `127.0.0.1:9090`.
 
 Executable files are administrator-owned and read-only to LocalService. Only
 `ProgramData\DNSProxy\logs` is service-writable. The console uses stderr;
@@ -282,11 +294,12 @@ that point to DNSProxy. Then run the bundled uninstall script as Administrator:
 .\Uninstall-DNSProxyService.ps1
 ```
 
-Installation refuses existing service names/directories, and uninstall checks
-its installation record against SCM before removing anything. Reconfiguration
-or upgrade currently uses explicit uninstall/reinstall after restoring DNS;
-there is no silent replacement of an existing service. Service files are not
-signed yet. Native CI tests real SCM startup/stop, LocalService HTTPS queries,
+Portable PowerShell installation refuses existing service names/directories,
+and uninstall checks its installation record against SCM before removing
+anything. Reconfiguration or upgrade of a portable installation uses explicit
+uninstall/reinstall after restoring DNS. Setup-managed installations use the
+upgrade and removal procedures in the setup section. Service files are unsigned.
+Native CI tests real SCM startup/stop, LocalService HTTPS queries,
 IPv4/IPv6 UDP and TCP, crash and reported-error recovery, log-rotation failure,
 intentional stops, port conflicts, both portable launchers, and uninstall.
 
@@ -328,7 +341,8 @@ discovery with both valid and invalid TLS hostnames. The required
 The Linux packages and tests also validate changes to the shared core.
 
 Both architecture bundles are unsigned native Windows builds, offered as portable
-ZIPs and standard setup EXEs; no MSI/MSIX package is produced. CI executes the resolver, Python protocol fixtures, platform
+ZIPs and setup EXEs; no MSI/MSIX package is produced. CI executes the resolver,
+Python protocol fixtures, platform
 probes, and service acceptance on Windows Server 2022 AMD64 and Windows 11 ARM64.
 It also verifies the extracted bundle's checksums and PE architecture.
 On the ARM64 runner, the Python test driver uses x64 emulation because the QUIC
@@ -336,8 +350,8 @@ fixture's Python dependencies do not all supply compatible ARM64 wheels. The
 resolver, platform probes, service fixture and bundled DLLs are ARM64-native;
 their PE machine types are checked and the full product tests execute them on
 the ARM64 host. The Python driver is a CI dependency, outside the portable ZIP.
-Other desktop Windows 10/11 configurations, non-administrator accounts, Unicode/long paths,
-suspend/resume, and VPN policies remain areas for broader acceptance testing.
+The CI matrix does not establish coverage of every Windows 10/11 configuration,
+account policy, Unicode/long path, suspend/resume sequence or VPN policy.
 The shared resolver supports IPv4 and IPv6 DNS listeners. Repeat `-l` to enable
 both, for example `-l 127.0.0.1 -l ::1 -p 53`. Both portable launchers enable
 IPv4 and IPv6 loopback by default. On an IPv6-disabled machine, run the EXE
@@ -349,13 +363,13 @@ loopback aliases such as `127.0.0.2` are not supported for wildcard replies via
 `IP_PKTINFO`. CI tests source preservation using `127.0.0.1` and an actual
 adapter address (`DNSP_TEST_SECOND_ADDRESS`), without changing adapter settings.
 
-Next decisions: Authenticode signing and broader desktop acceptance. New releases
-include both Windows ZIPs and both tested setup EXEs alongside eight Linux daemon packages, four optional
-Linux GUI packages (from v4.6.0) and two native macOS archives. Publication waits
-for native Windows/macOS builds, portable bundle tests, Linux packages and
-sanitizers; all eighteen packages are included in the release's `SHA256SUMS`.
-The platform coverage and unsigned-build limitations above apply to these
-regular releases.
+The publishing workflow requires both Windows portable ZIPs, both resolver/service
+setup EXEs, both desktop setup EXEs and both matching runtime-source ZIPs,
+alongside eight Linux daemon packages, four Linux GUI packages and two macOS
+archives. Native Windows/macOS, desktop, packaging and sanitizer checks gate
+publication. `SHA256SUMS` covers all twenty-two deliverables. This is the source
+build inventory; release v4.9.0-modern retains its published sixteen-package
+inventory and checksum manifest.
 
 ## Build from source
 
@@ -377,7 +391,7 @@ pacman -S --needed git mingw-w64-clang-aarch64-clang mingw-w64-clang-aarch64-cur
 bash scripts/build-windows.sh
 ```
 
-MSYS2's Unix build tools currently use x64 emulation on ARM hosts; the Clang
+MSYS2's Unix build tools use x64 emulation on ARM hosts; the Clang
 compiler, resolver and bundled third-party DLLs are ARM64-native. The packaged
 resolver needs neither emulation nor MSYS2 at runtime. ARM64 Windows 10 is not
 in this acceptance matrix.
@@ -385,13 +399,16 @@ in this acceptance matrix.
 If MSYS2 asks to restart the shell during its update, do so and finish updating
 first. Output is `dist/dnsp-modern-VERSION-windows-ARCH-poc.zip`, with `ARCH`
 `amd64` or `arm64`. Keep the two architecture bundles in separate folders. Use the regular
-OpenSSL curl package: MSYS2 `curl-winssl` currently disables HTTP/2. The existing
-Linux `make modern` flow remains available.
+OpenSSL curl package used by CI, whose capabilities are checked during the build.
+The Linux `make modern` build is independent of this Windows toolchain.
 
 ## Reversible adapter DNS configuration
 
-After installing the service from this bundle, run the **installed** script in
-an elevated Windows PowerShell window:
+For a service installed from a portable ZIP using `Install-DNSProxyService.ps1`,
+run the **installed** script in an elevated Windows PowerShell window as shown
+below. For a setup-managed service, the corresponding path is
+`%ProgramFiles%\DNSProxy\bin\Set-DNSProxyDns.ps1`; substitute that path for `$dns`
+in the same example:
 
 ```powershell
 $dns = "$env:ProgramFiles\DNSProxy\Set-DNSProxyDns.ps1"
@@ -443,6 +460,7 @@ use Restore to return control to the original DNS configuration.
 CI exercises the transaction engine with synthetic adapters and real state files:
 automatic/static restoration, IPv6, partial writes, failed health checks, failure
 to arm recovery, conflicting administrator edits, and interrupted setup. Native
-SCM tests exercise the installed script's status/preview entry points. Actual
-adapter writes, task execution after process termination/reboot, VPN attach,
-and Ethernet/Wi-Fi roaming still need acceptance on disposable Windows 10/11 VMs.
+SCM tests exercise the installed script's status/preview entry points. Live
+adapter writes, task execution after process termination/reboot, VPN attach
+and Ethernet/Wi-Fi roaming are outside this automated qualification and require
+validation on disposable Windows 10/11 VMs.

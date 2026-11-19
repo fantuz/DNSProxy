@@ -2,6 +2,7 @@
 
 > Archived instructions for the retired `dnsp` and `dnsp-h2` editions. The
 > [current README](../README.md) covers building and running `dnsp-modern`.
+> Development notes below record historical plans for those retired editions.
 
 ## Why DNSProxy ?
 ### DNS transport tests, gone too far :)

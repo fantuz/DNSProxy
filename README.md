@@ -41,10 +41,18 @@ multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
   <a href="https://github.com/fantuz/DNSProxy/releases/latest#downloads"><img src="https://img.shields.io/badge/Download%20for%20Linux-DEB%20%2F%20RPM-2e7d32?style=for-the-badge" alt="Download for Linux — DEB and RPM packages" height="28"></a>
 </p>
 
-The optional [Linux desktop monitor](#optional-linux-desktop-monitor) shows
-startup settings, live query activity, latency and daemon statistics. Windows
-provides [console launchers, a setup wizard and service controls](docs/WINDOWS.md); a Windows
-graphical monitor remains a future addition.
+The optional [desktop interface](docs/DESKTOP-GUI.md) displays startup settings,
+query activity, latency and daemon statistics on Linux, Windows and macOS.
+It includes grouped settings, diagnostics and controls for a resolver started
+by the interface. Monitoring an existing service is read-only. Linux packages,
+bundled Windows desktop installers and a Homebrew-based Mac launcher provide
+the platform-specific distribution formats.
+
+Release **v4.9.0-modern** contains Linux daemon/GUI packages, Windows portable
+ZIPs and native macOS archives. Windows setup EXEs and the cross-platform
+desktop distributions described in the desktop guide are available from source
+builds and CI artifacts; they are not assets of that release. Each build records
+its source revision in addition to the version number.
 
 [Windows setup guide](docs/WINDOWS.md)
 · [macOS setup guide](docs/MACOS.md)
@@ -63,15 +71,15 @@ same C resolver as Linux; the setup guide covers service installation,
 Administrator options, DNS adapter configuration and rollback.
 The [standard setup EXE](docs/WINDOWS.md#standard-setup-installer) adds Windows Apps
 and Start Menu entries, with optional configurable Windows service registration.
-Installer availability and CI downloads are described in that guide; existing
-published releases keep their original assets.
+The Windows guide distinguishes resolver/service setup, bundled desktop setup,
+portable ZIPs and CI artifacts.
 
 **macOS 15+:** choose the **Intel** or **Apple Silicon** archive in the download
 table, extract it into its own folder and run **Start-DNSProxy.command**. Both
 architectures run natively using Apple's system libcurl; no Homebrew or Rosetta
 is required. The launcher uses local port **5053**. See the macOS guide for port
-53, launchd service installation, reversible DNS setup and download approval. Developer ID signing and notarization
-remain follow-ups.
+53, launchd service installation, reversible DNS setup and download approval.
+The distributed executables are not Developer ID signed or notarized.
 
 This project grew out of DNS transport and privacy experiments dating to roughly
 2009–2010 and work surrounding [RFC 8484](https://www.rfc-editor.org/rfc/rfc8484).
@@ -83,11 +91,12 @@ also depends on how clients route their DNS traffic and which upstream they use.
 
 ## Rust feasibility port
 
-We have experimentally ported `dnsp-modern` to Rust to assess feasibility,
-protocol compatibility and performance. The code and port checklist live on
-the separate [rust-poc branch](https://github.com/fantuz/DNSProxy/tree/rust-poc/rust-poc).
-The refreshed port passes the C integration fixtures on Linux amd64 and arm64,
-the HTTP/2 and HTTP/3 fixtures, and 24,226 DNS wire comparison cases.
+A separate Rust implementation evaluates feasibility, protocol compatibility
+and performance. The code and port checklist are maintained on the
+[Rust feasibility branch](https://github.com/fantuz/DNSProxy/tree/poc/rust-poc).
+The recorded evaluation includes C integration fixtures on Linux amd64 and
+arm64, HTTP/2 and HTTP/3 fixtures, and 24,226 DNS wire comparison cases. These
+results apply to the revisions identified in the evaluation records.
 
 The [Linux performance comparison](docs/benchmarks/rust-poc-2026-11-12/README.md)
 includes the method, latency, CPU/memory measurements and raw results. Below
@@ -107,14 +116,12 @@ A separate [C/Rust/Go application baseline](docs/benchmarks/linux-c-rust-go-2026
 covers UDP and persistent TCP, larger replies and one CPU per proxy, using
 AdGuard dnsproxy as the Go reference.
 
-**We are staying with C for now.** These measurements show similar performance
-and slightly higher Rust memory use; they do not establish a consistent
-performance advantage or predict Internet throughput. C already has the
-maintained release, DEB/RPM packaging and systemd deployment path. Keeping one
-supported implementation also avoids maintaining two copies of protocol and
-lifecycle fixes. Rust offers safer ownership and memory handling in the ported
-code, while both implementations still depend on native libcurl for HTTP/TLS/QUIC.
-The Rust branch remains available for further evaluation.
+**C is the maintained release implementation.** The reported measurements show
+similar performance and slightly higher Rust memory use; they do not establish
+a consistent performance advantage or predict Internet throughput. Release
+packaging, service integration and protocol maintenance use the C implementation.
+The Rust implementation provides a separate ownership and memory-management
+model; both implementations depend on native libcurl for HTTP/TLS/QUIC.
 
 ## Supported executable
 
@@ -123,7 +130,7 @@ The legacy `dnsp` and `dnsp-h2` compilation recipes have been removed from the
 current build. Their old target names print a retirement message, and the
 historical sources and CLI instructions are archived for reference.
 
-`dnsp-modern` now supports **persistent DNS-over-TCP client sessions**, ordered
+`dnsp-modern` supports **persistent DNS-over-TCP client sessions**, ordered
 sequential/pipelined messages, and an adjustable `--tcp-idle-ms` timeout. See
 [the TCP session documentation](docs/TCP_SESSIONS.md) for behavior, limits,
 metrics and tests.
@@ -497,24 +504,26 @@ that measurement.
 
 ### Optional Linux desktop monitor
 
-The Linux-only GTK 4 monitor shows live `dnsp-modern` statistics and retains the
-last valid display during slow or failed scrapes, clearly marking **No fresh data**.
-It includes sampled QPS/load peaks, exact lifetime latency maxima, live monitoring
-preferences and a validated launcher for a separate ordinary-user resolver. Existing
-services and system DNS stay under their usual configuration procedures.
-The monitor shows:
-startup options as On/Off radio buttons, incoming-query activity and history,
-upstream HTTP/1/2/3 counters, cache and blocklist statistics, CPU, memory and
-uptime. Select a resolver in the instance picker, inspect the packaged systemd
-service state, and view daemon/libcurl capabilities and estimated recent
-p50/p95/p99 latency. Invocation values distinguish explicit settings from defaults. The GUI
-runs as an ordinary desktop user and reads the existing process and metrics
-listener. The C resolver runs independently of the monitor.
+The Linux package provides the shared GTK 4 desktop interface. It displays live
+`dnsp-modern` statistics and retains the last valid values during slow or failed
+scrapes, with a **No fresh data** indication. The overview includes query-rate
+and latency histories, sampled QPS/load peaks, lifetime latency maxima, upstream
+HTTP/1/2/3 counters, cache and filtering statistics, and available process CPU,
+memory and uptime measurements. The instance picker selects among readable
+resolvers; service state is read separately from the service manager.
+
+Startup settings distinguish explicit arguments from defaults when the process
+command line is readable. Grouped options configure a separate resolver owned
+by the GUI; diagnostics show its bounded recent output. Existing services and
+system DNS retain their independent configuration. The GUI runs as an ordinary
+desktop user and reads the loopback metrics endpoint. The C resolver has no
+dependency on the graphical interface.
 
 ![Linux GUI with real local CI query activity and separated panels](docs/images/linux-gui-poc-live-activity.png)
 
-The screenshot shows real local queries from CI. To try explicitly labelled
-synthetic demo data from a source checkout, install the optional dependencies:
+The screenshot records the Linux monitor in release 4.9.0, using real local DNS
+queries in CI. The shared desktop guide describes the current interface.
+The following source example displays explicitly labelled synthetic data:
 
 ```sh
 sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0
@@ -539,14 +548,15 @@ process details are inaccessible. The packaged systemd service already enables
 metrics on port `9153`.
 
 **Pause** switches to on-demand sampling with **Refresh now**. Incoming-query
-activity appears on the next sample; closing the window leaves DNSProxy running.
+activity appears on the next sample. Closing the window leaves an externally
+started daemon or service running; it stops a resolver started by that window.
 Optional `dnsp-modern-gui` DEB (`all`) and RPM (`noarch`) packages add a desktop
 launcher and `dnsp-gui` command. They work on Linux x86-64 and ARM64; install the
 package for your distribution alongside the daemon. These packages are available
 from v4.6.0 onward. GTK dependencies
 belong only to the optional GUI package. See the [installation guide](packaging/README-packaging.md#optional-linux-desktop-package).
-X11 is tested in GitHub CI on Linux x86-64 and ARM64; native Wayland testing is
-a follow-up. See the [Linux GUI guide](docs/LINUX-GUI.md) for the startup-options
+X11 is tested in GitHub CI on Linux x86-64 and ARM64; native Wayland operation is
+outside the automated desktop qualification. See the [Linux GUI guide](docs/LINUX-GUI.md) for the startup-options
 preview, counter definitions, polling limits and troubleshooting.
 
 ## Debian packaging and systemd
@@ -601,8 +611,9 @@ the same C resolver. Both architectures are available from v4.5.0 onward. See th
 
 Set the next version in `VERSION` and merge to `master` to publish once the
 Linux package matrix, sanitizer job, and native Windows build and tests pass.
-The release requires eight Linux daemon packages, four architecture-independent
-GUI packages, two Windows ZIPs, two tested Windows setup EXEs and two macOS archives,
+The publishing workflow requires eight Linux daemon packages, four architecture-independent
+GUI packages, two Windows ZIPs, two service setup EXEs, two desktop setup EXEs,
+two matching desktop-runtime source ZIPs and two macOS archives,
 all covered by `SHA256SUMS`. See the
 [packaging guide](packaging/README-packaging.md) for installation, local
 builds, and manual release recovery.
@@ -628,10 +639,12 @@ TCP source limits distinguish address families and scoped IPv6 addresses.
 Metrics remain on IPv4 loopback; DNS records and upstream transports are
 independent of the listener family.
 
-## Feature ideas
+## Desktop validation scope
 
-- **Native Wayland validation.** Extend the desktop tests beyond the X11 CI session.
-- **Monitor overhead benchmarks.** Measure GUI sampling costs against an unmonitored daemon.
+Automated desktop tests cover X11 on Linux and native windows on Windows and
+macOS. Native Wayland, mixed-DPI and multi-monitor operation require separate
+qualification. Functional tests establish bounded sampling and history storage;
+they do not establish a general GUI-overhead bound for every workload.
 
 ## Contributing
 

@@ -46,6 +46,8 @@ packages+=("dnsp-modern-gui-${version}-1.el9.noarch.rpm")
 for arch in amd64 arm64; do
     packages+=("dnsp-modern-${version}-windows-${arch}-poc.zip")
     packages+=("dnsp-modern-${version}-windows-${arch}-setup.exe")
+    packages+=("dnsp-modern-${version}-windows-${arch}-gui-setup.exe")
+    packages+=("dnsp-modern-${version}-windows-${arch}-gui-sources.zip")
 done
 for arch in x86_64 arm64; do
     packages+=("dnsp-modern-${version}-macos-${arch}.tar.gz")

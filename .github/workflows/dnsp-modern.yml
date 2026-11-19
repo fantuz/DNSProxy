@@ -83,6 +83,15 @@ jobs:
       - name: Test isolated parallel scheduling and error propagation
         if: github.event_name == 'pull_request'
         run: python3 tests/test_ci_parallel.py -v
+      - name: Test portable desktop models and packaging rules
+        if: github.event_name == 'pull_request'
+        run: |
+          python3 tests/test_gui_platforms.py -v
+          python3 tests/test_gui_process.py -v
+          python3 tests/test_gui_settings.py -v
+          python3 tests/test_gui_macos_launcher.py -v
+          python3 tests/test_windows_gui_bundle.py -v
+          python3 tests/test_gui_bootstrap.py -v
       - name: Select checks for the proposed merge
         id: pr
         if: github.event_name == 'pull_request'
@@ -106,11 +115,11 @@ jobs:
           check_paths protocols "${common[@]}" ci/ bench/ tests/test_benchmark.py tests/test_http3.py \
             tests/test_modern.py .dockerignore .github/workflows/dnsp-modern-benchmark.yml
           check_paths windows "${common[@]}" bench/ tests/ packaging/windows/ docs/WINDOWS.md \
-            scripts/build-windows.sh scripts/build-windows-installer.ps1 scripts/bundle-windows.py scripts/run-windows-tests.py ci/ scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-windows.yml
+            scripts/build-windows.sh scripts/build-windows-installer.ps1 scripts/bundle-windows.py scripts/build-windows-gui-bundle.py packaging/windows/gui-bootstrap.py tools/desktop-gui/ scripts/run-windows-tests.py ci/ scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-windows.yml .github/workflows/dnsp-windows-gui.yml
           check_paths macos "${common[@]}" bench/ tests/ packaging/macos/ docs/MACOS.md \
-            scripts/build-macos.sh scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-macos.yml
-          check_paths gui "${common[@]}" packaging/gui/ scripts/build-gui-deb.sh scripts/test-gui-package.py tools/linux-gui/ tests/test_gui_monitor.py tests/test_gui_gtk.py \
-            docs/LINUX-GUI.md docs/images/ .github/workflows/dnsp-linux-gui-poc.yml
+            scripts/build-macos.sh tools/desktop-gui/ scripts/update-blocklist.py docs/BLOCKLISTS.md docs/MACOS-GUI.md docs/DESKTOP-GUI.md .github/workflows/dnsp-modern-macos.yml
+          check_paths gui "${common[@]}" packaging/gui/ scripts/build-gui-deb.sh scripts/test-gui-package.py tools/desktop-gui/ tools/linux-gui/ 'tests/test_gui_*.py' \
+            docs/LINUX-GUI.md docs/DESKTOP-GUI.md docs/MACOS-GUI.md docs/images/ scripts/build-windows-gui-bundle.py packaging/windows/ .github/workflows/dnsp-linux-gui-poc.yml .github/workflows/dnsp-windows-gui.yml
           check_paths containers "${common[@]}" ci/ Dockerfile .dockerignore compose.yaml packaging/container/ \
             tests/test_container.py tests/test_oci_bundle.py tests/test_oci_publish.py tests/test_modern.py tests/test_policy.py tests/test_http3.py \
             bench/ docs/CONTAINERS.md .github/workflows/dnsp-modern-container.yml
@@ -374,6 +383,25 @@ jobs:
     with:
       ref: ${{ needs.plan.outputs.commit }}
 
+  gui-runtime:
+    needs: plan
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      (github.event_name != 'pull_request' || needs.plan.outputs.windows == 'true')
+    uses: ./.github/workflows/dnsp-windows-gui.yml
+    with:
+      ref: ${{ needs.plan.outputs.commit }}
+      stage: runtime
+
+  windows-gui:
+    needs: [plan, windows, gui-runtime]
+    if: >-
+      !cancelled() && needs.windows.result == 'success' && needs.gui-runtime.result == 'success'
+    uses: ./.github/workflows/dnsp-windows-gui.yml
+    with:
+      ref: ${{ needs.plan.outputs.commit }}
+      stage: installer
+
   gui:
     needs: plan
     if: >-
@@ -395,7 +423,7 @@ jobs:
   pr-checks:
     name: DNSProxy PR checks
     if: ${{ always() && github.event_name == 'pull_request' }}
-    needs: [plan, deb, debian, rpm, sanitizers, ipv4-only, codeql, fuzz, protocols, windows, macos, gui, containers]
+    needs: [plan, deb, debian, rpm, sanitizers, ipv4-only, codeql, fuzz, protocols, windows, macos, gui, gui-runtime, windows-gui, containers]
     runs-on: ubuntu-24.04
     permissions: {}
     steps:
@@ -410,10 +438,11 @@ jobs:
 
           jobs = json.loads(os.environ["JOB_RESULTS"])
           planned = jobs["plan"]["outputs"]
-          optional = {"codeql", "fuzz", "protocols", "windows", "macos", "gui", "containers"}
+          optional = {"codeql", "fuzz", "protocols", "windows", "macos", "gui", "gui-runtime", "windows-gui", "containers"}
           failed = []
           for name, job in sorted(jobs.items()):
-              expected = "skipped" if name in optional and planned.get(name) == "false" else "success"
+              selected = planned.get("windows") if name in {"gui-runtime", "windows-gui"} else planned.get(name)
+              expected = "skipped" if name in optional and selected == "false" else "success"
               result = job["result"]
               print(f"{name}: {result} (expected {expected})")
               if result != expected:
@@ -429,10 +458,10 @@ jobs:
       needs.plan.result == 'success' && needs.deb.result == 'success' &&
       needs.debian.result == 'success' && needs.rpm.result == 'success' &&
       needs.sanitizers.result == 'success' && needs.ipv4-only.result == 'success' &&
-      needs.windows.result == 'success' && needs.macos.result == 'success' &&
+      needs.windows.result == 'success' && needs.windows-gui.result == 'success' && needs.macos.result == 'success' &&
       needs.containers.result == 'success' &&
       (needs.plan.outputs.mode == 'master' || needs.plan.outputs.mode == 'tag' || needs.plan.outputs.mode == 'manual')
-    needs: [plan, deb, debian, rpm, sanitizers, ipv4-only, windows, macos, containers]
+    needs: [plan, deb, debian, rpm, sanitizers, ipv4-only, windows, windows-gui, macos, containers]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

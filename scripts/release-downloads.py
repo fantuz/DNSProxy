@@ -12,7 +12,7 @@ END = "<!-- dnsp-downloads:end -->"
 VERSION = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 
 
-def downloads(version, repository, *, macos=True, windows_arm64=True, gui=True, windows_installer=True):
+def downloads(version, repository, *, macos=True, windows_arm64=True, gui=True, windows_installer=True, windows_gui=True):
     if not re.fullmatch(VERSION, version):
         raise ValueError("Expected a MAJOR.MINOR.PATCH release version")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
@@ -35,6 +35,11 @@ def downloads(version, repository, *, macos=True, windows_arm64=True, gui=True, 
         links = [asset("**Setup EXE**", f"dnsp-modern-{version}-windows-{arch}-setup.exe")
                  for arch in ("amd64", "arm64")]
         lines.insert(-1, f"| Windows installer | {' | '.join(links)} |")
+    if windows_gui:
+        links = [asset("**Desktop setup**", f"dnsp-modern-{version}-windows-{arch}-gui-setup.exe") + " · " +
+                 asset("runtime sources", f"dnsp-modern-{version}-windows-{arch}-gui-sources.zip")
+                 for arch in ("amd64", "arm64")]
+        lines.insert(-1, f"| Windows desktop GUI | {' | '.join(links)} |")
     if macos:
         links = [asset(label, f"dnsp-modern-{version}-macos-{arch}.tar.gz")
                  for label, arch in (("**Intel archive**", "x86_64"), ("**Apple Silicon archive**", "arm64"))]
@@ -65,6 +70,11 @@ def downloads(version, repository, *, macos=True, windows_arm64=True, gui=True, 
         lines.extend(["", "**macOS:** extract the archive into its own folder and run **Start-DNSProxy.command**. "
                       "The launcher uses local port 5053; system DNS setup and download approval are covered in the "
                       f"[macOS guide]({root}/blob/{tag}/docs/MACOS.md)."])
+    if windows_gui:
+        lines.extend(["", "**Desktop interface:** Windows desktop setup bundles its private GTK/Python runtime; "
+                      "the matching source ZIP is provided for runtime redistribution and is not needed to run it. "
+                      "On macOS, install `gtk4 pygobject3` with Homebrew, then use **Start-DNSProxy-GUI.command**. "
+                      f"See the [desktop guide]({root}/blob/{tag}/docs/DESKTOP-GUI.md)."])
     lines.extend(["",
                   f"[Windows setup guide]({root}/blob/{tag}/docs/WINDOWS.md) · "
                   f"[Linux installation guide]({root}/blob/{tag}/packaging/README-packaging.md) · "
@@ -84,8 +94,9 @@ def refresh(release, repository):
     windows_arm64 = any(name.endswith('-windows-arm64-poc.zip') for name in available)
     gui = any(name.startswith(("dnsp-modern-gui_", "dnsp-modern-gui-")) for name in available)
     windows_installer = any(name.endswith(('-windows-amd64-setup.exe', '-windows-arm64-setup.exe')) for name in available)
+    windows_gui = any(name.endswith(('-gui-setup.exe', '-gui-sources.zip')) for name in available)
     block, expected = downloads(match.group(1), repository, macos=macos, windows_arm64=windows_arm64,
-                                gui=gui, windows_installer=windows_installer)
+                                gui=gui, windows_installer=windows_installer, windows_gui=windows_gui)
     missing = expected - available
     if missing:
         raise ValueError("Release is missing downloads: " + ", ".join(sorted(missing)))

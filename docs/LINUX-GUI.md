@@ -1,26 +1,29 @@
-# Linux desktop monitor
+# Linux desktop monitor and resolver controls
 
-This source tree includes an optional **GTK 4 monitor and ordinary-user launcher** for `dnsp-modern`.
-It helps explain a running resolver's configuration and activity. The C resolver
-keeps its existing event loop and dependencies. The optional desktop package is
-separate from the daemon package. GTK and Python are
-needed only on machines where you choose to open the monitor.
+This source tree includes an optional **GTK 4 monitor and ordinary-user launcher**
+for `dnsp-modern`. It displays a running resolver's configuration and activity.
+The desktop package is separate from the daemon package; GTK and Python are
+required only for the desktop interface.
 
-GTK 4 is a native Linux toolkit with X11 and Wayland backends; Python uses its
-PyGObject bindings. There is no browser, embedded web server, Electron runtime,
-privileged helper or second implementation of DNS/DoH. This GTK monitor currently
-supports Linux. Windows console launchers and service controls are documented in
-the [Windows guide](WINDOWS.md).
+On Linux, GTK 4 supports X11 and Wayland, and Python uses its PyGObject bindings.
+The shared desktop source also supports Windows and macOS. It runs as an
+ordinary user, reads aggregate metrics, and controls only a resolver it started
+itself. System service and adapter DNS configuration remain separate.
+See the [shared desktop guide](DESKTOP-GUI.md) for Windows GUI installers,
+the Homebrew Mac launcher and cross-platform behavior. This guide describes the
+current source tree and CI artifacts. Release 4.9.0 contains the earlier Linux
+interface; its assets do not include Windows GUI installers or the Mac GUI launcher.
 
 ## Preview
 
-The current overview below comes from the native GTK regression using a real
-local resolver and 25 controlled DNS queries, including five NXDOMAIN replies.
-Its timestamps and rates are observed samples, with no Internet upstream.
+The screenshot below shows the earlier Linux interface during a GTK regression
+with a real local resolver and 25 controlled DNS queries, including five NXDOMAIN
+replies. Its timestamps and rates are observed samples from a local DoH fixture.
 
-![Current monitor with live query activity, elapsed-time axes and separated information panels](images/linux-gui-poc-live-activity.png)
+![Earlier Linux interface with measured query activity and elapsed-time axes](images/linux-gui-poc-live-activity.png)
 
-The earlier startup-options screenshot uses explicitly synthetic demo data:
+The startup-options screenshot shows the earlier interface with labelled
+synthetic demo data:
 
 ![Read-only startup options represented by On/Off controls](images/linux-gui-poc-demo-startup-options.png)
 
@@ -42,29 +45,32 @@ Choose **DNSProxy Monitor** in the desktop application menu. It opens as your
 ordinary desktop user. The package recommends the daemon, but also works with
 a source-built daemon; use `--no-install-recommends` (APT) or
 `--setopt=install_weak_deps=False` (DNF) when installing only the monitor.
-Uninstalling the monitor leaves the running resolver alone. The daemon's
+Uninstalling the monitor does not stop an independently running resolver or service.
+Closing a GUI window stops only the resolver owned by that window. The daemon's
 package has no GTK dependency. `dnsp-gui --demo` opens synthetic demo data.
 
 ## Try from a source checkout
 
-Run the following commands from a source checkout containing `tools/linux-gui/`.
+Run the following commands from a source checkout containing `tools/desktop-gui/`.
 On Debian or Ubuntu, install the optional desktop dependencies:
 
 ```sh
 sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0
-/usr/bin/python3 tools/linux-gui/dnsp-gui.py --demo
+/usr/bin/python3 tools/desktop-gui/dnsp-gui.py --demo
 ```
 
 The demo is explicitly labelled and generates synthetic values in memory. It
 does not start a resolver, send queries, download lists or open a listener.
 Use the system Python (`/usr/bin/python3`) so it can find the distribution's
 GTK bindings. A Python virtual environment normally cannot see those packages.
+The `tools/linux-gui/dnsp-gui.py` path remains a compatibility launcher
+for the shared source; installed Linux packages still provide `dnsp-gui`.
 
 For Fedora, the corresponding runtime packages are `python3-gobject` and `gtk4`.
 GTK chooses the desktop's available backend. To request X11 explicitly:
 
 ```sh
-GDK_BACKEND=x11 /usr/bin/python3 tools/linux-gui/dnsp-gui.py --demo
+GDK_BACKEND=x11 /usr/bin/python3 tools/desktop-gui/dnsp-gui.py --demo
 ```
 
 ## Monitor a real resolver
@@ -80,7 +86,7 @@ make dnsp-modern
 In a second terminal:
 
 ```sh
-/usr/bin/python3 tools/linux-gui/dnsp-gui.py &
+/usr/bin/python3 tools/desktop-gui/dnsp-gui.py &
 # Send a query to exercise the activity indicator:
 dig @127.0.0.1 -p 5300 example.org A
 ```
@@ -90,7 +96,7 @@ several instances, choose a PID in the window's **Resolver instance** selector,
 or select one at startup:
 
 ```sh
-/usr/bin/python3 tools/linux-gui/dnsp-gui.py --pid 1234 --interval 2
+/usr/bin/python3 tools/desktop-gui/dnsp-gui.py --pid 1234 --interval 2
 ```
 
 Replace `1234` with the desired PID. The GUI runs as your ordinary desktop user,
@@ -98,7 +104,7 @@ including when the resolver is a system service. If `/proc` access is restricted
 use traffic-only monitoring:
 
 ```sh
-/usr/bin/python3 tools/linux-gui/dnsp-gui.py --metrics-port 9090
+/usr/bin/python3 tools/desktop-gui/dnsp-gui.py --metrics-port 9090
 ```
 
 This connects only to the literal loopback address `127.0.0.1`, without HTTP
@@ -106,6 +112,8 @@ proxies or redirect following. Startup settings, PID, uptime and resource use
 are unavailable in traffic-only mode. With both `--pid` and `--metrics-port`, the
 port must match that process's `-m` argument to avoid displaying another
 instance's statistics as its own.
+The connection panel also accepts a **Local metrics port**. **Connect** observes
+that endpoint; **Disconnect** stops monitoring it without stopping the resolver.
 
 If the daemon has no `-m` listener, the GUI can still show its startup settings,
 uptime, CPU and resident memory. It explains that live traffic is unavailable;
@@ -117,7 +125,7 @@ Do not run the GUI with `sudo` or change the system DNS settings just to try it.
 
 | Area | Information |
 | --- | --- |
-| Overview | Query rate, peak sampled QPS and bounded activity history; satisfied UDP/TCP query counts, active work and clients, coalescing, overload and truncation counters |
+| Overview | Query rate, peak sampled QPS and bounded query/latency histories; query plot selects all traffic, UDP or TCP, and latency selects client-reply or completed-upstream p95 |
 | DoH upstream | Completed attempts, failures/timeouts and failure ratio, lifetime mean and maximum attempt duration, connection reuse ratio, primary/backup attempts, actual HTTP/1/2/3 reply counters |
 | Cache and filtering | Cache hits/misses, blocked queries/aliases, loaded deny/allow entries and failed reloads |
 | Daemon load | Process CPU as a percentage of one core, resident memory, sampled CPU/memory/inflight peaks, missed traffic samples, uptime, PID, running daemon/libcurl versions and built HTTP/2/3 support |
@@ -125,7 +133,9 @@ Do not run the GUI with `sudo` or change the system DNS settings just to try it.
 | Latency | Estimated client-reply and completed-upstream-attempt p50/p95/p99 over the last 60 sampling intervals |
 | Startup options | Disabled On/Off radio pairs and an invocation table showing explicit values versus defaults |
 | Preferences | Live refresh interval, socket timeout, bounded history size, automatic refresh and chart visibility |
-| Launch resolver | Validated CLI preview and start/stop of a separate unprivileged resolver |
+| Resolver options | Grouped local-listener, DoH-upstream and cache/filtering settings with file selection and validation for the next GUI-owned run |
+| Launch resolver | Redacted CLI preview and start/stop of a separate unprivileged resolver |
+| Diagnostics | Bounded, selectable, URL-redacted output and startup/exit errors from the GUI-owned resolver |
 | How to read this | Counter meanings, limitations and troubleshooting |
 
 Network configuration appears in **Startup options**: listen addresses, DNS and
@@ -135,17 +145,16 @@ EDNS padding, blocklists, allowlists and delayed parallel upstream requests. Rep
 are preserved. User information and URL query strings are redacted from upstream
 URL displays. Unknown arguments trigger a warning without displaying their values.
 
-The **Startup options** controls represent the monitored invocation. They do not edit it. The separate **Launch resolver** form configures a new ordinary-user process. Omitted flags
-are labelled as the current C defaults, rather than claimed to be runtime
-introspection of a different daemon version. CI checks schema coverage and key
-defaults against the current C source. Future CLI changes need corresponding
-schema updates.
+The **Startup options** controls represent the monitored invocation. They do not
+edit it. **Resolver options…** opens a grouped editor for a new ordinary-user
+process; invalid edits leave the current configuration intact. Leaving a redacted
+upstream URL unchanged preserves its complete saved value. Omitted flags
+are labelled as defaults from the current C source. They are not values read
+from the running process. CI checks schema coverage and key defaults against
+the current C source.
 
-The query indicator updates after the next sample, not for each packet. With
-**Pause**, the monitor reads data only when you press **Refresh now**. This is
-the monitor's on-demand mode. It does not start the daemon or open a window when a
-query arrives. Query-triggered daemon startup would need separate service/socket
-activation design, especially for UDP and privileged port 53.
+The query indicator updates once per sample. With **Pause**, the monitor reads
+data only when **Refresh now** is selected.
 
 ## Configure monitoring in the window
 
@@ -175,12 +184,14 @@ attempts/completed attempts. Zero denominators show dashes.
 
 ## Configure and launch a resolver
 
-**Launch resolver** prepares a new invocation. Checkboxes enable metrics, cache,
+**Resolver options…** prepares a new invocation. Checkboxes enable metrics, cache,
 EDNS padding, HTTP/3 preference, backup upstream, delayed parallel requests and a
 blocklist. Fields select the executable, literal listen/bootstrap addresses,
 DNS/metrics ports, URLs, cache capacity, backup delay, blocklist and optional CA
-file. If changing upstream, update or clear its bootstrap address as well.
-Preview command validates these settings and displays a copyable CLI command.
+file. The executable, blocklist and CA fields have file pickers. If changing
+upstream, update or clear its bootstrap address as well. **Validate and apply**
+saves valid settings for the next owned run. **Preview command** validates the
+draft and displays a command with URL credentials/query values hidden.
 Start resolver uses the same argument list directly, with no shell. Demo mode
 allows preview but disables launching.
 
@@ -188,21 +199,25 @@ The form defaults to loopback, DNS port 5300, metrics port 9090 and a 256-entry
 cache. It runs as your desktop user and accepts ports 1024–65535. It never edits
 an existing resolver/service, elevates privileges or changes system DNS. An
 occupied port or unsupported feature causes the new daemon to exit; its exit
-status appears in the form and diagnostic logs inherit the GUI's terminal or
-desktop journal. To see launch diagnostics directly, run `dnsp-gui` in a terminal.
-Stop launched resolver sends SIGTERM only to the child started by this window,
-even if you subsequently monitor another instance. Closing the GUI leaves that
-child running. Use existing systemd configuration procedures for the packaged
+status and recent output appear in **Diagnostics**, including when the GUI was
+opened from the desktop menu. The in-memory log is limited to 64 KiB, with URL
+credentials/query values redacted. Stop launched resolver sends SIGTERM only
+to the child started by this window, even if you subsequently monitor another
+instance. Closing the GUI also stops and reaps that owned child, with a bounded
+forced-termination fallback reported explicitly. Independently started resolvers
+and services remain running. Use existing systemd configuration procedures for the packaged
 system resolver or privileged port 53; those remain separate from this launcher.
 
 ## Behaviour and limits
 
 - Default refresh: 0.5 seconds; `--interval` accepts 0.25–30 seconds. Automatic
   collection stops while paused or while the window is unmapped. Closing the
-  window leaves DNSProxy running.
+  window stops only its GUI-owned resolver; observed external processes and
+  services remain running.
 - One background collector at a time keeps HTTP I/O off the GTK main loop. HTTP
-  socket timeout is one second; responses are limited to 64 KiB and 512 samples.
-  There is no pending-work backlog. Chart history defaults to 60 samples and is bounded by the selected 20–300 limit.
+  socket timeout defaults to one second and is configurable from 0.2 to 5 seconds;
+  responses are limited to 64 KiB and 512 samples. There is no pending-work backlog.
+  Chart history defaults to 60 samples and is bounded by the selected 20–300 limit.
 - A failed or delayed scrape retains the complete last valid frame, startup
   settings and activity chart. **No fresh data** and the last-good-sample age
   clearly mark stale statistics. Missed scrapes never insert false zeros into
@@ -218,9 +233,9 @@ system resolver or privileged port 53; those remain separate from this launcher.
   reused PID requires **Reconnect**, or choosing the new process explicitly. Automatic selection
   reconnects after a restart when a single readable resolver exists. Without a
   PID, resets can only be detected through falling counters.
-- CPU may exceed 100% when several cores are busy. The daemon's CPU/RSS are
-  displayed, not the GUI's. A measured monitor-overhead
-  benchmark remains a follow-up.
+- CPU may exceed 100% when several cores are busy. The displayed CPU and resident
+  memory measurements belong to the daemon. Monitor overhead is not quantified
+  by the functional regression suite.
 - Upstream preference and negotiated protocol are different. `prefer-h3` can
   fall back; reply counters show actual use. `dnsp_build_info` exposes
   the running daemon version, numeric libcurl version and built HTTP/2/3 support.
@@ -246,11 +261,12 @@ system resolver or privileged port 53; those remain separate from this launcher.
   Histogram history stores at most 61 compact samples. Selection changes, counter
   resets, disconnects and pause/resume clear latency and rate baselines without
   erasing the retained frame on a transient disconnect.
-- Interface bandwidth, wire byte counts, client names and queried domains are
-  not exposed or collected. This monitor performs no packet capture and keeps
-  no query log, persistent history or telemetry.
+- The traffic collector uses aggregate metrics; interface bandwidth, wire byte
+  counts, client names and queried domains are not exposed by that endpoint.
+  The GUI performs no packet capture. It keeps bounded in-memory diagnostics
+  from its own resolver, with no persistent query history or telemetry.
 
-## Validation and follow-ups
+## Validation scope
 
 `tests/gui-queries-25.txt` is an original, small query list in the same `NAME TYPE`
 format used by [DNS-OARC's dnsperf/resperf sample data](https://github.com/DNS-OARC/sample-query-data).
@@ -272,9 +288,12 @@ Focused local checks exercise argument handling, real metrics HTTP responses,
 limits, restarts, process identity, rates and the actual C resolver. The
 **DNSProxy Linux desktop monitor** GitHub workflow runs these plus GTK tests under Xvfb
 on **Ubuntu 22.04 x86-64** and **Ubuntu 24.04 ARM64**. It checks formatting and
-imports, confirms queries appear in the GUI and that closing it leaves the
-resolver running, and publishes source bundles and screenshots as CI artifacts.
-The Xvfb tests cover X11; native Wayland validation remains a follow-up.
+imports, confirms queries appear in the GUI, and distinguishes externally
+started resolvers from GUI-owned children when closing a window. External
+processes remain running; owned children are stopped and reaped. It publishes
+source bundles and screenshots as CI artifacts. Additional native desktop tests
+exercise the shared interface on Windows, Intel Mac and Apple Silicon.
+The Xvfb tests cover X11. Native Wayland behavior is not covered by this workflow.
 
 ```sh
 make dnsp-modern
@@ -284,18 +303,19 @@ dbus-run-session -- xvfb-run -a -s '-screen 0 1280x960x24' \
   /usr/bin/python3 tests/test_gui_gtk.py
 ```
 
-The monitor is a troubleshooting companion. GitHub CI validates installation,
-imports, launcher and desktop metadata on both CPU architectures, exercises
+GitHub CI validates installation, imports, launcher and desktop metadata on both
+CPU architectures, exercises
 switching between two live resolvers, and publishes GTK screenshots. Native
-Wayland tests and a measured monitor-overhead comparison remain useful follow-ups.
+Wayland behavior and monitor overhead are outside this functional test coverage.
 Editing system service configuration and privileged service controls remain
 separate from the ordinary-user launch form.
 
 
 ### Activity chart and panel layout
 
-The activity chart scales its height with the available width (160–240 pixels),
-with a labelled rate axis, elapsed-time axis and a lightly shaded trace. The
+The query and latency plots sit side by side on a wide desktop and stack on a
+compact window. The query plot scales its height with the available width
+(160–240 pixels), with a labelled rate axis, elapsed-time axis and a lightly shaded trace. The
 newest observed sample sits at the right edge. Early samples use the available
 plot width rather than occupying a tiny strip while history fills. The scale
 has headroom above the visible peak; a missing sample remains a gap. A paused
@@ -307,8 +327,8 @@ use `dnsp-gui --interval 0.25` for four updates per second when collection is
 fast enough. There is still one collector at a time, with no queued backlog;
 slow reads keep their existing deadline and stale-data indication.
 
-The connection controls, activity chart and information sections use matching
+The connection controls, both plots and information sections use matching
 panel borders, padding and gutters. DNS traffic and upstream statistics share
 an aligned row; cache/filtering and daemon load share the next row. Metric
-cards retain equal widths and tabular numbers. These changes follow the GTK
-foreground color so light and dark themes remain readable.
+cards retain equal widths and tabular numbers. Panels and plot labels use the GTK
+foreground color to support light and dark themes.

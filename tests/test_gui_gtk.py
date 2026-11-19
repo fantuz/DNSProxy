@@ -138,8 +138,17 @@ class GuiTests(unittest.TestCase):
             self.assertGreaterEqual(self.window.chart.get_content_height(), 160)
             self.assertLessEqual(self.window.chart.get_content_height(), 240)
             self.assertGreater(
-                self.window.chart.get_width(), self.window.chart.get_height() * 3
+                self.window.chart.get_width(),
+                self.window.chart.get_height()
+                * (2.3 if self.window.charts_wide else 3),
             )
+            query = self.window.chart_panel.get_parent().get_allocation()
+            latency = self.window.latency_panel.get_parent().get_allocation()
+            if self.window.charts_wide:
+                self.assertEqual(query.y, latency.y)
+                self.assertGreaterEqual(latency.x, query.x + query.width)
+            else:
+                self.assertGreaterEqual(latency.y, query.y + query.height)
             grid = self.window.information_grid
             for row in (0, 1):
                 left, right = grid.get_child_at(0, row), grid.get_child_at(1, row)

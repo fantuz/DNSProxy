@@ -87,6 +87,8 @@ class ReleaseTests(unittest.TestCase):
         for arch in ("amd64", "arm64"):
             (directory / f"dnsp-modern-0.3.8-windows-{arch}-poc.zip").write_text("Windows bundle")
             (directory / f"dnsp-modern-0.3.8-windows-{arch}-setup.exe").write_text("Windows installer")
+            (directory / f"dnsp-modern-0.3.8-windows-{arch}-gui-setup.exe").write_text("Windows GUI installer")
+            (directory / f"dnsp-modern-0.3.8-windows-{arch}-gui-sources.zip").write_text("Windows GUI sources")
         for arch in ("x86_64", "arm64"):
             (directory / f"dnsp-modern-0.3.8-macos-{arch}.tar.gz").write_text(arch)
         return directory
@@ -166,7 +168,7 @@ esac
         for package in expected_packages:
             self.assertEqual(arguments.count(package), 2)
         checksums = (assets / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(checksums), 18)
+        self.assertEqual(len(checksums), 22)
         self.assertEqual(sorted(line.split("  ", 1)[1] for line in checksums), expected_packages)
         self.script("publish-modern.sh", assets, FAIL_PUBLICATION="true", **publish)
         self.assertEqual(create_args.read_text(), attempts)
@@ -313,7 +315,7 @@ esac
 
     def test_refresh_old_releases_never_invent_installers_and_partial_pair_is_rejected(self):
         assets = self.packages(self.root / 'legacy-installer')
-        names = [p.name for p in assets.iterdir() if not p.name.endswith('-setup.exe')]
+        names = [p.name for p in assets.iterdir() if not p.name.endswith(('-setup.exe', '-gui-sources.zip'))]
         release = {'tag_name': 'v0.3.8-modern', 'draft': False, 'prerelease': False,
                    'assets': [{'name': name} for name in names] + [{'name': 'SHA256SUMS'}]}
         path = self.root / 'old-release.json'
@@ -337,7 +339,7 @@ esac
         for case in ("missing-windows", "empty-windows", "wrong-version", "missing-windows-arm64",
                      "empty-windows-arm64", "wrong-windows-arm64-version", "extra-zip", "missing-linux",
                      "missing-macos", "empty-macos", "extra-macos", "missing-gui-deb", "empty-gui-rpm",
-                     "missing-installer", "empty-arm64-installer", "extra-installer"):
+                     "missing-installer", "empty-arm64-installer", "extra-installer", "missing-gui-setup", "empty-gui-sources"):
             with self.subTest(case=case):
                 assets = self.packages(self.root / case)
                 windows = assets / "dnsp-modern-0.3.8-windows-amd64-poc.zip"
@@ -372,6 +374,10 @@ esac
                     (assets / 'dnsp-modern-0.3.8-windows-arm64-setup.exe').write_bytes(b'')
                 elif case == 'extra-installer':
                     (assets / 'stale-setup.exe').write_text('stale installer')
+                elif case == 'missing-gui-setup':
+                    (assets / 'dnsp-modern-0.3.8-windows-amd64-gui-setup.exe').unlink()
+                elif case == 'empty-gui-sources':
+                    (assets / 'dnsp-modern-0.3.8-windows-arm64-gui-sources.zip').write_bytes(b'')
                 else:
                     (assets / "stale-build.tar.gz").write_text("old build")
                 self.script("publish-modern.sh", assets, succeeds=False,

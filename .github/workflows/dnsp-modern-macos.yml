@@ -15,7 +15,7 @@ jobs:
   native-macos:
     name: macOS ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -33,20 +33,43 @@ jobs:
           python-version: '3.13'
       - name: Build and bundle the shared C resolver
         run: bash scripts/build-macos.sh
-      - name: Install protocol fixtures and configure loopback test addresses
-        run: |
-          python3 -m pip install 'hypercorn==0.18.0' 'h2==4.3.0'
-          for n in 2 3 4 5 6; do sudo ifconfig lo0 alias "127.0.0.$n" up; done
-      - name: Test the extracted package
-        env:
-          DNSP_REQUIRE_IPV6: '1'
+      - name: Extract and verify the release archive
         run: |
           portable="$RUNNER_TEMP/DNSProxy portable bundle"
           mkdir -p "$portable"
           tar -xzf "dist/dnsp-modern-$(cat VERSION)-macos-${{ matrix.arch }}.tar.gz" -C "$portable"
           (cd "$portable" && shasum -a 256 -c SHA256SUMS)
+          "$portable/dnsp-modern" --version
+      - name: Install protocol fixtures and configure loopback test addresses
+        run: |
+          python3 -m pip install 'hypercorn==0.18.0' 'h2==4.3.0'
+          for n in 2 3 4 5 6; do sudo ifconfig lo0 alias "127.0.0.$n" up; done
+      - name: Install optional Homebrew desktop dependencies
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          brew install gtk4 pygobject3
+          brew list --versions > dist/macos-gui-runtime.txt
+      - name: Test the packaged launcher and native GTK interface
+        env:
+          GDK_BACKEND: macos
+          GSK_RENDERER: cairo
+        run: |
+          portable="$RUNNER_TEMP/DNSProxy portable bundle"
           export DNSP_TEST_BINARY="$portable/dnsp-modern"
-          "$DNSP_TEST_BINARY" --version
+          export DNSP_GUI_SOURCE="$portable/gui"
+          "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_macos_launcher.py -v
+          "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_platforms.py -v
+          "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_process.py -v
+          "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_settings.py -v
+          "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_native.py \
+            --binary "$portable/dnsp-modern" --artifacts "$PWD/dist/gui-native-macos-${{ matrix.arch }}"
+      - name: Test the extracted CLI, launchd service and protocols
+        env:
+          DNSP_REQUIRE_IPV6: '1'
+        run: |
+          portable="$RUNNER_TEMP/DNSProxy portable bundle"
+          export DNSP_TEST_BINARY="$portable/dnsp-modern"
           failed=0
           python3 tests/test_host_capabilities.py -v || failed=1
           sudo dist/macos-dns-tests || failed=1
@@ -68,4 +91,14 @@ jobs:
             dist/dnsp-modern-*-macos-${{ matrix.arch }}.tar.gz
             dist/dnsp-modern-*-macos-${{ matrix.arch }}.tar.gz.sha256
           if-no-files-found: error
+          retention-days: 14
+      - name: Preserve native desktop evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: dnsp-macos-gui-evidence-${{ matrix.arch }}
+          path: |
+            dist/macos-gui-runtime.txt
+            dist/gui-native-macos-${{ matrix.arch }}/
+          if-no-files-found: warn
           retention-days: 14

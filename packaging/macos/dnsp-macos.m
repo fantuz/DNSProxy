@@ -245,10 +245,11 @@ static NSDictionary *recoveryJob(void) {
     return @{@"Label":Recovery,@"ProgramArguments":@[inside(@"dnsp-macos"),@"recover"],
         @"RunAtLoad":@YES,@"StartInterval":@60,@"ProcessType":@"Background"};
 }
-static NSDictionary *serviceJob(NSString *upstream,NSString *bootstrap,BOOL customCA) {
+static NSDictionary *serviceJob(NSString *upstream,NSString *bootstrap,BOOL customCA,NSUInteger metricsPort) {
     NSMutableArray *args=[@[inside(@"dnsp-modern"),@"-l",@"127.0.0.1",@"-l",@"::1",@"-p",@"53",
         @"-s",upstream,@"--bootstrap-address",bootstrap,@"--cache-entries",@"256"] mutableCopy];
     if(customCA) [args addObjectsFromArray:@[@"--ca-file",inside(@"ca-bundle.crt")]];
+    if(metricsPort) [args addObjectsFromArray:@[@"-m",[NSString stringWithFormat:@"%lu",(unsigned long)metricsPort]]];
     NSMutableDictionary *sockets=[NSMutableDictionary new];
     for(NSString *family in @[@"4",@"6"]) for(NSString *type in @[@"UDP",@"TCP"]) {
         BOOL ipv6=[family isEqual:@"6"];
@@ -334,10 +335,17 @@ static void copyExecutable(NSString *source,NSString *destination) {
 }
 static void install(NSArray *arguments,NSString *source) {
     NSMutableArray *connection=[NSMutableArray new],*policies=[NSMutableArray new];
-    NSString *blockMode=@"refused";BOOL hasDeny=NO;
+    NSString *blockMode=@"refused";BOOL hasDeny=NO,hasMetrics=NO;NSUInteger metricsPort=0;
     for(NSUInteger i=0;i<arguments.count;i++) {
         NSString *argument=arguments[i];
-        if([argument isEqual:@"--blocklist"] || [argument isEqual:@"--allowlist"] || [argument isEqual:@"--block-response"]) {
+        if([argument isEqual:@"--metrics-port"]) {
+            require(!hasMetrics && ++i<arguments.count,@"Use one --metrics-port value (0 disables monitoring)");hasMetrics=YES;
+            NSString *value=arguments[i];
+            require(value.length>0 && value.length<=5 &&
+                [value rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789"] invertedSet]].location==NSNotFound &&
+                value.integerValue<=65535 && value.integerValue!=53,@"Metrics port must be 0..65535 and differ from DNS port 53");
+            metricsPort=(NSUInteger)value.integerValue;
+        } else if([argument isEqual:@"--blocklist"] || [argument isEqual:@"--allowlist"] || [argument isEqual:@"--block-response"]) {
             require(++i<arguments.count,@"Policy option requires a value");
             if([argument isEqual:@"--block-response"]) blockMode=arguments[i];
             else {
@@ -349,7 +357,7 @@ static void install(NSArray *arguments,NSString *source) {
     require(policies.count<=64 && (!policies.count || hasDeny),@"Use a blocklist and at most 64 policy files");
     require([@[@"refused",@"nxdomain",@"nodata",@"null"] containsObject:blockMode],@"Unknown block response mode");
     arguments=connection;
-    require(arguments.count==0 || arguments.count==2 || arguments.count==3,@"Usage: install [HTTPS_UPSTREAM NUMERIC_BOOTSTRAP [CA_FILE]]");
+    require(arguments.count==0 || arguments.count==2 || arguments.count==3,@"Usage: install [HTTPS_UPSTREAM NUMERIC_BOOTSTRAP [CA_FILE]] [--metrics-port PORT]");
     NSString *upstream=arguments.count?arguments[0]:@"https://cloudflare-dns.com/dns-query";
     NSString *bootstrap=arguments.count?arguments[1]:@"1.1.1.1";
     NSURL *url=[NSURL URLWithString:upstream];unsigned char address[16];
@@ -377,7 +385,7 @@ static void install(NSArray *arguments,NSString *source) {
         // Retain root ownership and grant both permissions to its service group.
         BOOL logOK=fchown(fd,0,logGroup())==0 && fchmod(fd,0660)==0;
         close(fd);require(logOK,@"Cannot grant the service access to its log");
-        NSMutableDictionary *service=[serviceJob(upstream,bootstrap,arguments.count==3) mutableCopy];
+        NSMutableDictionary *service=[serviceJob(upstream,bootstrap,arguments.count==3,metricsPort) mutableCopy];
         NSMutableArray *policyArgs=[NSMutableArray new];NSUInteger total=0;
         for(NSUInteger i=0;i<policies.count;i++) {
             NSDictionary *entry=policies[i];NSString *path=entry[@"Path"];struct stat info;

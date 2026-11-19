@@ -2,8 +2,46 @@
 
 from dataclasses import dataclass
 import ipaddress
+import os
+import shlex
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import urlsplit
+
+
+def default_binary():
+    """Prefer an explicitly supplied bundled companion, then native install paths."""
+    configured = os.environ.get("DNSP_GUI_BINARY")
+    if configured:
+        return configured
+    name = "dnsp-modern.exe" if sys.platform == "win32" else "dnsp-modern"
+    root = Path(__file__).resolve()
+    candidates = [root.parents[2] / "bin" / name, root.parents[2] / name]
+    if sys.platform == "win32":
+        program = os.environ.get("ProgramFiles", r"C:\Program Files")
+        candidates += [Path(program) / "DNSProxy/bin" / name]
+    elif sys.platform == "darwin":
+        candidates += [Path("/Library/Application Support/DNSProxy") / name]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which(name) or name
+
+
+def command_preview(command, redact=True):
+    """Display platform-appropriate quoting without using a shell to launch."""
+    values = list(command)
+    if redact:
+        from owned_process import safe_text
+
+        values = [safe_text(value) for value in values]
+    return (
+        subprocess.list2cmdline(values)
+        if sys.platform == "win32"
+        else shlex.join(values)
+    )
 
 
 @dataclass
@@ -40,18 +78,34 @@ class ResolverConfig:
 
         def url(value):
             parts = urlsplit(value)
-            if parts.scheme != "https" or not parts.hostname or parts.fragment:
-                raise ValueError("Upstreams must be HTTPS URLs without fragments")
+            if (
+                parts.scheme != "https"
+                or not parts.hostname
+                or parts.fragment
+                or any(
+                    character.isspace() or ord(character) < 32 for character in value
+                )
+            ):
+                raise ValueError(
+                    "Upstreams must be HTTPS URLs without whitespace or fragments"
+                )
             _ = parts.port
             return value
 
+        if sys.platform == "win32" and self.binary.rstrip(" .").lower().endswith(
+            (".bat", ".cmd")
+        ):
+            raise ValueError(
+                "Choose the native resolver EXE, not a Windows command script"
+            )
         if not self.binary.strip() or "\x00" in self.binary:
             raise ValueError("Choose the dnsp-modern executable")
         ipaddress.ip_address(self.listen)
-        port = integer(self.port, 1024, 65535, "DNS port for a user process")
+        minimum = 1 if sys.platform == "win32" else 1024
+        port = integer(self.port, minimum, 65535, "DNS port for a user process")
         command = [self.binary, "-l", self.listen, "-p", port, "-s", url(self.upstream)]
         if self.metrics:
-            metric = integer(self.metrics_port, 1024, 65535, "Metrics port")
+            metric = integer(self.metrics_port, minimum, 65535, "Metrics port")
             if metric == port:
                 raise ValueError("DNS and metrics ports must differ")
             command += ["-m", metric]

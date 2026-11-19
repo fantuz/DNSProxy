@@ -11,7 +11,7 @@ import unittest
 
 SOURCE = Path(
     os.environ.get(
-        "DNSP_GUI_SOURCE", Path(__file__).resolve().parents[1] / "tools/linux-gui"
+        "DNSP_GUI_SOURCE", Path(__file__).resolve().parents[1] / "tools/desktop-gui"
     )
 )
 sys.path.insert(0, str(SOURCE))

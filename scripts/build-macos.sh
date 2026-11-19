@@ -30,17 +30,26 @@ for executable in dnsp-modern dnsp-macos; do
 done
 cp LICENSE "$bundle/"
 cp docs/MACOS.md "$bundle/"
+cp docs/MACOS-GUI.md "$bundle/"
 cp docs/BLOCKLISTS.md scripts/update-blocklist.py "$bundle/"
 cp packaging/macos/Start-DNSProxy.command "$bundle/"
-chmod 755 "$bundle/Start-DNSProxy.command"
+cp packaging/macos/Start-DNSProxy-GUI.command "$bundle/"
+mkdir -p "$bundle/gui"
+# Include source modules and the optional launcher, never developer bytecode or
+# a Homebrew-linked runtime. Keep the native CLI dependency check above intact.
+for module in tools/desktop-gui/*.py tools/desktop-gui/dnsp-gui-macos; do
+    cp "$module" "$bundle/gui/"
+done
+chmod 755 "$bundle/Start-DNSProxy.command" "$bundle/Start-DNSProxy-GUI.command" "$bundle/gui/dnsp-gui-macos"
 {
     printf 'DNSProxy %s\nSource commit: %s\nArchitecture: %s\nMinimum macOS: 15.0\n' "$version" "$(git rev-parse HEAD)" "$arch"
+    printf 'Optional GUI: GTK 4/PyGObject/Cairo from Homebrew; source included under gui/\n'
     "$bundle/dnsp-modern" --version
     sw_vers
     "$compiler" --version
     otool -L "$bundle/dnsp-modern"
 } > "$bundle/BUILD-INFO.txt"
-(cd "$bundle" && shasum -a 256 dnsp-modern dnsp-macos Start-DNSProxy.command LICENSE MACOS.md BLOCKLISTS.md update-blocklist.py BUILD-INFO.txt > SHA256SUMS)
+(cd "$bundle" && find . -type f ! -name SHA256SUMS -exec shasum -a 256 {} \; | LC_ALL=C sort -k2 > SHA256SUMS)
 archive="dist/dnsp-modern-$version-macos-$arch.tar.gz"
 COPYFILE_DISABLE=1 tar -czf "$archive" -C "$bundle" .
 (cd dist && shasum -a 256 "$(basename "$archive")" > "$(basename "$archive").sha256")
