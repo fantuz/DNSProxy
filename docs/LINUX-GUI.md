@@ -10,9 +10,10 @@ The shared desktop source also supports Windows and macOS. It runs as an
 ordinary user, reads aggregate metrics, and controls only a resolver it started
 itself. System service and adapter DNS configuration remain separate.
 See the [shared desktop guide](DESKTOP-GUI.md) for Windows GUI installers,
-the Homebrew Mac launcher and cross-platform behavior. This guide describes the
-current source tree and CI artifacts. Release 4.9.0 contains the earlier Linux
-interface; its assets do not include Windows GUI installers or the Mac GUI launcher.
+the Homebrew Mac launcher and cross-platform behavior. Release 4.10.0 includes
+this shared interface in the Linux GUI packages, Windows desktop installers
+and Mac archives. The [4.10.0 release notes](releases/4.10.0.md) describe these
+desktop distributions.
 
 ## Preview
 

@@ -5,10 +5,10 @@ and diagnostics views on Linux, Windows and macOS. The C resolver remains
 independent of Python/GTK. The desktop runs as an ordinary user and does not
 install services or change adapter DNS settings.
 
-This guide describes the current source tree and its CI artifacts. The release
-asset list identifies the available desktop distributions. Release 4.9.0 contains
-the earlier Linux interface; its assets exclude the Windows desktop installers
-and Mac GUI launcher.
+Release 4.10.0 includes the shared interface in Linux GUI packages, Windows
+desktop installers and native Mac archives with the Homebrew launcher. See the
+[4.10.0 release notes](releases/4.10.0.md) and the release asset list for the
+matching platform downloads.
 
 ## Platform delivery
 
