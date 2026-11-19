@@ -145,11 +145,16 @@ def download_source(item, *, tar):
     request = urllib.request.Request(
         url, headers={"User-Agent": "DNSProxy-runtime-sources"}
     )
-    with (
-        urllib.request.urlopen(request, timeout=120) as response,
-        destination.open("wb") as output,
-    ):
-        shutil.copyfileobj(response, output)
+    try:
+        with (
+            urllib.request.urlopen(request, timeout=120) as response,
+            destination.open("wb") as output,
+        ):
+            shutil.copyfileobj(response, output)
+    except OSError as error:
+        raise RuntimeError(
+            f"Failed to download runtime source {destination.name} from {url}: {error}"
+        ) from error
     validate_source_archive(destination, tar)
     return {
         "url": url,
@@ -239,19 +244,22 @@ def validate_sources(archive, version, source_sha, architecture):
 
 
 def is_package_hook_metadata(member):
-    """ALPM hook metadata belongs to the build host, not the native runtime."""
+    """ALPM hooks/scripts belong to the build host, not the native runtime."""
     if member in (
         "usr/",
         "usr/share/",
         "usr/share/libalpm/",
         "usr/share/libalpm/hooks/",
+        "usr/share/libalpm/scripts/",
     ):
         return True
     path = PurePosixPath(member)
     return (
         len(path.parts) == 5
-        and path.parts[:4] == ("usr", "share", "libalpm", "hooks")
-        and bool(re.fullmatch(r"[A-Za-z0-9_.+-]+\.hook", path.name))
+        and path.parts[:3] == ("usr", "share", "libalpm")
+        and path.parts[3] in ("hooks", "scripts")
+        and bool(re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*", path.name))
+        and (path.parts[3] != "hooks" or path.name.endswith(".hook"))
         and "\\" not in member
     )
 
@@ -301,6 +309,28 @@ def compile_runtime_caches(runtime):
         subprocess.run(
             [str(runtime / "bin/gio-querymodules.exe"), str(modules)], check=True
         )
+    mime = runtime / "share/mime"
+    if (mime / "packages").is_dir():
+        subprocess.run(
+            [str(runtime / "bin/update-mime-database.exe"), str(mime)], check=True
+        )
+    themes = sorted((runtime / "share/icons").glob("*/index.theme"))
+    if themes:
+        icon_cache = next(
+            (
+                runtime / "bin" / name
+                for name in (
+                    "gtk-update-icon-cache.exe",
+                    "gtk-update-icon-cache-3.0.exe",
+                )
+                if (runtime / "bin" / name).is_file()
+            ),
+            None,
+        )
+        if icon_cache is None:
+            raise ValueError("The staged icon themes have no native cache builder")
+        for index in themes:
+            subprocess.run([str(icon_cache), "--force", str(index.parent)], check=True)
 
 
 def main():

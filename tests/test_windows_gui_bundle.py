@@ -112,6 +112,8 @@ class RuntimeClosureTests(unittest.TestCase):
                 "ucrt64/share/licenses/pkg/LICENSE\n"
                 "usr/\nusr/share/\nusr/share/libalpm/\nusr/share/libalpm/hooks/\n"
                 "usr/share/libalpm/hooks/mingw-w64-ucrt-x86_64-glib-compile-schemas.hook\n"
+                "usr/share/libalpm/scripts/\n"
+                "usr/share/libalpm/scripts/mingw-w64-ucrt-x86_64-gtk-update-icon-cache\n"
             )
             packages = {"pkg": ({}, metadata)}
             builder["stage_runtime"](prefix, output, ["pkg"], packages)
@@ -128,6 +130,7 @@ class RuntimeClosureTests(unittest.TestCase):
             for value in (
                 "usr/bin/tool.exe",
                 "usr/share/libalpm/hooks/../tool.exe",
+                "usr/share/libalpm/scripts/../tool.exe",
                 "/usr/share/libalpm/hooks/foreign.hook",
             ):
                 self.assertFalse(builder["is_package_hook_metadata"](value))
@@ -174,6 +177,30 @@ class RuntimeClosureTests(unittest.TestCase):
                 command = call.args[0]
                 self.assertTrue(Path(command[0]).is_relative_to(runtime))
                 self.assertTrue(Path(command[1]).is_relative_to(runtime))
+
+    def test_generated_mime_and_icon_caches_replace_host_package_hooks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary) / "private runtime"
+            (runtime / "share/mime/packages").mkdir(parents=True)
+            theme = runtime / "share/icons/hicolor"
+            theme.mkdir(parents=True)
+            (theme / "index.theme").write_text("[Icon Theme]\nName=Hicolor\n")
+            (runtime / "bin").mkdir()
+            icon_tool = runtime / "bin/gtk-update-icon-cache.exe"
+            icon_tool.write_bytes(b"native test fixture")
+            with patch("subprocess.run") as run:
+                builder["compile_runtime_caches"](runtime)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(
+                run.call_args_list[0].args[0],
+                [
+                    str(runtime / "bin/update-mime-database.exe"),
+                    str(runtime / "share/mime"),
+                ],
+            )
+            self.assertEqual(
+                run.call_args_list[1].args[0], [str(icon_tool), "--force", str(theme)]
+            )
 
 
 class ManifestTests(unittest.TestCase):
@@ -246,6 +273,15 @@ class ManifestTests(unittest.TestCase):
 
 
 class SourceDownloadTests(unittest.TestCase):
+    def test_network_failure_identifies_the_source_archive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "runtime.src.tar.zst"
+            url = "https://example.test/runtime.src.tar.zst"
+            with patch("urllib.request.urlopen", side_effect=OSError("HTTP 404")):
+                with self.assertRaisesRegex(RuntimeError, url) as failure:
+                    builder["download_source"]((url, destination), tar="bsdtar")
+                self.assertIn(destination.name, str(failure.exception))
+
     def test_nonempty_http_error_body_is_rejected_before_archive_inspection(self):
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "runtime.src.tar.zst"
