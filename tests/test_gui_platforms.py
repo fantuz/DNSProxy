@@ -14,7 +14,10 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tools/desktop-gui"))
+GUI_SOURCE = Path(
+    os.environ.get("DNSP_GUI_SOURCE", ROOT / "tools/desktop-gui")
+).resolve()
+sys.path.insert(0, str(GUI_SOURCE))
 import monitor  # noqa: E402
 import platform_monitor as native  # noqa: E402
 
@@ -25,7 +28,7 @@ class NativeParsingTests(unittest.TestCase):
             marker = Path(directory) / "orphan-helper"
             child_code = f"import time; from pathlib import Path; time.sleep(2); Path({str(marker)!r}).touch()"
             script = (
-                f"import sys,threading,time; sys.path.insert(0,{str(ROOT / 'tools/desktop-gui')!r}); "
+                f"import sys,threading,time; sys.path.insert(0,{str(GUI_SOURCE)!r}); "
                 "import platform_monitor as p; "
                 f"threading.Thread(target=lambda:p._run_inspection([sys.executable,'-c',{child_code!r}],timeout=10),daemon=True).start(); "
                 "\nwhile not p._INSPECTIONS: time.sleep(.01)\n"

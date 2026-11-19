@@ -148,9 +148,15 @@ jobs:
         shell: pwsh
         run: |
           $env:DNSP_TEST_BINARY = "$pwd/dist/windows/dnsp-modern.exe"
+          $env:DNSP_GUI_SOURCE = "$pwd/dist/windows-gui-${{ matrix.arch }}/app"
+          $privatePython = "$pwd/dist/windows-gui-${{ matrix.arch }}/runtime/bin/python.exe"
           $desktopFailed = $false
           foreach ($desktopTest in @('tests/test_gui_platforms.py', 'tests/test_gui_process.py', 'tests/test_windows_gui_bundle.py', 'tests/test_gui_bootstrap.py')) {
-            python $desktopTest -v
+            if ($desktopTest -in @('tests/test_gui_platforms.py', 'tests/test_gui_process.py')) {
+              & $privatePython -I -B $desktopTest -v
+            } else {
+              python $desktopTest -v
+            }
             if ($LASTEXITCODE) { $desktopFailed = $true }
           }
           exit [int]$desktopFailed

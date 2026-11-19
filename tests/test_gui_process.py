@@ -10,7 +10,10 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tools/desktop-gui"))
+GUI_SOURCE = Path(
+    os.environ.get("DNSP_GUI_SOURCE", ROOT / "tools/desktop-gui")
+).resolve()
+sys.path.insert(0, str(GUI_SOURCE))
 from owned_process import MAX_LOG_BYTES, OwnedResolver, safe_text  # noqa: E402
 from launcher import ResolverConfig, command_preview, default_binary  # noqa: E402
 

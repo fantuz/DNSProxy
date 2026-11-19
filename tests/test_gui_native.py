@@ -34,6 +34,11 @@ QUESTION = struct.pack("!HHHHHH", 0x1267, 0x0100, 1, 0, 0, 0) + (
 )
 
 
+def invalid_port_error():
+    minimum = 1 if sys.platform == "win32" else 1024
+    return f"DNS port for a user process must be {minimum}..65535"
+
+
 def runtime_from_environment():
     """Restore private DLL directories in every isolated Windows test process."""
     global RUNTIME_NAMESPACE
@@ -460,11 +465,13 @@ class NativeScenario:
         assert {"binary", "upstream", "metrics_port", "blocklist"} <= set(
             editor.entries
         )
+        original_config = window.launch_config
         editor.entries["port"].set_text("0")
         editor.apply_button.emit("clicked")
         assert editor.get_visible()
-        assert "1024" in editor.status_label.get_text()
-        assert window.launch_config.port == "5300"
+        assert editor.status_label.get_text() == invalid_port_error()
+        assert window.launch_config == original_config
+        assert editor.config == original_config
         self.check("grouped native settings and invalid-edit rollback")
         self.screenshot("demo-settings.png", editor)
         editor.close()
@@ -554,14 +561,17 @@ class NativeScenario:
                 wait_for(self.context, editor.get_mapped, "owned resolver options")
                 original = editor.config
                 secret_url = "https://native-user:native-secret@localhost/dns-query?token=native-token"
-                editor.config = replace(original, upstream=secret_url)
+                secret_config = replace(original, upstream=secret_url)
+                editor.config = secret_config
                 editor.reset()
                 assert "native-secret" not in editor.entries["upstream"].get_text()
                 assert "native-token" not in editor.entries["upstream"].get_text()
                 assert editor.draft().upstream == secret_url
                 editor.entries["port"].set_text("0")
                 editor.apply_button.emit("clicked")
-                assert editor.get_visible() and "1024" in editor.status_label.get_text()
+                assert editor.get_visible()
+                assert editor.status_label.get_text() == invalid_port_error()
+                assert editor.config == secret_config
                 assert window.launch_config == original
                 self.check("secret-safe display and failed settings apply are lossless")
                 editor.config = original
@@ -682,6 +692,68 @@ class NativeScenario:
                 )
 
 
+def run_scenarios(options):
+    """Collect every isolated scenario while retaining a failing overall gate."""
+    results = {}
+    aggregate = options.artifacts / "results.json"
+    aggregate.unlink(missing_ok=True)
+    for scenario in SCENARIOS:
+        report = options.artifacts / f"results-{scenario}.json"
+        report.unlink(missing_ok=True)
+        command = [
+            sys.executable,
+            "-I",
+            "-B",
+            str(Path(__file__).resolve()),
+            "--binary",
+            str(options.binary),
+            "--artifacts",
+            str(options.artifacts),
+            "--scenario",
+            scenario,
+        ]
+        failure = None
+        try:
+            process = subprocess.run(command, check=False, timeout=180)
+            if process.returncode:
+                failure = f"Scenario process exited with status {process.returncode}"
+        except (OSError, subprocess.TimeoutExpired) as error:
+            failure = type(error).__name__ + ": " + str(error)
+        try:
+            item = json.loads(report.read_text(encoding="utf-8"))
+            if not isinstance(item, dict):
+                raise ValueError("The scenario report must be a JSON object")
+        except (OSError, ValueError) as error:
+            item = {
+                "scenario": scenario,
+                "platform": sys.platform,
+                "passed": False,
+                "checks": [],
+                "captures": [],
+                "error": "Scenario report unavailable: " + str(error),
+            }
+        if item.get("platform") != sys.platform or item.get("scenario") != scenario:
+            failure = "The scenario report identifies a different platform or scenario"
+        if failure:
+            item["passed"] = False
+            item["process_error"] = failure
+        if item.get("passed") is not True:
+            item["passed"] = False
+        report.write_text(json.dumps(item, indent=2) + "\n", encoding="utf-8")
+        results[scenario] = item
+    failed = [name for name, item in results.items() if not item["passed"]]
+    aggregate.write_text(
+        json.dumps(
+            {"passed": not failed, "platform": sys.platform, "scenarios": results},
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    if failed:
+        raise SystemExit("Native GUI scenarios failed: " + ", ".join(failed))
+
+
 def main():
     sys.dont_write_bytecode = True
     parser = argparse.ArgumentParser(description=__doc__)
@@ -696,33 +768,7 @@ def main():
     options.artifacts.mkdir(parents=True, exist_ok=True)
     runtime_from_environment()
     if options.scenario == "all":
-        results = {}
-        for scenario in SCENARIOS:
-            command = [
-                sys.executable,
-                "-I",
-                "-B",
-                str(Path(__file__).resolve()),
-                "--binary",
-                str(options.binary),
-                "--artifacts",
-                str(options.artifacts),
-                "--scenario",
-                scenario,
-            ]
-            subprocess.run(command, check=True, timeout=180)
-            item = json.loads(
-                (options.artifacts / f"results-{scenario}.json").read_text()
-            )
-            assert item["passed"] and item["platform"] == sys.platform, item
-            results[scenario] = item
-        (options.artifacts / "results.json").write_text(
-            json.dumps(
-                {"passed": True, "platform": sys.platform, "scenarios": results},
-                indent=2,
-            )
-            + "\n"
-        )
+        run_scenarios(options)
     else:
         NativeScenario(options).run()
 
