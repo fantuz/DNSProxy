@@ -204,7 +204,7 @@ class LauncherTests(unittest.TestCase):
         from launcher import ResolverConfig
 
         for settings in (
-            {"port": "53"},
+            {"port": "0"},
             {"listen": "example.com"},
             {"metrics_port": "5300"},
             {"cache_entries": "1025"},

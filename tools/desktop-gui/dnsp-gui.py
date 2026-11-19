@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Optional Linux GTK 4 monitor. The resolver does not depend on this program."""
+"""DNSProxy GTK 4 desktop monitor and ordinary-user resolver controls."""
 
 from __future__ import annotations
 
@@ -7,9 +7,6 @@ import argparse
 from collections import deque
 import math
 import sys
-import shutil
-import shlex
-import subprocess
 import threading
 import time
 
@@ -28,6 +25,9 @@ from monitor import (
 
 def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--binary", help="Native resolver executable for GUI-owned runs"
+    )
     parser.add_argument(
         "--pid", type=int, help="Inspect one dnsp-modern PID (otherwise auto-detect)"
     )
@@ -81,11 +81,13 @@ def load_gtk():
         import gi
 
         gi.require_version("Gtk", "4.0")
+        gi.require_foreign("cairo")
         from gi.repository import Gio, GLib, Gtk
     except (ImportError, ValueError) as error:
         raise RuntimeError(
-            "GTK 4 bindings are missing. On Debian/Ubuntu install "
-            "python3-gi python3-gi-cairo gir1.2-gtk-4.0, then run with /usr/bin/python3."
+            "GTK 4 bindings are missing. Use the bundled Windows GUI, the macOS "
+            "Homebrew launcher (brew install gtk4 pygobject3), or install "
+            "python3-gi python3-gi-cairo gir1.2-gtk-4.0 on Debian/Ubuntu."
         ) from error
     return Gio, GLib, Gtk
 
@@ -101,7 +103,7 @@ def build_application(options):
 
     class Window(Gtk.ApplicationWindow):
         def __init__(self, app):
-            super().__init__(application=app, title="DNSProxy · Linux monitor")
+            super().__init__(application=app, title="DNSProxy · Desktop monitor")
             self.set_default_size(1120, 920)
             self.collector = (
                 DemoCollector()
@@ -111,17 +113,27 @@ def build_application(options):
             self.rates = Rates()
             self.latencies = LatencyWindow()
             self.selected_pid = options.pid
+            self.metrics_port = options.metrics_port
+            self.monitor_connected = True
+            self.settings_window = None
+            self.last_owned_snapshot = None
+            self.log_revision = None
             self.instance_ids = [None]
             self.instance_labels = []
             self.updating_instances = False
             self.history = deque(maxlen=options.history)
             self.history_times = deque(maxlen=options.history)
+            self.udp_history = deque(maxlen=options.history)
+            self.tcp_history = deque(maxlen=options.history)
+            self.latency_history = deque(maxlen=options.history)
+            self.upstream_latency_history = deque(maxlen=options.history)
             self.history_gap = False
             self.good_snapshot = None
             self.peak_qps = self.peak_cpu = self.peak_memory = self.peak_inflight = None
             self.missed_samples = 0
             self.owned_process = None
             self.busy = False
+            self.pending_sample = False
             self.closed = False
             self.epoch = 0
             self.last_started = 0
@@ -174,6 +186,9 @@ def build_application(options):
             self.refresh = Gtk.Button(label="Refresh now")
             self.refresh.connect("clicked", lambda *_: self.request_sample(force=True))
             toolbar.append(self.refresh)
+            self.options_button = Gtk.Button(label="Resolver options…")
+            self.options_button.connect("clicked", self.open_settings)
+            toolbar.append(self.options_button)
             connection = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
             connection.add_css_class("info-panel")
             self.connection_panel = connection
@@ -196,6 +211,25 @@ def build_application(options):
             reconnect.connect("clicked", lambda *_: self.instance_changed(force=True))
             picker.append(reconnect)
             connection.append(picker)
+            endpoint = Gtk.Box(spacing=12)
+            endpoint.append(self.label("Local metrics port"))
+            self.metrics_entry = Gtk.Entry(hexpand=True)
+            self.metrics_entry.set_placeholder_text("Automatic, or 9090")
+            self.metrics_entry.set_text(str(options.metrics_port or ""))
+            self.metrics_entry.set_tooltip_text(
+                "Read only 127.0.0.1:PORT/metrics. Enable loopback metrics on an existing service explicitly, or start a separate resolver below."
+            )
+            endpoint.append(self.metrics_entry)
+            self.connect_button = Gtk.Button(label="Connect")
+            self.reconnect_control = self.connect_button
+            self.connect_button.set_sensitive(not options.demo)
+            self.connect_button.connect("clicked", self.connect_metrics)
+            endpoint.append(self.connect_button)
+            self.disconnect_button = Gtk.Button(label="Disconnect")
+            self.disconnect_button.set_sensitive(not options.demo)
+            self.disconnect_button.connect("clicked", self.disconnect_metrics)
+            endpoint.append(self.disconnect_button)
+            connection.append(endpoint)
             if options.demo:
                 connection.append(
                     self.label(
@@ -239,6 +273,12 @@ def build_application(options):
             title = self.label("Query activity", "section-heading")
             title.set_hexpand(True)
             chart_heading.append(title)
+            self.query_series = Gtk.DropDown.new_from_strings(
+                ["All queries", "UDP", "TCP"]
+            )
+            self.chart_series = self.query_series
+            self.query_series.connect("notify::selected", self.chart_series_changed)
+            chart_heading.append(self.query_series)
             chart_heading.append(self.label("QUERIES / SECOND", "dim-label"))
             self.chart_panel.append(chart_heading)
             self.activity = self.label("Waiting for the first sample")
@@ -253,7 +293,59 @@ def build_application(options):
             self.chart_panel.append(self.chart)
             self.chart_scale = self.label("Waiting for activity history", "dim-label")
             self.chart_panel.append(self.chart_scale)
-            overview.append(self.chart_panel)
+            self.charts_grid = Gtk.FlowBox(
+                column_spacing=16,
+                row_spacing=16,
+                homogeneous=True,
+                min_children_per_line=1,
+                max_children_per_line=2,
+                hexpand=True,
+            )
+            self.charts_grid.set_selection_mode(Gtk.SelectionMode.NONE)
+            self.charts_grid.set_activate_on_single_click(False)
+            self.charts_wide = True
+            self.chart_panel.set_hexpand(True)
+            self.chart_panel.set_valign(Gtk.Align.FILL)
+            self.activity.set_wrap(True)
+            self.chart_scale.set_wrap(True)
+            self.chart_scale.set_max_width_chars(45)
+            self.charts_grid.append(self.chart_panel)
+            self.latency_panel = Gtk.Box(
+                orientation=Gtk.Orientation.VERTICAL, spacing=10
+            )
+            self.latency_panel.add_css_class("info-panel")
+            latency_heading = Gtk.Box(spacing=12)
+            latency_heading.append(self.label("Latency history", "section-heading"))
+            latency_heading.append(Gtk.Box(hexpand=True))
+            self.latency_series = Gtk.DropDown.new_from_strings(
+                ["Client reply p95", "Upstream attempt p95"]
+            )
+            self.latency_series.connect(
+                "notify::selected", lambda *_: self.latency_chart.queue_draw()
+            )
+            latency_heading.append(self.latency_series)
+            latency_heading.append(self.label("MILLISECONDS", "dim-label"))
+            self.latency_panel.append(latency_heading)
+            self.latency_activity = self.label(
+                "Estimated p95 · recent sampling window", "dim-label"
+            )
+            self.latency_activity.set_wrap(True)
+            self.latency_panel.append(self.latency_activity)
+            self.latency_chart = Gtk.DrawingArea(hexpand=True)
+            self.latency_chart.set_content_height(160)
+            self.latency_chart.set_draw_func(self.draw_latency_history)
+            self.latency_chart.set_tooltip_text(
+                "p95 estimates from bounded histogram buckets over the recent sampling window. Missing data and pauses create gaps; these are not individual request traces."
+            )
+            self.latency_panel.append(self.latency_chart)
+            self.latency_scale = self.label("Waiting for timing samples", "dim-label")
+            self.latency_scale.set_wrap(True)
+            self.latency_scale.set_max_width_chars(45)
+            self.latency_panel.append(self.latency_scale)
+            self.latency_panel.set_hexpand(True)
+            self.latency_panel.set_valign(Gtk.Align.FILL)
+            self.charts_grid.append(self.latency_panel)
+            overview.append(self.charts_grid)
             overview.append(
                 self.group(
                     "Estimated latency · last 60 sampling intervals",
@@ -325,7 +417,7 @@ def build_application(options):
                         ("missed", "Missed traffic samples · session"),
                         ("uptime", "Process uptime"),
                         ("pid", "Process ID"),
-                        ("service", "Packaged systemd service"),
+                        ("service", "Packaged system service"),
                         ("build", "Daemon / libcurl version"),
                         ("capabilities", "Built HTTP/2 · HTTP/3 support"),
                     ],
@@ -345,9 +437,10 @@ def build_application(options):
             )
             self.add_preferences(notebook)
             self.add_launcher(notebook)
+            self.add_diagnostics(notebook)
             notes = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
             for text in (
-                "This monitor reads /proc and the existing loopback /metrics listener. It does not change "
+                "This monitor reads available native process/service status and the existing loopback /metrics listener. It does not change "
                 "a monitored service or system DNS. The Launch resolver tab can start a separate ordinary-user process.",
                 "Incoming-query activity is inferred from counter changes between samples. This is not a "
                 "packet capture: client addresses, query names and query contents are neither collected nor shown.",
@@ -360,9 +453,9 @@ def build_application(options):
                 "Traffic bytes and system interface throughput are not exposed by the daemon. They are not estimated "
                 "from query counts. An unavailable metric is shown as a dash, rather than a zero.",
                 "Pause switches to on-demand sampling with Refresh now. Automatic polling also stops while the "
-                "window is unmapped. Closing the GUI leaves DNSProxy running.",
+                "window is unmapped. Closing the GUI stops its owned resolver; external daemons and services keep running.",
                 "Use the instance selector when several resolvers run. Service state is read independently "
-                "from dnsp-modern.service and never changes the daemon. If /proc is restricted, --metrics-port PORT offers "
+                "from the platform service manager and never changes the daemon. If process metadata is restricted, --metrics-port PORT offers "
                 "traffic-only monitoring without root privileges or inferred startup settings.",
                 "Percentiles are estimates interpolated from bounded histogram buckets over recent samples. "
                 "Client timings include complete UDP/TCP replies, cache hits, policy blocks and DNS errors. "
@@ -383,6 +476,7 @@ def build_application(options):
             self.chart_panel.set_visible(not options.no_chart)
             self.chart.set_visible(not options.no_chart)
             self.chart_scale.set_visible(not options.no_chart)
+            self.latency_panel.set_visible(not options.no_chart)
             self.tick_id = GLib.timeout_add(50, self.tick)
 
         @staticmethod
@@ -480,11 +574,21 @@ def build_application(options):
 
         def preference_changed(self, spin, key):
             if key == "history":
-                self.history = deque(self.history, maxlen=spin.get_value_as_int())
-                self.history_times = deque(
-                    self.history_times, maxlen=spin.get_value_as_int()
-                )
+                for name in (
+                    "history",
+                    "history_times",
+                    "udp_history",
+                    "tcp_history",
+                    "latency_history",
+                    "upstream_latency_history",
+                ):
+                    setattr(
+                        self,
+                        name,
+                        deque(getattr(self, name), maxlen=spin.get_value_as_int()),
+                    )
                 self.chart.queue_draw()
+                self.latency_chart.queue_draw()
             elif key == "interval":
                 self.interval = spin.get_value()
             else:
@@ -497,68 +601,33 @@ def build_application(options):
             self.chart_panel.set_visible(button.get_active())
             self.chart.set_visible(button.get_active())
             self.chart_scale.set_visible(button.get_active())
+            self.latency_panel.set_visible(button.get_active())
             if button.get_active():
                 self.chart.queue_draw()
 
         def add_launcher(self, notebook):
-            from launcher import ResolverConfig
+            from launcher import ResolverConfig, default_binary
+            from settings import create_settings_window
 
-            config = ResolverConfig(binary=shutil.which("dnsp-modern") or "dnsp-modern")
-            page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            self.launch_config = ResolverConfig(
+                binary=options.binary or default_binary()
+            )
+            self.settings_window = create_settings_window(
+                self, self.launch_config, self.apply_launcher_config, Gtk
+            )
+            # Retain the controls as a simple test/programmatic editing boundary.
+            self.launch_entries = self.settings_window.entries
+            self.launch_checks = self.settings_window.checks
+            page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+            page.add_css_class("info-panel")
             note = self.label(
-                "Start a separate resolver as your desktop user. Existing services and system DNS are untouched. Ports must be 1024 or higher. Stop affects only a process started by this window; closing the window leaves it running. Logs inherit the GUI's terminal or desktop journal."
+                "Start a separate resolver as your desktop user. Stop and close affect only the resolver started by this window. Existing services and system DNS are unchanged."
             )
             note.set_wrap(True)
             page.append(note)
-            grid = Gtk.Grid(column_spacing=18, row_spacing=10)
-            self.launch_entries, self.launch_checks = {}, {}
-            for row, (key, title) in enumerate(
-                (
-                    ("binary", "Executable"),
-                    ("listen", "Listen address"),
-                    ("port", "DNS port"),
-                    ("metrics_port", "Metrics port"),
-                    ("upstream", "DoH upstream URL"),
-                    ("bootstrap", "Bootstrap address"),
-                    ("cache_entries", "Cache entries"),
-                    ("backup", "Backup DoH URL"),
-                    ("backup_bootstrap", "Backup bootstrap"),
-                    ("hedge_ms", "Parallel request delay (ms)"),
-                    ("blocklist", "Blocklist file"),
-                    ("ca_file", "Custom CA file (optional)"),
-                )
-            ):
-                grid.attach(self.label(title), 0, row, 1, 1)
-                entry = Gtk.Entry()
-                entry.set_text(getattr(config, key))
-                entry.set_hexpand(True)
-                self.launch_entries[key] = entry
-                grid.attach(entry, 1, row, 1, 1)
-            page.append(grid)
-            switches = Gtk.FlowBox()
-            switches.set_selection_mode(Gtk.SelectionMode.NONE)
-            for key, title in (
-                ("metrics", "Metrics"),
-                ("cache", "Cache"),
-                ("padding", "EDNS padding"),
-                ("http3", "Prefer HTTP/3"),
-                ("backup_enabled", "Backup upstream"),
-                ("hedge", "Delayed parallel requests"),
-                ("filtering", "Blocklist"),
-            ):
-                check = Gtk.CheckButton(label=title)
-                check.set_active(getattr(config, key))
-                self.launch_checks[key] = check
-                switches.append(check)
-            page.append(switches)
-            self.launch_command = Gtk.Entry()
-            self.launch_command.set_editable(False)
-            self.launch_command.set_placeholder_text(
-                "Preview produces a validated, copyable CLI command"
-            )
-            page.append(self.launch_command)
             buttons = Gtk.Box(spacing=12)
             for title, handler in (
+                ("Resolver options…", self.open_settings),
                 ("Preview command", self.preview_launch),
                 ("Start resolver", self.start_resolver),
                 ("Stop launched resolver", self.stop_resolver),
@@ -571,39 +640,86 @@ def build_application(options):
                     button.set_sensitive(False)
                 if title.startswith("Start"):
                     self.start_button = button
+                    button.add_css_class("suggested-action")
                     button.set_sensitive(not options.demo)
             page.append(buttons)
             self.launch_status = self.label(
-                "Ready · configuration applies to a new process only"
+                "Ready · options apply to the next GUI-owned resolver"
             )
             self.launch_status.set_wrap(True)
             page.append(self.launch_status)
-            # Keep actions and feature switches discoverable before the long
-            # form, including on a compact desktop.
-            page.reorder_child_after(buttons, note)
-            page.reorder_child_after(self.launch_status, buttons)
-            page.reorder_child_after(self.launch_command, self.launch_status)
-            page.reorder_child_after(switches, self.launch_command)
+            self.launch_summary = self.label("")
+            self.launch_summary.set_wrap(True)
+            page.append(self.launch_summary)
+            self.update_launch_summary(self.launch_config)
+            self.launch_command = Gtk.Entry()
+            self.launch_command.set_editable(False)
+            self.launch_command.set_placeholder_text(
+                "Preview a validated command; URL credentials and query values are hidden"
+            )
+            page.append(self.launch_command)
             notebook.append_page(self.scroll(page), self.label("Launch resolver"))
 
-        def launch_argv(self):
-            from launcher import ResolverConfig
-
-            fields = {
-                key: entry.get_text().strip()
-                for key, entry in self.launch_entries.items()
-            }
-            fields.update(
-                {key: check.get_active() for key, check in self.launch_checks.items()}
+        def open_settings(self, *_):
+            running = (
+                self.owned_process is not None and self.owned_process.poll() is None
             )
-            return ResolverConfig(**fields).argv()
+            for control in self.settings_window.controls.values():
+                control.set_sensitive(not running)
+            self.settings_window.form.set_sensitive(not running)
+            self.settings_window.apply_button.set_sensitive(not running)
+            if running:
+                self.settings_window.status_label.set_text(
+                    "Stop this window's resolver before changing its startup options."
+                )
+            self.settings_window.present()
+
+        def update_launch_summary(self, config):
+            features = []
+            for enabled, caption in (
+                (config.cache, "cache"),
+                (config.filtering, "filtering"),
+                (config.padding, "EDNS padding"),
+                (config.http3, "HTTP/3 preference"),
+                (config.backup_enabled, "backup upstream"),
+            ):
+                if enabled:
+                    features.append(caption)
+            self.launch_summary.set_text(
+                f"DNS {config.listen}:{config.port} · "
+                + (
+                    f"metrics 127.0.0.1:{config.metrics_port}"
+                    if config.metrics
+                    else "metrics disabled"
+                )
+                + "\n"
+                + display_value("-s", config.upstream)
+                + "\n"
+                + (", ".join(features) or "No optional features selected")
+            )
+
+        def apply_launcher_config(self, config):
+            if self.owned_process is not None and self.owned_process.poll() is None:
+                raise ValueError(
+                    "Stop the GUI-owned resolver before applying startup options"
+                )
+            self.launch_config = config
+            self.update_launch_summary(config)
+            self.launch_status.set_text(
+                "Options validated · Start launches a new GUI-owned resolver"
+            )
+
+        def launch_argv(self):
+            return self.settings_window.draft().argv()
 
         def preview_launch(self, *_):
+            from launcher import command_preview
+
             try:
                 command = self.launch_argv()
-                self.launch_command.set_text(shlex.join(command))
+                self.launch_command.set_text(command_preview(command))
                 self.launch_status.set_text(
-                    "Validated invocation · select the command to copy it"
+                    "Validated invocation · URL credentials and query values are hidden"
                 )
                 return command
             except (ValueError, OSError) as error:
@@ -611,33 +727,61 @@ def build_application(options):
                 self.launch_status.set_text(str(error))
                 return None
 
+        def add_diagnostics(self, notebook):
+            page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            heading = self.label("Resolver diagnostics", "section-heading")
+            page.append(heading)
+            note = self.label(
+                "Recent output from a resolver started by this window. The log is bounded; URL credentials and query values are hidden. External service logs retain their operating-system permissions."
+            )
+            note.set_wrap(True)
+            page.append(note)
+            self.log_status = self.label(
+                "No GUI-owned resolver has been started", "dim-label"
+            )
+            self.log_status.set_wrap(True)
+            page.append(self.log_status)
+            self.log_view = Gtk.TextView(
+                editable=False, cursor_visible=False, monospace=True
+            )
+            self.diagnostics_view = self.log_view
+            self.log_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+            scroller = Gtk.ScrolledWindow(vexpand=True, hexpand=True)
+            scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            scroller.set_min_content_height(260)
+            scroller.set_child(self.log_view)
+            page.append(scroller)
+            notebook.append_page(self.scroll(page), self.label("Diagnostics"))
+
         def start_resolver(self, *_):
+            from owned_process import OwnedResolver
+
             if options.demo or self.owned_process is not None:
                 return
             command = self.preview_launch()
             if command is None:
                 return
+            self.log_view.get_buffer().set_text("")
+            self.log_status.set_text("Starting the selected resolver…")
             try:
-                child = subprocess.Popen(
-                    command,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-            except (OSError, ValueError) as error:
+                child = OwnedResolver(command).start()
+            except (OSError, ValueError, RuntimeError) as error:
                 self.launch_status.set_text(f"Could not start resolver: {error}")
+                self.log_status.set_text(f"Resolver launch failed: {error}")
                 return
             self.owned_process = child
+            self.last_owned_snapshot = None
+            self.log_revision = None
             self.start_button.set_sensitive(False)
             self.stop_button.set_sensitive(True)
             self.launch_status.set_text(
-                f"Started PID {child.pid} · waiting for readiness; logs use the inherited terminal/journal"
+                f"Started PID {child.pid} · waiting for readiness"
             )
             self.selected_pid = child.pid
             self.collector = Collector(child.pid, timeout=self.timeout)
+            self.monitor_connected = True
             self.reset_baseline()
-            self.history.clear()
-            self.history_times.clear()
+            self.clear_history()
             self.good_snapshot = self.snapshot = None
             self.last_success = None
             self.peak_qps = self.peak_cpu = self.peak_memory = self.peak_inflight = None
@@ -647,22 +791,82 @@ def build_application(options):
 
         def stop_resolver(self, *_):
             if self.owned_process is not None and self.owned_process.poll() is None:
-                self.owned_process.terminate()
+                self.owned_process.stop(wait=False)
                 self.stop_button.set_sensitive(False)
-                self.launch_status.set_text(
-                    "Stop requested · waiting for the launched resolver to exit"
-                )
+                self.launch_status.set_text("Stopping the GUI-owned resolver…")
 
         def check_launched_resolver(self):
-            if self.owned_process is not None:
-                code = self.owned_process.poll()
-                if code is not None:
-                    self.launch_status.set_text(
-                        f"Launched resolver exited with status {code}; check its terminal/journal for details"
-                    )
-                    self.owned_process = None
-                    self.start_button.set_sensitive(True)
-                    self.stop_button.set_sensitive(False)
+            if self.owned_process is None:
+                return
+            state = self.owned_process.snapshot()
+            if state.get("revision") != self.log_revision:
+                self.log_revision = state.get("revision")
+                self.log_view.get_buffer().set_text(state.get("logs", ""))
+            error = state.get("error", "")
+            if state.get("stopping"):
+                status = "Stopping the GUI-owned resolver…"
+            elif state.get("running"):
+                status = f"GUI-owned PID {state.get('pid')} · recent output retained"
+            else:
+                status = f"Resolver exited with status {state.get('returncode')}"
+            if error:
+                status += " · " + error
+            self.log_status.set_text(status)
+            if not state.get("running") and not state.get("stopping"):
+                self.last_owned_snapshot = state
+                self.launch_status.set_text(status + "; see Diagnostics")
+                self.owned_process = None
+                self.start_button.set_sensitive(not options.demo)
+                self.stop_button.set_sensitive(False)
+
+        def connect_metrics(self, *_):
+            text = self.metrics_entry.get_text().strip()
+            if text and (
+                not text.isascii()
+                or not text.isdecimal()
+                or not 1 <= int(text) <= 65535
+            ):
+                self.detail.set_text(
+                    "Choose a metrics port from 1 to 65535, or leave it blank for automatic selection"
+                )
+                return
+            self.metrics_port = int(text) if text else None
+            self.monitor_connected = True
+            self.instance_selector.set_selected(0)
+            self.selected_pid = None
+            self.collector = Collector(
+                metrics_port=self.metrics_port, timeout=self.timeout
+            )
+            self.reset_baseline()
+            self.clear_history()
+            self.good_snapshot = self.snapshot = None
+            self.last_success = None
+            self.request_sample(force=True)
+
+        def disconnect_metrics(self, *_):
+            self.monitor_connected = False
+            self.pending_sample = False
+            self.epoch += 1
+            self.history_gap = True
+            self.status.set_text("Disconnected · last values retained")
+            self.detail.set_text(
+                "Connect to a loopback metrics port to resume monitoring"
+            )
+
+        def clear_history(self):
+            for history in (
+                self.history,
+                self.history_times,
+                self.udp_history,
+                self.tcp_history,
+                self.latency_history,
+                self.upstream_latency_history,
+            ):
+                history.clear()
+            self.chart_scale.set_text("Waiting for activity history")
+            self.latency_scale.set_text("Waiting for timing samples")
+            self.chart.queue_draw()
+            self.latency_chart.queue_draw()
 
         def pause_changed(self, *_):
             self.history_gap = True
@@ -691,12 +895,12 @@ def build_application(options):
             if pid == self.selected_pid and not force:
                 return
             self.selected_pid = pid
+            self.monitor_connected = True
             self.collector = Collector(
-                pid, options.metrics_port if pid is None else None, self.timeout
+                pid, self.metrics_port if pid is None else None, self.timeout
             )
             self.reset_baseline()
-            self.history.clear()
-            self.history_times.clear()
+            self.clear_history()
             self.good_snapshot = None
             self.peak_qps = self.peak_cpu = self.peak_memory = self.peak_inflight = None
             self.missed_samples = 0
@@ -716,8 +920,8 @@ def build_application(options):
                 rows.append(snapshot.process)
             ids = [None] + [p.pid for p in rows]
             labels = [
-                f"Traffic only · port {options.metrics_port}"
-                if options.metrics_port
+                f"Traffic only · port {self.metrics_port}"
+                if self.metrics_port
                 else "Automatic selection"
             ]
             labels += [
@@ -738,7 +942,12 @@ def build_application(options):
             self.updating_instances = False
 
         def request_sample(self, force=False):
-            if self.closed or self.busy or (self.pause.get_active() and not force):
+            if self.closed or not self.monitor_connected:
+                return
+            if self.busy:
+                self.pending_sample = self.pending_sample or force
+                return
+            if self.pause.get_active() and not force:
                 return
             self.busy = True
             self.last_started = time.monotonic()
@@ -766,19 +975,50 @@ def build_application(options):
             self.busy = False
             if not self.closed and epoch == self.epoch:
                 self.apply(result)
+            if self.pending_sample and not self.closed and self.monitor_connected:
+                self.pending_sample = False
+                GLib.idle_add(self.request_sample, True)
             return False
 
         def tick(self):
             if self.closed:
                 return False
             self.check_launched_resolver()
+            wide = self.get_width() >= 1000
+            columns = 2 if wide else 1
+            if self.charts_grid.get_max_children_per_line() != columns:
+                self.charts_grid.set_max_children_per_line(columns)
+            query_bounds = self.chart_panel.get_parent().get_allocation()
+            latency_bounds = self.latency_panel.get_parent().get_allocation()
+            self.charts_wide = (
+                wide
+                and query_bounds.width > 0
+                and latency_bounds.x > query_bounds.x
+                and latency_bounds.y == query_bounds.y
+            )
             if self.chart.get_visible() and self.chart.get_width() > 0:
-                height = max(160, min(240, round(self.chart.get_width() / 4.5)))
+                height = max(
+                    160,
+                    min(
+                        190 if self.charts_wide else 240,
+                        round(
+                            self.chart.get_width() / (3.0 if self.charts_wide else 4.5)
+                        ),
+                    ),
+                )
                 if self.chart.get_content_height() != height:
                     self.chart.set_content_height(height)
+                latency_height = (
+                    height
+                    if self.charts_wide
+                    else max(160, min(200, round(self.latency_chart.get_width() / 4.5)))
+                )
+                if self.latency_chart.get_content_height() != latency_height:
+                    self.latency_chart.set_content_height(latency_height)
             now = time.monotonic()
             if (
                 self.get_mapped()
+                and self.monitor_connected
                 and not self.pause.get_active()
                 and now - self.last_started >= self.interval
             ):
@@ -796,7 +1036,12 @@ def build_application(options):
                 if self.last_success
                 else ""
             )
-            self.set_label(self.freshness, f"{mode}{age}")
+            self.set_label(
+                self.freshness,
+                f"{mode}{age}"
+                if self.monitor_connected
+                else "Disconnected · statistics held",
+            )
             return True
 
         @staticmethod
@@ -826,8 +1071,7 @@ def build_application(options):
                     for t in ("udp", "tcp")
                 )
             if changed:
-                self.history.clear()
-                self.history_times.clear()
+                self.clear_history()
                 self.rates.reset()
                 self.latencies.reset()
                 self.good_snapshot = None
@@ -841,6 +1085,10 @@ def build_application(options):
             self.snapshot = snapshot
             process, metrics = snapshot.process, snapshot.metrics
             self.show_instances(snapshot)
+            if snapshot.service:
+                self.set_label(
+                    self.values["service"], snapshot.service.describe(process)
+                )
             if not metrics:
                 self.history_gap = True
                 self.missed_samples += 1
@@ -857,7 +1105,10 @@ def build_application(options):
                     if retained
                     else "Traffic unavailable",
                 )
-                self.set_label(self.detail, snapshot.error or "Waiting for metrics")
+                explanation = snapshot.error or "Waiting for metrics"
+                if snapshot.port and not options.demo:
+                    explanation += ". Enable loopback metrics on the service explicitly, or start a separate resolver from Launch resolver."
+                self.set_label(self.detail, explanation)
                 self.set_label(
                     self.activity,
                     "No fresh data · chart and statistics held"
@@ -871,17 +1122,20 @@ def build_application(options):
                         self.set_label(self.values["pid"], str(process.pid))
                         self.set_label(
                             self.values["memory"],
-                            f"{process.memory_bytes / 1048576:.1f} MiB",
+                            f"{process.memory_bytes / 1048576:.1f} MiB"
+                            if process.memory_bytes is not None
+                            else "—",
                         )
                         self.set_label(
                             self.values["cpu"],
                             f"{cpu:.1f}%" if cpu is not None else "—",
                         )
-                        hours, rest = divmod(int(process.uptime), 3600)
-                        self.set_label(
-                            self.values["uptime"],
-                            f"{hours}h {rest // 60:02d}m {rest % 60:02d}s",
-                        )
+                        if process.uptime is not None:
+                            hours, rest = divmod(int(process.uptime), 3600)
+                            self.set_label(
+                                self.values["uptime"],
+                                f"{hours}h {rest // 60:02d}m {rest % 60:02d}s",
+                            )
                         if snapshot.service:
                             self.set_label(
                                 self.values["service"],
@@ -937,9 +1191,13 @@ def build_application(options):
                     frame[key] = before[key]
             frame["rate"] = f"{rate:,.1f}" if rate is not None else before["rate"]
             frame["memory"] = (
-                f"{process.memory_bytes / 1048576:.1f} MiB" if process else "—"
+                f"{process.memory_bytes / 1048576:.1f} MiB"
+                if process and process.memory_bytes is not None
+                else "—"
             )
             frame["cpu"] = f"{cpu:.1f}%" if cpu is not None else before["cpu"]
+            if process is not None and process.cpu_seconds is None:
+                frame["cpu"] = "—"
             frame["pid"] = str(process.pid) if process and process.pid else "—"
             if snapshot.service:
                 frame["service"] = snapshot.service.describe(process)
@@ -953,7 +1211,7 @@ def build_application(options):
                             for v in values
                         )
                     )
-            if process:
+            if process and process.uptime is not None:
                 hours, rest = divmod(int(process.uptime), 3600)
                 frame["uptime"] = f"{hours}h {rest // 60:02d}m {rest % 60:02d}s"
             self.show_settings(process.invocation if process else None)
@@ -1058,7 +1316,11 @@ def build_application(options):
 
             frame["peak_qps"] = number(peak("peak_qps", rate))
             frame["peak_cpu"] = number(peak("peak_cpu", cpu), "%")
-            memory = process.memory_bytes / 1048576 if process else None
+            memory = (
+                process.memory_bytes / 1048576
+                if process and process.memory_bytes is not None
+                else None
+            )
             maximum = peak("peak_memory", memory)
             frame["peak_memory"] = f"{maximum:.1f} MiB" if maximum is not None else "—"
             frame["peak_inflight"] = number(
@@ -1121,23 +1383,63 @@ def build_application(options):
                 if self.history_gap and self.history:
                     self.history.append(None)
                     self.history_times.append(snapshot.at)
+                    for history in (
+                        self.udp_history,
+                        self.tcp_history,
+                        self.latency_history,
+                        self.upstream_latency_history,
+                    ):
+                        history.append(None)
                 self.history_gap = False
                 self.history.append(rate)
                 self.history_times.append(snapshot.at)
+                for history, transport in (
+                    (self.udp_history, "udp"),
+                    (self.tcp_history, "tcp"),
+                ):
+                    value = None
+                    if (
+                        previous
+                        and previous.metrics
+                        and snapshot.identity == previous.identity
+                    ):
+                        elapsed = snapshot.at - previous.at
+                        current_count = metrics.get(
+                            "dnsp_queries_total", transport=transport
+                        )
+                        old_count = previous.metrics.get(
+                            "dnsp_queries_total", transport=transport
+                        )
+                        if (
+                            elapsed > 0
+                            and current_count is not None
+                            and old_count is not None
+                            and current_count >= old_count
+                        ):
+                            value = (current_count - old_count) / elapsed
+                    history.append(value)
+                for history, values in zip(
+                    (self.latency_history, self.upstream_latency_history),
+                    percentile_values,
+                ):
+                    value = values[1] * 1000 if values is not None else None
+                    history.append(
+                        value if value is not None and math.isfinite(value) else None
+                    )
                 if self.chart.get_visible():
                     self.chart.queue_draw()
-            peak = max(
-                (value for value in self.history if value is not None), default=0
-            )
-            self.chart_scale.set_text(
-                f"{sum(value is not None for value in self.history)} samples · "
-                f"{self.history_times[-1] - self.history_times[0]:.1f} s recorded · "
-                f"scale 0–{scale_ceiling(peak):g} queries/s"
-                if self.history_times
-                else "Waiting for activity history"
+                if self.latency_chart.get_visible():
+                    self.latency_chart.queue_draw()
+            self.update_chart_scale()
+            self.latency_scale.set_text(
+                "p95 estimates from histogram deltas · pauses and missing timings create gaps"
+                if any(v is not None for v in self.latency_history)
+                else "Waiting for timing samples"
             )
 
         def show_settings(self, invocation):
+            if invocation is not None and not getattr(invocation, "available", True):
+                invocation = None
             signature = (
                 (
                     tuple(invocation.values.items()),
@@ -1158,7 +1460,7 @@ def build_application(options):
             if invocation is None:
                 self.startup.append(
                     self.label(
-                        "Startup options unavailable. Attach to a readable process with --pid PID."
+                        "Startup options unavailable for this process. Traffic monitoring still works through loopback metrics."
                     )
                 )
                 return
@@ -1216,18 +1518,70 @@ def build_application(options):
 
         def draw_history(self, area, cr, width, height):
             color = area.get_style_context().get_color()
+            series = (self.history, self.udp_history, self.tcp_history)[
+                self.query_series.get_selected()
+            ]
             draw_chart(
                 cr,
                 width,
                 height,
-                list(self.history),
+                list(series),
+                list(self.history_times),
+                self.interval,
+                (color.red, color.green, color.blue),
+            )
+
+        def chart_series_changed(self, *_):
+            self.chart.queue_draw()
+            self.update_chart_scale()
+
+        def update_chart_scale(self):
+            series = (self.history, self.udp_history, self.tcp_history)[
+                self.query_series.get_selected()
+            ]
+            peak = max((value for value in series if value is not None), default=0)
+            self.chart_scale.set_text(
+                f"{sum(value is not None for value in series)} samples · "
+                f"{self.history_times[-1] - self.history_times[0]:.1f} s recorded · "
+                f"scale 0–{scale_ceiling(peak):g} queries/s"
+                if self.history_times
+                else "Waiting for activity history"
+            )
+
+        def draw_latency_history(self, area, cr, width, height):
+            color = area.get_style_context().get_color()
+            series = (self.latency_history, self.upstream_latency_history)[
+                self.latency_series.get_selected()
+            ]
+            if not any(value is not None for value in series):
+                cr.set_source_rgba(color.red, color.green, color.blue, 0.65)
+                cr.set_font_size(12)
+                caption = "Waiting for timing samples"
+                cr.move_to(
+                    max(12, (width - cr.text_extents(caption)[2]) / 2), height / 2
+                )
+                cr.show_text(caption)
+                return
+            draw_chart(
+                cr,
+                width,
+                height,
+                list(series),
                 list(self.history_times),
                 self.interval,
                 (color.red, color.green, color.blue),
             )
 
         def close_monitor(self, *_):
+            if self.closed:
+                return False
             self.closed = True
+            if self.owned_process is not None:
+                self.owned_process.stop(wait=False)
+            if self.settings_window is not None:
+                if self.settings_window.chooser:
+                    self.settings_window.chooser.destroy()
+                self.settings_window.destroy()
             from gi.repository import Gdk
 
             Gtk.StyleContext.remove_provider_for_display(
@@ -1239,7 +1593,11 @@ def build_application(options):
     class Application(Gtk.Application):
         def __init__(self):
             super().__init__(
-                application_id="org.dnsproxy.LinuxMonitor",
+                application_id=(
+                    "org.dnsproxy.LinuxMonitor"
+                    if sys.platform.startswith("linux")
+                    else "org.dnsproxy.DesktopMonitor"
+                ),
                 flags=Gio.ApplicationFlags.NON_UNIQUE,
             )
             self.window = None
@@ -1255,9 +1613,6 @@ def build_application(options):
 
 def main():
     options = arguments()
-    if not sys.platform.startswith("linux"):
-        print("This desktop monitor currently supports Linux only.", file=sys.stderr)
-        return 2
     try:
         app = build_application(options)
     except RuntimeError as error:

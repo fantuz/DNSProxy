@@ -1,4 +1,4 @@
-"""Read-only Linux process and DNSProxy Prometheus collectors (no GTK dependency)."""
+"""Read-only desktop process and DNSProxy Prometheus collectors (no GTK dependency)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import time
 from urllib.parse import urlsplit, urlunsplit
 
@@ -52,11 +53,16 @@ class Invocation:
     values: dict = field(default_factory=lambda: dict(DEFAULTS))
     explicit: set = field(default_factory=set)
     unknown: list = field(default_factory=list)
+    available: bool = True
 
     def get(self, option):
+        if not self.available:
+            return "Unavailable"
         return ", ".join(self.values.get(option, ())) or "Disabled / unset"
 
     def number(self, option):
+        if not self.available:
+            return 0
         values = self.values.get(option, ())
         return int(values[-1]) if values else 0
 
@@ -72,7 +78,7 @@ class Invocation:
             return bool(self.values[key])
 
         policy = has("--blocklist")
-        return {
+        result = {
             "UDP and TCP listeners": True,
             "Metrics listener": bool(self.metrics_port),
             "In-memory DNS cache": self.number("--cache-entries") > 0,
@@ -88,6 +94,7 @@ class Invocation:
             "Periodic blocklist checks": policy
             and self.number("--blocklist-reload-ms") > 0,
         }
+        return result if self.available else dict.fromkeys(result)
 
 
 def parse_invocation(argv):
@@ -147,9 +154,9 @@ def display_value(option, value):
 class Process:
     pid: int
     start_ticks: int
-    cpu_seconds: float
-    memory_bytes: int
-    uptime: float
+    cpu_seconds: float | None
+    memory_bytes: int | None
+    uptime: float | None
     invocation: Invocation
 
     @property
@@ -157,7 +164,25 @@ class Process:
         return self.pid, self.start_ticks
 
 
+def _native_process(value):
+    invocation = (
+        parse_invocation(value.argv) if value.argv else Invocation(available=False)
+    )
+    return Process(
+        value.pid,
+        value.start_ticks,
+        value.cpu_seconds,
+        value.memory_bytes,
+        value.uptime,
+        invocation,
+    )
+
+
 def read_process(pid, proc=Path("/proc")):
+    if sys.platform in {"win32", "darwin"} and proc == Path("/proc"):
+        from platform_monitor import read_native_process
+
+        return _native_process(read_native_process(pid))
     if pid <= 0:
         raise ValueError("PID must be positive")
     root = proc / str(pid)
@@ -188,6 +213,13 @@ def read_process(pid, proc=Path("/proc")):
 
 
 def discover_pid(proc=Path("/proc")):
+    if sys.platform in {"win32", "darwin"} and proc == Path("/proc"):
+        rows = list_instances()
+        if len(rows) > 1:
+            raise ValueError(
+                "Multiple DNSProxy processes found; select one with --pid PID"
+            )
+        return rows[0].pid if rows else None
     found = []
     for directory in proc.iterdir():
         if directory.name.isdecimal():
@@ -206,6 +238,10 @@ def discover_pid(proc=Path("/proc")):
 
 def list_instances(proc=Path("/proc")):
     """Bound the picker to readable, verified DNSProxy executables."""
+    if sys.platform in {"win32", "darwin"} and proc == Path("/proc"):
+        from platform_monitor import list_native_instances
+
+        return tuple(_native_process(value) for value in list_native_instances())
     found = []
     for directory in proc.iterdir():
         if not directory.name.isdecimal():
@@ -231,12 +267,13 @@ class ServiceStatus:
     substate: str
     pid: int = 0
     result: str = ""
+    manager: str = "Systemd"
 
     def describe(self, process=None):
         if self.load == "not-found":
             return "Service not installed"
         if self.load == "unavailable":
-            return "Systemd status unavailable"
+            return f"{self.manager} status unavailable"
         suffix = (
             " · another instance"
             if process and self.pid and process.pid != self.pid
@@ -247,7 +284,11 @@ class ServiceStatus:
 
 
 def read_service():
-    """Read fixed unit properties, never invoke privileged service controls."""
+    """Read fixed service properties, never invoke privileged service controls."""
+    if sys.platform in {"win32", "darwin"}:
+        from platform_monitor import read_native_service
+
+        return ServiceStatus(**read_native_service())
     try:
         result = subprocess.run(
             [
@@ -386,7 +427,7 @@ class Collector:
         if self.status_at is None or now - self.status_at >= 5:
             try:
                 self.instances = list_instances()
-            except OSError:
+            except (OSError, ValueError):
                 self.instances = ()
             self.service = read_service()
             self.status_at = now
@@ -422,7 +463,15 @@ class Collector:
                             "Selected PID was reused; reopen with the new PID"
                         )
                     self.pinned_identity = process.identity
-                if port and port != process.invocation.metrics_port:
+                if port and not process.invocation.available:
+                    raise ValueError(
+                        "Cannot verify this PID's metrics port; omit --pid for traffic-only monitoring"
+                    )
+                if (
+                    port
+                    and process.invocation.available
+                    and port != process.invocation.metrics_port
+                ):
                     raise ValueError(
                         "Selected process does not use that metrics port; omit --pid for traffic-only monitoring"
                     )
@@ -432,6 +481,11 @@ class Collector:
                     "No DNSProxy process found. Start dnsp-modern, then refresh."
                 )
             if port is None:
+                if process and not process.invocation.available:
+                    return snapshot(
+                        None,
+                        "Process settings are unavailable. Enter its loopback metrics port to monitor traffic.",
+                    )
                 return snapshot(
                     None,
                     "Metrics disabled. Start dnsp-modern with -m PORT for live traffic.",
@@ -463,7 +517,12 @@ class Rates:
         if dt <= 0:
             return None, None, None
         cpu = None
-        if snapshot.process and old.process:
+        if (
+            snapshot.process
+            and old.process
+            and snapshot.process.cpu_seconds is not None
+            and old.process.cpu_seconds is not None
+        ):
             elapsed = snapshot.process.cpu_seconds - old.process.cpu_seconds
             if elapsed >= 0:
                 cpu = 100 * elapsed / dt
