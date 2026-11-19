@@ -81,7 +81,8 @@ def pump(context, seconds):
 
 
 def capture(context, window, path):
-    """Capture the GTK widget directly without X11-only screen utilities."""
+    """Capture native windows without unsafe old GskRenderNode marshalling."""
+    import gi
     from gi.repository import GLib, Graphene, Gtk
 
     clock = window.get_frame_clock()
@@ -95,6 +96,48 @@ def capture(context, window, path):
                 "settled native paint",
                 timeout=4,
             )
+    if sys.platform.startswith("linux"):
+        # GTK 4.6/PyGObject 3.42 can mistake GskRenderNode for a GObject and
+        # crash inside to_node(), before Python can handle an exception. The
+        # supported Linux CI uses X11; use its native capture path just as the
+        # existing GTK regression suite does. Windows/macOS use modern bindings.
+        try:
+            gi.require_version("GdkX11", "4.0")
+            from gi.repository import GdkX11
+
+            identifier = GdkX11.X11Surface.get_xid(window.get_surface())
+            subprocess.run(
+                ["import", "-window", str(identifier), str(path)],
+                check=True,
+                timeout=10,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if not path.is_file() or not path.stat().st_size:
+                raise RuntimeError("Native X11 capture did not produce a PNG")
+            return {
+                "captured": True,
+                "method": "x11-window",
+                "file": path.name,
+                "width": window.get_width(),
+                "height": window.get_height(),
+            }
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            RuntimeError,
+            subprocess.SubprocessError,
+        ) as error:
+            return {
+                "captured": False,
+                "reason": type(error).__name__ + ": " + str(error),
+            }
+    if gi.version_info < (3, 50, 0):
+        return {
+            "captured": False,
+            "reason": "This PyGObject runtime cannot safely marshal GskRenderNode",
+        }
     try:
         width, height = window.get_width(), window.get_height()
         paintable = Gtk.WidgetPaintable.new(window)

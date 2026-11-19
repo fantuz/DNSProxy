@@ -111,9 +111,11 @@ def source_request(info, source_directory):
     name, version = info["NAME"][0], info["VERSION"][0]
     base = info.get("BASE", [name])[0]
     if not re.fullmatch(r"[A-Za-z0-9_.+-]+", base) or not re.fullmatch(
-        r"[A-Za-z0-9_.+:-]+", version
+        r"[A-Za-z0-9_.+~:-]+", version
     ):
-        raise ValueError("Unexpected installed package name/version")
+        raise ValueError(
+            f"Unexpected installed package name/version: {base!r} {version!r}"
+        )
     filename = f"{base}-{version.split(':')[-1]}.src.tar.zst"
     return "https://repo.msys2.org/mingw/sources/" + filename, Path(
         source_directory

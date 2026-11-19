@@ -125,8 +125,10 @@ begin
   Result := 0;
   try
     if VarIsNull(Entry.ExecutablePath) then Exit;
-    Filename := GetShortName(Entry.ExecutablePath);
-    ProcessName := Lowercase(Entry.Name);
+    Filename := Entry.ExecutablePath;
+    Filename := GetShortName(Filename);
+    ProcessName := Entry.Name;
+    ProcessName := Lowercase(ProcessName);
   except
     { A process may exit between the WMI snapshot and property access. }
     Exit;

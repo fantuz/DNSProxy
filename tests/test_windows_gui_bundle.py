@@ -145,6 +145,23 @@ class RuntimeClosureTests(unittest.TestCase):
         )
         self.assertEqual(destination.name, "mingw-w64-runtime-1.2.3-4.src.tar.zst")
 
+    def test_source_versions_preserve_msys_tilde_separator(self):
+        info = {
+            "NAME": [PREFIX + "directx-headers"],
+            "BASE": ["mingw-w64-directx-headers"],
+            "VERSION": ["1~1.619.5-1"],
+        }
+        url, destination = builder["source_request"](info, Path("sources"))
+        self.assertTrue(
+            url.endswith("/mingw-w64-directx-headers-1~1.619.5-1.src.tar.zst")
+        )
+        self.assertEqual(
+            destination.name, "mingw-w64-directx-headers-1~1.619.5-1.src.tar.zst"
+        )
+        for value in ("1/escape-1", "1\\escape-1", "1 whitespace-1"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                builder["source_request"](dict(info, VERSION=[value]), Path("sources"))
+
     def test_generated_schema_and_gio_caches_use_only_staged_runtime(self):
         with tempfile.TemporaryDirectory() as temporary:
             runtime = Path(temporary) / "private runtime"

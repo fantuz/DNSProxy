@@ -76,18 +76,18 @@ jobs:
             ${{ matrix.prefix }}-gtk4
             ${{ matrix.prefix }}-python-gobject
             ${{ matrix.prefix }}-python-cairo
-      - name: Stage the private runtime, source, licenses and manifest
-        shell: pwsh
-        run: |
-          & "$env:RUNNER_TEMP/msys64/usr/bin/bash.exe" -leo pipefail -c 'python scripts/build-windows-gui-bundle.py --architecture "$DNSP_GUI_ARCH" --output "dist/windows-gui-$DNSP_GUI_ARCH" --sources "dist/dnsp-modern-$(cat VERSION)-windows-$DNSP_GUI_ARCH-gui-sources" --version "$(cat VERSION)" --source-sha "$(git rev-parse HEAD)"'
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          Compress-Archive -Path "dist/windows-gui-${{ matrix.arch }}/*" -DestinationPath "dist/gtk-runtime-${{ matrix.arch }}.zip"
       - name: Save the verified GTK environment
         if: steps.runtime-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/msys64
           key: ${{ steps.runtime-cache.outputs.cache-primary-key }}
+      - name: Stage the private runtime, source, licenses and manifest
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP/msys64/usr/bin/bash.exe" -leo pipefail -c 'python scripts/build-windows-gui-bundle.py --architecture "$DNSP_GUI_ARCH" --output "dist/windows-gui-$DNSP_GUI_ARCH" --sources "dist/dnsp-modern-$(cat VERSION)-windows-$DNSP_GUI_ARCH-gui-sources" --version "$(cat VERSION)" --source-sha "$(git rev-parse HEAD)"'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Compress-Archive -Path "dist/windows-gui-${{ matrix.arch }}/*" -DestinationPath "dist/gtk-runtime-${{ matrix.arch }}.zip"
       - uses: actions/upload-artifact@v6
         with:
           name: dnsp-gui-runtime-${{ matrix.arch }}
