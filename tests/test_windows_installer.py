@@ -296,8 +296,10 @@ class InstallerTests(unittest.TestCase):
                         'PATH': str(directory) + ';' + self.environment['PATH'],
                         'PSMODULEPATH': os.environ.get('PSMODULEPATH', '')}
             self.check_automatic_service(poisoned)
-            self.assertFalse((directory / 'program').exists())
-            self.assertFalse((directory / 'data').exists())
+            # Inno may expand auxiliary Start Menu folders through ProgramData;
+            # the service's executable and state must use the OS-known roots.
+            self.assertFalse((directory / 'program/DNSProxy').exists())
+            self.assertFalse((directory / 'data/DNSProxy').exists())
 
     def check_automatic_service(self, environment):
         with self.installation('/SERVICE=1', '/IPV6=0', '/STARTNOW=0', environment=environment):
@@ -306,6 +308,7 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(service['StartMode'], 'Auto')
             record = json.loads((self.state / 'installation.json').read_text(encoding='utf-8-sig'))
             self.assertEqual(record['ListenAddress'], ['127.0.0.1'])
+            self.assertEqual(record['BinaryPath'], str(self.app / 'bin/dnsp-modern.exe'))
 
     def test_failed_service_start_keeps_setup_owned_program_files(self):
         with self.installation():
