@@ -47,12 +47,12 @@ class InstallerTests(unittest.TestCase):
     def quoted(path):
         return "'" + str(path).replace("'", "''") + "'"
 
-    def invoke(self, executable, *arguments, succeeds=True):
+    def invoke(self, executable, *arguments, succeeds=True, environment=None):
         type(self).invocation += 1
         log = self.evidence / f'{self._testMethodName}-{self.invocation}.log'
         result = subprocess.run([str(executable), '/VERYSILENT', '/SUPPRESSMSGBOXES',
                                  '/NORESTART', '/SP-', f'/LOG={log}', *arguments],
-                                capture_output=True, timeout=150, env=self.environment)
+                                capture_output=True, timeout=150, env=self.environment | (environment or {}))
         details = log.read_text(encoding='utf-8-sig', errors='replace') if log.exists() else repr(result)
         self.assertEqual(result.returncode == 0, succeeds, details)
 
@@ -72,8 +72,8 @@ class InstallerTests(unittest.TestCase):
             self.assertFalse(self.state.exists())
 
     @contextmanager
-    def installation(self, *arguments):
-        self.invoke(self.installer, *arguments)
+    def installation(self, *arguments, environment=None):
+        self.invoke(self.installer, *arguments, environment=environment)
         try:
             yield
         finally:
@@ -287,7 +287,19 @@ class InstallerTests(unittest.TestCase):
                     worker.join(timeout=3)
 
     def test_automatic_service_can_be_installed_stopped_without_ipv6(self):
-        with self.installation('/SERVICE=1', '/IPV6=0', '/STARTNOW=0'):
+        with tempfile.TemporaryDirectory() as temporary:
+            # A caller's environment cannot redirect a privileged service into
+            # a user-writable directory or substitute the SCM command.
+            directory = Path(temporary)
+            (directory / 'sc.exe').write_bytes(b'not an executable')
+            poisoned = {'ProgramFiles': str(directory / 'program'), 'ProgramData': str(directory / 'data'),
+                        'PATH': str(directory) + ';' + self.environment['PATH']}
+            self.check_automatic_service(poisoned)
+            self.assertFalse((directory / 'program').exists())
+            self.assertFalse((directory / 'data').exists())
+
+    def check_automatic_service(self, environment):
+        with self.installation('/SERVICE=1', '/IPV6=0', '/STARTNOW=0', environment=environment):
             service = self.service()
             self.assertEqual(service['State'], 'Stopped')
             self.assertEqual(service['StartMode'], 'Auto')

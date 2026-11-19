@@ -7,6 +7,12 @@ param(
     [string]$ResultFile = ''
 )
 $ErrorActionPreference = 'Stop'
+# Use OS-known protected folders and native tools, never caller-supplied
+# ProgramFiles/ProgramData/PATH values at this elevated installer boundary.
+$env:ProgramFiles = [Environment]::GetFolderPath('ProgramFiles')
+$env:ProgramData = [Environment]::GetFolderPath('CommonApplicationData')
+$env:SystemRoot = [Environment]::GetFolderPath('Windows')
+$env:Path = (Join-Path $env:SystemRoot 'System32') + ';' + $env:SystemRoot
 # Setup may be launched from PowerShell 7. Windows PowerShell must load its own
 # built-in management modules, rather than inherit incompatible pwsh assemblies.
 $env:PSModulePath = "$PSHOME\Modules;" + [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
