@@ -23,6 +23,7 @@ import time
 MAX_COMMAND = 64 * 1024
 MAX_INSTANCES = 128
 MAX_PIDS = 8192
+CIM_TIMEOUT = 12
 
 _INSPECTIONS = set()
 _INSPECTION_LOCK = threading.Lock()
@@ -259,6 +260,7 @@ class _Windows:
         self._argv = {}
         self._argv_at = float("-inf")
         self._argv_lock = threading.Lock()
+        self.argv_status = "CIM has not been sampled"
 
     @staticmethod
     def ticks(value):
@@ -300,6 +302,7 @@ class _Windows:
             directory = ctypes.create_unicode_buffer(32768)
             length = self.kernel.GetSystemDirectoryW(directory, len(directory))
             if not 0 < length < len(directory):
+                self.argv_status = "Native Windows system directory unavailable"
                 return
             shell = str(Path(directory.value) / "WindowsPowerShell/v1.0/powershell.exe")
             command = (
@@ -315,11 +318,19 @@ class _Windows:
             try:
                 result = _run_inspection(
                     [shell, "-NoProfile", "-NonInteractive", "-Command", command],
-                    timeout=4,
+                    # A cold CIM provider can take several seconds on Windows
+                    # ARM under an emulated Python; this runs off the GTK thread.
+                    timeout=CIM_TIMEOUT,
                     env=environment,
                     creationflags=subprocess.CREATE_NO_WINDOW,
                 )
-                if result.returncode or len(result.stdout) > 8 * 1024 * 1024:
+                if result.returncode:
+                    self.argv_status = (
+                        f"CIM helper exited with code {result.returncode}"
+                    )
+                    return
+                if len(result.stdout) > 8 * 1024 * 1024:
+                    self.argv_status = "CIM helper returned oversized metadata"
                     return
                 rows = json.loads(result.stdout.decode("utf-8-sig"))
                 if isinstance(rows, dict):
@@ -334,14 +345,22 @@ class _Windows:
                         argv = self.split_command(text)
                         if argv:
                             self._argv[windows_argv_key(pid, created)] = argv
+                self.argv_status = (
+                    f"CIM returned {len(self._argv)} process command lines"
+                )
+            except subprocess.TimeoutExpired:
+                self.argv_status = f"CIM lookup timed out after {CIM_TIMEOUT}s"
             except (
                 OSError,
                 ValueError,
                 KeyError,
                 TypeError,
-                subprocess.TimeoutExpired,
-            ):
-                return
+            ) as error:
+                # Never retain raw command lines or helper stderr in diagnostics.
+                self.argv_status = f"CIM metadata unavailable ({type(error).__name__})"
+            finally:
+                # Throttle retries after completion, including a slow timeout.
+                self._argv_at = time.monotonic()
 
     def read(self, pid, *, with_argv=True):
         handle = self.kernel.OpenProcess(

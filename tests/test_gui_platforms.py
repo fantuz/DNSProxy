@@ -8,6 +8,7 @@ import struct
 import tempfile
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -50,6 +51,36 @@ class NativeParsingTests(unittest.TestCase):
             native.windows_argv_key(42, kernel.start_ticks),
             native.windows_argv_key(43, cim),
         )
+
+    def test_cold_cim_lookup_is_bounded_and_failed_refresh_is_throttled(self):
+        class Kernel:
+            def GetSystemDirectoryW(self, buffer, length):
+                buffer.value = r"C:\Windows\System32"
+                return len(buffer.value)
+
+        process = native._Windows.__new__(native._Windows)
+        process.kernel = Kernel()
+        process._argv = {}
+        process._argv_at = float("-inf")
+        process._argv_lock = threading.Lock()
+        clock = [100]
+
+        def timeout(*args, **kwargs):
+            self.assertEqual(kwargs["timeout"], native.CIM_TIMEOUT)
+            clock[0] += native.CIM_TIMEOUT
+            raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+        with (
+            patch("platform_monitor.time.monotonic", side_effect=lambda: clock[0]),
+            patch("platform_monitor.subprocess.CREATE_NO_WINDOW", 0, create=True),
+            patch("platform_monitor._run_inspection", side_effect=timeout) as run,
+        ):
+            process._refresh_argv()
+            self.assertIn("timed out", process.argv_status)
+            self.assertEqual(process._argv_at, clock[0])
+            process._refresh_argv()
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(process._argv, {})
 
     def test_macos_image_read_is_bracketed_by_identity_and_scaled_ticks(self):
         class Usage(ctypes.Structure):
@@ -240,17 +271,24 @@ class NativeProcessTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
         try:
-            deadline = time.monotonic() + 15
+            deadline = time.monotonic() + 30
+            reason = "No process sample was returned"
             while time.monotonic() < deadline and child.poll() is None:
                 try:
                     process = monitor.read_process(child.pid)
                     if process.invocation.available:
                         break
-                except (OSError, ValueError):
-                    pass
+                    reason = "Invocation unavailable: " + getattr(
+                        native.adapter(), "argv_status", "Native argv unavailable"
+                    )
+                except (OSError, ValueError) as error:
+                    reason = f"{type(error).__name__}: {error}"
                 time.sleep(0.1)
             else:
-                self.fail("Native process inspection did not become available")
+                self.fail(
+                    "Native process inspection did not become available "
+                    f"(exit={child.poll()}, {reason})"
+                )
             self.assertEqual(process.pid, child.pid)
             self.assertGreater(process.start_ticks, 0)
             self.assertGreater(process.memory_bytes, 0)

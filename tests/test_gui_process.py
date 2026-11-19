@@ -42,7 +42,10 @@ class OwnedProcessTests(unittest.TestCase):
         code = (
             "import signal,sys,time; "
             "signal.signal(getattr(signal,'SIGBREAK',signal.SIGTERM),lambda *_:sys.exit(0)); "
-            "sys.stderr.write('ready\\n'); sys.stderr.flush(); time.sleep(20)"
+            "sys.stderr.write('ready\\n'); sys.stderr.flush()\n"
+            # Windows SIGBREAK handlers run on the next Python bytecode check;
+            # one long native sleep delays the fixture's handler past Stop's limit.
+            "while True: time.sleep(.02)"
         )
         process = self.process(code)
         wait_for(self, lambda: "ready" in process.snapshot()["logs"])
@@ -54,7 +57,7 @@ class OwnedProcessTests(unittest.TestCase):
             lambda: not process.snapshot()["running"]
             and not process.snapshot()["stopping"],
         )
-        self.assertEqual(process.poll(), 0)
+        self.assertEqual(process.poll(), 0, process.snapshot())
         self.assertFalse(process.snapshot()["forced_stop"])
         self.assertIn("ready", process.snapshot()["logs"])
         self.assertIsNone(unrelated.poll())
