@@ -4,6 +4,7 @@
 param(
     [ValidatePattern('^[A-Za-z0-9_-]{1,64}$')][string]$ServiceName = 'DNSProxy',
     [ValidateRange(1,65535)][int]$Port = 53,
+    [ValidateRange(0,65535)][int]$MetricsPort = 0,
     [string[]]$ListenAddress = @('127.0.0.1', '::1'),
     [string]$Upstream = 'https://cloudflare-dns.com/dns-query',
     [string]$BootstrapAddress = '1.1.1.1',
@@ -24,6 +25,7 @@ if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne 'https' -or $Upstream -match '[\
     throw 'Use an HTTPS upstream URL without credentials, whitespace, or quotation marks.'
 }
 $null = [Net.IPAddress]::Parse($BootstrapAddress)
+if ($MetricsPort -and $MetricsPort -eq $Port) { throw 'DNS and loopback metrics ports must differ.' }
 if ($ListenAddress.Count -lt 1 -or $ListenAddress.Count -gt 8) { throw 'Choose one to eight listen addresses.' }
 foreach ($address in $ListenAddress) {
     if (-not [Net.IPAddress]::IsLoopback([Net.IPAddress]::Parse($address))) {
@@ -105,6 +107,7 @@ try {
     $log = Join-Path $logs 'service.log'
     # Every configurable argument is validated above; paths are quoted separately.
     $command = '"{0}" --service {1} --service-log "{2}" -p {3} -s {4} --bootstrap-address {5} --cache-entries 256' -f $binary,$ServiceName,$log,$Port,$Upstream,$BootstrapAddress
+    if ($MetricsPort) { $command += ' -m ' + $MetricsPort }
     foreach ($address in $ListenAddress) { $command += ' -l ' + $address }
     foreach ($argument in $policyArgs) { $command += ' "' + $argument + '"' }
     if ($sources.Count) { $command += ' --block-response ' + $BlockResponse + ' --blocklist-reload-ms ' + $BlocklistReloadMs }
@@ -118,7 +121,7 @@ try {
     if ($LASTEXITCODE) { throw "Failure flag configuration failed: $LASTEXITCODE" }
     # State is not service-writable and is used to verify ownership on uninstall.
     @{ SchemaVersion=1; ServiceName=$ServiceName; BinaryPath=$binary; Command=$command; Port=$Port;
-       ListenAddress=$ListenAddress; BootstrapAddress=$BootstrapAddress; Upstream=$Upstream;
+       ListenAddress=$ListenAddress; BootstrapAddress=$BootstrapAddress; Upstream=$Upstream; MetricsPort=$MetricsPort;
        ManagedBy=$(if ($UseInstalledFiles) {'InnoSetup'} else {'PowerShell'}) } |
         ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $state 'installation.json') -Encoding UTF8
     if (-not $NoStart) {

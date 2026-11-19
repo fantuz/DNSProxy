@@ -34,7 +34,11 @@ ArchitecturesInstallIn64BitMode=x64os
 MinVersion=10.0
 #endif
 OutputDir={#OutputDir}
+#ifdef GuiBundleDir
+OutputBaseFilename=dnsp-modern-{#AppVersion}-windows-{#TargetArch}-gui-setup
+#else
 OutputBaseFilename=dnsp-modern-{#AppVersion}-windows-{#TargetArch}-setup
+#endif
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -48,31 +52,132 @@ SetupLogging=yes
 LicenseFile={#BundleDir}\LICENSE
 UninstallDisplayIcon={app}\bin\dnsp-modern.exe
 
+#ifdef GuiBundleDir
+[Types]
+Name: "full"; Description: "Desktop interface and resolver"
+Name: "compact"; Description: "Resolver only"
+Name: "custom"; Description: "Custom installation"; Flags: iscustom
+
+[Components]
+Name: "core"; Description: "DNSProxy resolver and service utilities"; Types: full compact custom; Flags: fixed
+Name: "gui"; Description: "Desktop interface with private Python/GTK runtime"; Types: full
+#endif
+
 [Files]
 ; The elevated setup uses its own trusted helpers before replacing program files.
 Source: "{#BundleDir}\Setup-DNSProxy.ps1"; Flags: dontcopy
 Source: "{#BundleDir}\Install-DNSProxyService.ps1"; Flags: dontcopy
 Source: "{#BundleDir}\ServiceFiles.ps1"; Flags: dontcopy
 Source: "{#BundleDir}\*"; DestDir: "{app}\bin"; Flags: ignoreversion recursesubdirs createallsubdirs
+#ifdef GuiBundleDir
+Source: "{#GuiBundleDir}\*"; DestDir: "{app}\gui"; Components: gui; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
 
 [Icons]
 Name: "{group}\Start DNSProxy in a console"; Filename: "{app}\bin\Start-DNSProxy.cmd"; WorkingDir: "{app}\bin"; Check: ConsoleMode
 Name: "{group}\Windows guide"; Filename: "{app}\bin\WINDOWS.md"
 Name: "{group}\Windows Services"; Filename: "{sys}\mmc.exe"; Parameters: """{sys}\services.msc"""; Check: ServiceMode
 Name: "{group}\Uninstall DNSProxy"; Filename: "{uninstallexe}"
+#ifdef GuiBundleDir
+Name: "{group}\DNSProxy desktop"; Filename: "{app}\gui\runtime\bin\pythonw.exe"; Parameters: "-I -B ""{app}\gui\app\gui-bootstrap.py"""; WorkingDir: "{app}\gui"; Components: gui
+
+[Run]
+Filename: "{app}\gui\runtime\bin\pythonw.exe"; Parameters: "-I -B ""{app}\gui\app\gui-bootstrap.py"""; Description: "Open DNSProxy desktop"; Flags: postinstall nowait skipifsilent runasoriginaluser; Components: gui
+#endif
 
 [InstallDelete]
 Type: files; Name: "{group}\Start DNSProxy in a console.lnk"; Check: ServiceMode
 Type: files; Name: "{group}\Windows Services.lnk"; Check: ConsoleMode
+#ifdef GuiBundleDir
+; These are installer-owned runtime/application trees, never per-user state.
+Type: filesandordirs; Name: "{app}\gui\app"; Check: ReplaceGui
+Type: filesandordirs; Name: "{app}\gui\runtime"; Check: ReplaceGui
+Type: filesandordirs; Name: "{app}\gui\runtime-package-metadata"; Check: ReplaceGui
+#endif
 
 [Code]
 var
   ServerPage: TInputOptionWizardPage;
-  OptionsPage: TInputQueryWizardPage;
+  OptionsPage, MetricsPage: TInputQueryWizardPage;
   IPv6Box, AutoStartBox, StartNowBox: TNewCheckBox;
   ExistingService, Prepared, Applied: Boolean;
   SetupFailure: Integer;
   ConfigPath, ErrorPath: String;
+
+function GuiSelected: Boolean;
+begin
+#ifdef GuiBundleDir
+  Result := WizardIsComponentSelected('gui');
+#else
+  Result := False;
+#endif
+end;
+
+function ReplaceGui: Boolean;
+begin
+  Result := GuiSelected and DirExists(ExpandConstant('{app}\gui'));
+end;
+
+function GuiProcessKind(Entry: Variant; const Prefix: String): Integer;
+var
+  Filename, ProcessName: String;
+begin
+  Result := 0;
+  try
+    if VarIsNull(Entry.ExecutablePath) then Exit;
+    Filename := GetShortName(Entry.ExecutablePath);
+    ProcessName := Lowercase(Entry.Name);
+  except
+    { A process may exit between the WMI snapshot and property access. }
+    Exit;
+  end;
+  if CompareText(Copy(Filename, 1, Length(Prefix)), Prefix) <> 0 then Exit;
+  if (ProcessName = 'gdbus.exe') or (ProcessName = 'dbus-daemon.exe') then Result := 2
+  else Result := 1;
+end;
+
+function CloseGuiRuntime(StopHelpers: Boolean): String;
+var
+  Locator, Services, Processes, Entry: Variant;
+  Index, Status: Integer;
+  Prefix: String;
+begin
+  Result := '';
+  Prefix := AddBackslash(GetShortName(ExpandConstant('{app}\gui\runtime')));
+  if not DirExists(ExpandConstant('{app}\gui\runtime')) then Exit;
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    Services := Locator.ConnectServer('', 'root\CIMV2');
+    Processes := Services.ExecQuery('SELECT * FROM Win32_Process');
+    for Index := 0 to Processes.Count - 1 do
+    begin
+      Entry := Processes.ItemIndex(Index);
+      if GuiProcessKind(Entry, Prefix) = 1 then
+      begin
+        Result := 'Close DNSProxy desktop and utilities using its private runtime before continuing.';
+        Exit;
+      end;
+    end;
+    if not StopHelpers then Exit;
+    { Only orphan helpers belonging to this installed runtime may be stopped. }
+    for Index := 0 to Processes.Count - 1 do
+    begin
+      Entry := Processes.ItemIndex(Index);
+      if GuiProcessKind(Entry, Prefix) = 2 then
+      begin
+        Status := Entry.Terminate(0);
+        if (Status <> 0) and (Status <> 9) then
+        begin
+          Result := 'Close the private GTK background helpers and retry.';
+          Exit;
+        end;
+        Sleep(100);
+      end;
+    end;
+  except
+    Result := 'Could not verify whether the private desktop runtime is in use. Close desktop processes and retry. ' + GetExceptionMessage;
+  end;
+end;
 
 function ServiceMode: Boolean;
 begin
@@ -102,7 +207,7 @@ procedure WriteOptions;
 var
   Lines: TArrayOfString;
 begin
-  SetArrayLength(Lines, 7);
+  SetArrayLength(Lines, 8);
   Lines[0] := 'Service=' + Flag(ServerPage.Values[0]);
   Lines[1] := 'Port=' + OptionsPage.Values[0];
   Lines[2] := 'Upstream=' + OptionsPage.Values[1];
@@ -110,6 +215,7 @@ begin
   Lines[4] := 'IPv6=' + Flag(IPv6Box.Checked);
   Lines[5] := 'AutoStart=' + Flag(AutoStartBox.Checked);
   Lines[6] := 'StartNow=' + Flag(StartNowBox.Checked);
+  Lines[7] := 'MetricsPort=' + MetricsPage.Values[0];
   if not SaveStringsToUTF8File(ConfigPath, Lines, False) then
     RaiseException('Cannot write setup options.');
 end;
@@ -145,7 +251,11 @@ begin
   ExtractTemporaryFile('ServiceFiles.ps1');
   ExistingService := RegKeyExists(HKLM64, 'SYSTEM\CurrentControlSet\Services\DNSProxy') and
     FileExists(ExpandConstant('{commonappdata}\DNSProxy\installation.json'));
+#ifdef GuiBundleDir
+  ServerPage := CreateInputOptionPage(wpSelectComponents, 'Windows service',
+#else
   ServerPage := CreateInputOptionPage(wpLicense, 'Windows service',
+#endif
     'Choose how to run DNSProxy.',
     'The application and Start Menu shortcuts are always installed. The optional service runs in the background. ' +
     'Adapter DNS settings remain unchanged. Test the resolver before pointing Windows at it.', False, False);
@@ -180,11 +290,21 @@ begin
   StartNowBox.SetBounds(0, AutoStartBox.Top + ScaleY(25), OptionsPage.SurfaceWidth, ScaleY(20));
   StartNowBox.Caption := 'Start the service after installation';
   StartNowBox.Checked := SelectedParameter('STARTNOW', '1');
+  MetricsPage := CreateInputQueryPage(OptionsPage.ID, 'Local traffic monitoring',
+    'Choose whether desktop monitoring can read this service.',
+    'Metrics are read-only and listen only on 127.0.0.1. Use 0 to disable monitoring. Existing service settings are retained on upgrade.');
+  MetricsPage.Add('Loopback metrics port (0 disables):', False);
+#ifdef GuiBundleDir
+  MetricsPage.Values[0] := ExpandConstant('{param:METRICSPORT|9090}');
+#else
+  MetricsPage.Values[0] := ExpandConstant('{param:METRICSPORT|0}');
+#endif
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
-  Result := (PageID = OptionsPage.ID) and (ExistingService or not ServerPage.Values[0]);
+  Result := ((PageID = OptionsPage.ID) or (PageID = MetricsPage.ID)) and
+    (ExistingService or not ServerPage.Values[0]);
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -192,7 +312,7 @@ var
   Error: String;
 begin
   Result := True;
-  if (CurPageID = OptionsPage.ID) and ServerPage.Values[0] and not ExistingService then
+  if ((CurPageID = OptionsPage.ID) or (CurPageID = MetricsPage.ID)) and ServerPage.Values[0] and not ExistingService then
   begin
     WriteOptions;
     Error := RunHelper('Validate', ExpandConstant('{tmp}\Setup-DNSProxy.ps1'));
@@ -213,9 +333,17 @@ begin
     Result := 'Install DNSProxy in the protected default Program Files folder.';
     Exit;
   end;
+  if DirExists(ExpandConstant('{app}\gui')) and not GuiSelected then
+  begin
+    Result := 'This installation includes the desktop interface. Use the GUI setup with its desktop component selected, or uninstall it through Windows Apps first.';
+    Exit;
+  end;
+  Result := CloseGuiRuntime(False);
+  if Result <> '' then Exit;
   WriteOptions;
   Prepared := True;
   Result := RunHelper('Prepare', ExpandConstant('{tmp}\Setup-DNSProxy.ps1'));
+  if Result = '' then Result := CloseGuiRuntime(True);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -264,6 +392,13 @@ var
 begin
   ConfigPath := '';
   ErrorPath := ExpandConstant('{tmp}\dnsproxy-uninstall-error.txt');
+  Error := CloseGuiRuntime(False);
+  if Error <> '' then
+  begin
+    SuppressibleMsgBox(Error, mbError, MB_OK, IDOK);
+    Result := False;
+    Exit;
+  end;
   Error := RunHelper('CheckRemove', ExpandConstant('{app}\bin\Setup-DNSProxy.ps1'));
   Result := Error = '';
   if not Result then SuppressibleMsgBox(Error, mbError, MB_OK, IDOK);
@@ -275,6 +410,12 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
+    Error := CloseGuiRuntime(True);
+    if Error <> '' then
+    begin
+      SuppressibleMsgBox(Error, mbError, MB_OK, IDOK);
+      Abort;
+    end;
     Error := RunHelper('Remove', ExpandConstant('{app}\bin\Setup-DNSProxy.ps1'));
     if Error <> '' then
     begin

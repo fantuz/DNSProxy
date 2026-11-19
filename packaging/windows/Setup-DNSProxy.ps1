@@ -59,17 +59,18 @@ function Read-SetupOptions {
     $values = @{}
     foreach ($line in Get-Content -LiteralPath $ConfigFile -Encoding UTF8) {
         $pair = $line -split '=', 2
-        if ($pair.Count -ne 2 -or $pair[0] -notin @('Service','Port','Upstream','BootstrapAddress','IPv6','AutoStart','StartNow') -or $values.ContainsKey($pair[0])) {
+        if ($pair.Count -ne 2 -or $pair[0] -notin @('Service','Port','Upstream','BootstrapAddress','IPv6','AutoStart','StartNow','MetricsPort') -or $values.ContainsKey($pair[0])) {
             throw 'Invalid setup options file.'
         }
         $values[$pair[0]] = $pair[1]
     }
-    if ($values.Count -ne 7) { throw 'Incomplete setup options.' }
+    if ($values.Count -eq 7 -and -not $values.ContainsKey('MetricsPort')) { $values.MetricsPort = '0' }
+    if ($values.Count -ne 8) { throw 'Incomplete setup options.' }
     foreach ($name in @('Service','IPv6','AutoStart','StartNow')) {
         if ($values[$name] -notin @('0','1')) { throw "Invalid $name selection." }
     }
     $arguments = @{
-        Port=$values.Port; Upstream=$values.Upstream; BootstrapAddress=$values.BootstrapAddress
+        Port=$values.Port; Upstream=$values.Upstream; BootstrapAddress=$values.BootstrapAddress; MetricsPort=$values.MetricsPort
         ListenAddress=@('127.0.0.1'); StartupType=$(if ($values.AutoStart -eq '1') {'Automatic'} else {'Manual'})
         NoStart=($values.StartNow -eq '0')
     }
@@ -93,6 +94,12 @@ function Assert-FreeListeners($Arguments) {
                 if ($ip.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetworkV6) { $socket.DualMode = $false }
                 $socket.Bind((New-Object Net.IPEndPoint($ip, [int]$Arguments.Port)))
             }
+        }
+        if ([int]$Arguments.MetricsPort -gt 0) {
+            $socket = New-Object Net.Sockets.Socket([Net.Sockets.AddressFamily]::InterNetwork, [Net.Sockets.SocketType]::Stream, [Net.Sockets.ProtocolType]::Tcp)
+            $sockets += $socket
+            $socket.ExclusiveAddressUse = $true
+            $socket.Bind((New-Object Net.IPEndPoint([Net.IPAddress]::Loopback, [int]$Arguments.MetricsPort)))
         }
     } catch { throw "The selected DNS port/listeners are unavailable. Choose another port or resolve the conflict. $_" }
     finally { foreach ($socket in $sockets) { $socket.Dispose() } }
