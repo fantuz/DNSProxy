@@ -47,20 +47,29 @@ jobs:
         run: |
           "week=$([Math]::Floor([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() / 604800))" >> $env:GITHUB_OUTPUT
           "image=$env:ImageVersion" >> $env:GITHUB_OUTPUT
+          $nativePackages = foreach ($suffix in Get-Content ci/windows-gui-runtime-packages.txt) {
+            if ($suffix -notmatch '^[a-z0-9][a-z0-9+_.-]*$') { throw "Invalid native package suffix: $suffix" }
+            "${env:DNSP_GUI_PREFIX}-$suffix"
+          }
+          "packages=git $($nativePackages -join ' ')" >> $env:GITHUB_OUTPUT
       - name: Restore the native GTK tool environment
         id: runtime-cache
         uses: actions/cache/restore@v5
         with:
           path: ${{ runner.temp }}/msys64
-          key: dnsp-gtk-v1-${{ matrix.runner }}-${{ matrix.msystem }}-${{ steps.epoch.outputs.image }}-${{ steps.epoch.outputs.week }}-${{ hashFiles('.github/workflows/dnsp-windows-gui.yml') }}
+          key: dnsp-gtk-v2-${{ matrix.runner }}-${{ matrix.msystem }}-${{ steps.epoch.outputs.image }}-${{ steps.epoch.outputs.week }}-${{ hashFiles('ci/windows-gui-runtime-packages.txt') }}
+          restore-keys: |
+            dnsp-gtk-v1-${{ matrix.runner }}-${{ matrix.msystem }}-${{ steps.epoch.outputs.image }}-${{ steps.epoch.outputs.week }}-
       - name: Validate the cached environment
         id: runtime-check
         shell: pwsh
+        env:
+          DNSP_GUI_PACKAGES: ${{ steps.epoch.outputs.packages }}
         run: |
           $root = Join-Path $env:RUNNER_TEMP 'msys64'
-          $ready = '${{ steps.runtime-cache.outputs.cache-hit }}' -eq 'true' -and (Test-Path "$root/usr/bin/bash.exe")
+          $ready = '${{ steps.runtime-cache.outputs.cache-matched-key }}' -ne '' -and (Test-Path "$root/usr/bin/bash.exe")
           if ($ready) {
-            & "$root/usr/bin/bash.exe" -leo pipefail -c 'pacman -Q git "${DNSP_GUI_PREFIX}-gtk4" "${DNSP_GUI_PREFIX}-python-gobject" "${DNSP_GUI_PREFIX}-python-cairo" >/dev/null && python -c "import gi,cairo; gi.require_version(\"Gtk\",\"4.0\"); from gi.repository import Gtk; assert Gtk.get_major_version()==4"'
+            & "$root/usr/bin/bash.exe" -leo pipefail -c 'pacman -Q $DNSP_GUI_PACKAGES >/dev/null && python -c "import gi,cairo; gi.require_version(\"Gtk\",\"4.0\"); from gi.repository import Gtk; assert Gtk.get_major_version()==4"'
             $ready = $LASTEXITCODE -eq 0
             $global:LASTEXITCODE = 0
           }
@@ -71,11 +80,7 @@ jobs:
         with:
           msystem: ${{ matrix.msystem }}
           update: true
-          install: >-
-            git
-            ${{ matrix.prefix }}-gtk4
-            ${{ matrix.prefix }}-python-gobject
-            ${{ matrix.prefix }}-python-cairo
+          install: ${{ steps.epoch.outputs.packages }}
       - name: Save the verified GTK environment
         if: steps.runtime-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
@@ -137,15 +142,18 @@ jobs:
           $version = (Get-Content VERSION -Raw).Trim()
           Expand-Archive "dist/dnsp-modern-$version-windows-${{ matrix.arch }}-poc.zip" dist/windows
           Expand-Archive "dist/gtk-runtime-${{ matrix.arch }}.zip" "dist/windows-gui-${{ matrix.arch }}"
+      - name: Test native desktop models and packaging rules
+        id: desktop-models
+        continue-on-error: true
+        shell: pwsh
+        run: |
           $env:DNSP_TEST_BINARY = "$pwd/dist/windows/dnsp-modern.exe"
-          python tests/test_gui_platforms.py -v
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          python tests/test_gui_process.py -v
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          python tests/test_windows_gui_bundle.py -v
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          python tests/test_gui_bootstrap.py -v
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $desktopFailed = $false
+          foreach ($desktopTest in @('tests/test_gui_platforms.py', 'tests/test_gui_process.py', 'tests/test_windows_gui_bundle.py', 'tests/test_gui_bootstrap.py')) {
+            python $desktopTest -v
+            if ($LASTEXITCODE) { $desktopFailed = $true }
+          }
+          exit [int]$desktopFailed
       - name: Compile the desktop setup from the exact tested CLI and runtime
         shell: pwsh
         run: ./scripts/build-windows-installer.ps1 -Architecture '${{ matrix.arch }}' -GuiBundleDir "$pwd/dist/windows-gui-${{ matrix.arch }}"
@@ -162,6 +170,10 @@ jobs:
           $env:Path = "$(Split-Path $python);$env:SystemRoot\System32;$env:SystemRoot"
           & $python tests/test_windows_gui_installer.py
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Require native desktop model checks
+        if: steps.desktop-models.outcome != 'success'
+        shell: pwsh
+        run: throw 'Native desktop model checks failed; inspect their earlier test logs.'
       - name: Preserve only the tested desktop setup and matching runtime sources
         uses: actions/upload-artifact@v6
         with:

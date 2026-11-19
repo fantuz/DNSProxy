@@ -1,0 +1,3 @@
+gtk4
+python-gobject
+python-cairo
