@@ -12,11 +12,15 @@ Import-Module (Join-Path $PSScriptRoot 'DNSProxyDns.psm1') -Force
 $stateDirectory = Join-Path $env:ProgramData $ServiceName
 $statePath = Join-Path $stateDirectory 'dns-state.json'
 $program = Join-Path $env:ProgramFiles $ServiceName
+$record = Get-Content -LiteralPath (Join-Path $stateDirectory 'installation.json') -Raw | ConvertFrom-Json
+if ($record.PSObject.Properties.Name -contains 'ManagedBy' -and $record.ManagedBy -eq 'InnoSetup') {
+    if ($ServiceName -ne 'DNSProxy') { throw 'Unexpected setup service name.' }
+    $program = Join-Path $program 'bin'
+}
 $installedScript = Join-Path $program 'Set-DNSProxyDns.ps1'
 $taskName = "$ServiceName-DNS-Recovery"
 $taskExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $taskArguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Action Recover -ServiceName {1}' -f $installedScript,$ServiceName
-$record = Get-Content -LiteralPath (Join-Path $stateDirectory 'installation.json') -Raw | ConvertFrom-Json
 if ($record.SchemaVersion -ne 1 -or $record.ServiceName -ne $ServiceName -or
     $record.BinaryPath -ne (Join-Path $program 'dnsp-modern.exe')) { throw 'Service installation ownership check failed.' }
 if (-not (Test-Path -LiteralPath $installedScript)) { throw 'Reinstall the service using a bundle that includes DNS integration.' }

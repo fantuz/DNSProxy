@@ -11,7 +11,11 @@ param(
     [string[]]$AllowlistFile = @(),
     [ValidateSet('refused','nxdomain','nodata','null')][string]$BlockResponse = 'refused',
     [ValidateRange(0,86400000)][ValidateScript({ $_ -eq 0 -or $_ -ge 100 })][int]$BlocklistReloadMs = 5000,
-    [switch]$NoStart
+    [ValidateSet('Automatic','Manual')][string]$StartupType = 'Automatic',
+    [switch]$NoStart,
+    # Used by the machine-wide setup wizard, whose files are already installed.
+    [switch]$UseInstalledFiles,
+    [switch]$ValidateOnly
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'ServiceFiles.ps1')
@@ -37,10 +41,18 @@ foreach ($path in $sources) {
     $total += $item.Length
     if ($total -gt 64MB) { throw 'Policy files exceed 64 MiB in total.' }
 }
+if ($ValidateOnly) { return }
 $program = Join-Path $env:ProgramFiles $ServiceName
+if ($UseInstalledFiles) {
+    $expected = Join-Path $program 'bin'
+    if ($ServiceName -ne 'DNSProxy' -or [IO.Path]::GetFullPath($PSScriptRoot) -ne $expected -or $sources.Count) {
+        throw 'Setup registration requires the installed DNSProxy bin directory, without portable policy inputs.'
+    }
+    $program = $expected
+}
 $state = Join-Path $env:ProgramData $ServiceName
 if ((Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) -or
-    (Test-Path -LiteralPath $program) -or (Test-Path -LiteralPath $state)) {
+    ((Test-Path -LiteralPath $program) -and -not $UseInstalledFiles) -or (Test-Path -LiteralPath $state)) {
     throw 'Service or managed directories already exist. Use the uninstall script before replacing this installation.'
 }
 if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'dnsp-modern.exe'))) { throw 'Run this script from the extracted portable bundle.' }
@@ -55,14 +67,20 @@ function Protect-Directory([string]$Path, [switch]$ServiceWrite) {
         $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, $entry[1], 'ContainerInherit,ObjectInherit', 'None', 'Allow')
         $acl.AddAccessRule($rule)
     }
+    if ($UseInstalledFiles -and -not $ServiceWrite) {
+        $sid = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-545')
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+    }
     Set-Acl -LiteralPath $Path -AclObject $acl
 }
 $created = $false
 $programCreated = $false
 $stateCreated = $false
 try {
-    $null = New-Item -ItemType Directory -Path $program
-    $programCreated = $true
+    if (-not $UseInstalledFiles) {
+        $null = New-Item -ItemType Directory -Path $program
+        $programCreated = $true
+    }
     Protect-Directory $program
     $null = New-Item -ItemType Directory -Path $state
     $stateCreated = $true
@@ -70,7 +88,7 @@ try {
     $logs = Join-Path $state 'logs'
     $null = New-Item -ItemType Directory -Path $logs
     Protect-Directory $logs -ServiceWrite
-    Get-ChildItem -LiteralPath $PSScriptRoot | Copy-Item -Destination $program -Recurse
+    if (-not $UseInstalledFiles) { Get-ChildItem -LiteralPath $PSScriptRoot | Copy-Item -Destination $program -Recurse }
     $binary = Join-Path $program 'dnsp-modern.exe'
     $policyArgs = @()
     if ($sources.Count) {
@@ -91,7 +109,7 @@ try {
     foreach ($argument in $policyArgs) { $command += ' "' + $argument + '"' }
     if ($sources.Count) { $command += ' --block-response ' + $BlockResponse + ' --blocklist-reload-ms ' + $BlocklistReloadMs }
     $credential = New-Object Management.Automation.PSCredential('NT AUTHORITY\LocalService', (New-Object Security.SecureString))
-    $controller = New-Service -Name $ServiceName -BinaryPathName $command -StartupType Automatic -Credential $credential -DisplayName "DNSProxy ($ServiceName)"
+    $controller = New-Service -Name $ServiceName -BinaryPathName $command -StartupType $StartupType -Credential $credential -DisplayName "DNSProxy ($ServiceName)"
     $created = $true
     $controller.Dispose()
     & sc.exe failure $ServiceName reset= 86400 actions= 'restart/3000/restart/10000/none/0'
@@ -100,7 +118,8 @@ try {
     if ($LASTEXITCODE) { throw "Failure flag configuration failed: $LASTEXITCODE" }
     # State is not service-writable and is used to verify ownership on uninstall.
     @{ SchemaVersion=1; ServiceName=$ServiceName; BinaryPath=$binary; Command=$command; Port=$Port;
-       ListenAddress=$ListenAddress; BootstrapAddress=$BootstrapAddress; Upstream=$Upstream } |
+       ListenAddress=$ListenAddress; BootstrapAddress=$BootstrapAddress; Upstream=$Upstream;
+       ManagedBy=$(if ($UseInstalledFiles) {'InnoSetup'} else {'PowerShell'}) } |
         ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $state 'installation.json') -Encoding UTF8
     if (-not $NoStart) {
         Start-Service $ServiceName
