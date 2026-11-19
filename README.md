@@ -43,8 +43,10 @@ multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
 
 The optional [Linux desktop monitor](#optional-linux-desktop-monitor) shows
 startup settings, live query activity, latency and daemon statistics. Windows
-provides [console launchers, a setup wizard and service controls](docs/WINDOWS.md); a Windows
-graphical monitor remains a future addition.
+provides [console launchers, a setup wizard and service controls](docs/WINDOWS.md).
+The [shared desktop interface](docs/DESKTOP-GUI.md) adds grouped settings,
+query/latency charts and diagnostics on Linux, Windows and macOS, with bundled
+Windows desktop installers and a Homebrew-based Mac launcher.
 
 [Windows setup guide](docs/WINDOWS.md)
 · [macOS setup guide](docs/MACOS.md)
@@ -602,7 +604,8 @@ the same C resolver. Both architectures are available from v4.5.0 onward. See th
 Set the next version in `VERSION` and merge to `master` to publish once the
 Linux package matrix, sanitizer job, and native Windows build and tests pass.
 The release requires eight Linux daemon packages, four architecture-independent
-GUI packages, two Windows ZIPs, two tested Windows setup EXEs and two macOS archives,
+GUI packages, two Windows ZIPs, two service setup EXEs, two desktop setup EXEs,
+two matching desktop-runtime source ZIPs and two macOS archives,
 all covered by `SHA256SUMS`. See the
 [packaging guide](packaging/README-packaging.md) for installation, local
 builds, and manual release recovery.

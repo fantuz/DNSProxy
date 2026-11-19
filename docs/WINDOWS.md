@@ -71,8 +71,9 @@ HTTP/2 and HTTP/3 capabilities. HTTP/3 remains opt-in with
 `Start-DNSProxy.cmd` opens the resolver in a console. `Start-DNSProxy.ps1`
 accepts launch options and can request UAC elevation. Service installation and
 DNS configuration use the PowerShell commands below. The setup wizard below
-provides installation and service settings; it does not include a statistics window. The GTK desktop monitor is
-[available on Linux](LINUX-GUI.md).
+provides installation and service settings. The optional
+[bundled desktop interface](DESKTOP-GUI.md) provides live traffic/latency charts,
+grouped startup options and diagnostics on both Windows architectures.
 
 ## Standard setup installer
 
@@ -353,7 +354,8 @@ Next decisions: Authenticode signing and broader desktop acceptance. New release
 include both Windows ZIPs and both tested setup EXEs alongside eight Linux daemon packages, four optional
 Linux GUI packages (from v4.6.0) and two native macOS archives. Publication waits
 for native Windows/macOS builds, portable bundle tests, Linux packages and
-sanitizers; all eighteen packages are included in the release's `SHA256SUMS`.
+sanitizers; GUI-capable releases also require both desktop setup EXEs and both
+matching runtime-source ZIPs. All twenty-two packages are included in `SHA256SUMS`.
 The platform coverage and unsigned-build limitations above apply to these
 regular releases.
 

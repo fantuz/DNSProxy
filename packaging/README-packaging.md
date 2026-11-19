@@ -14,7 +14,7 @@ On supported Debian/Ubuntu systems:
 
 ```sh
 sudo apt install build-essential pkg-config libcurl4-openssl-dev dpkg-dev python3
-version=0.2.4~local1
+version="$(cat VERSION)+zzlocal1"
 VERSION="$version" sh scripts/build-deb.sh
 sudo apt install "./dist/dnsp-modern_${version}_$(dpkg --print-architecture).deb"
 ```
@@ -83,12 +83,18 @@ do not replace its stub listener or symlink as part of service setup.
 | Ubuntu 24.04 | DEB | amd64 | arm64 |
 | Debian 13 | DEB | amd64 | arm64 |
 | Rocky Linux 9 | RPM | x86_64 | aarch64 |
-| Windows | Setup EXE / portable ZIP | amd64 | arm64 (Windows 11) |
-| macOS 15+ | Portable tar.gz | x86_64 (Intel) | arm64 (Apple Silicon) |
+| Windows | Resolver/service setup, desktop setup or portable ZIP | amd64 | arm64 (Windows 11) |
+| macOS 15+ | Native tar.gz with optional Homebrew GUI launcher | x86_64 (Intel) | arm64 (Apple Silicon) |
 
 The [macOS archives](../docs/MACOS.md) use Apple's system libcurl and include a
-foreground launcher on local port 5053. They require neither Homebrew nor
-Rosetta. Developer ID signing/notarization and launchd installation are deferred.
+foreground launcher on local port 5053 plus a native launchd installation helper.
+Those C executables require neither Homebrew nor Rosetta. The optional
+[desktop launcher](../docs/MACOS-GUI.md) and shared Python source are also
+included; opening the GUI requires Homebrew GTK/PyGObject. Developer ID
+signing/notarization remains separate from this unsigned delivery.
+Desktop source, launchers and installer additions described here are available
+from builds containing this GUI change. Existing published releases keep their
+original package inventories.
 
 Build RPMs from a committed checkout on Rocky Linux 9:
 
@@ -110,8 +116,10 @@ helpers.
 and `dnsp-gui` command. It is architecture independent (`all` DEB / `noarch`
 RPM), tested on both x86-64 and ARM64. Install the matching distribution's GUI
 package alongside its daemon package, or monitor a source build. GTK stays out
-of the daemon package's dependencies. Monitoring an existing daemon is read-only. The separate Launch resolver form
-can start and stop a new ordinary-user resolver; it does not reconfigure the
+of the daemon package's dependencies. Monitoring an existing daemon is read-only.
+The separate resolver options and launch controls can start/stop a new
+ordinary-user resolver; closing the window stops only that owned child. An
+external resolver or service remains running. The GUI does not reconfigure the
 packaged service or change system DNS.
 
 ```sh
@@ -124,12 +132,49 @@ dnsp-gui
 The package recommends `dnsp-modern`; it does not require a packaged daemon.
 For a source installation, add `--no-install-recommends` to APT or
 `--setopt=install_weak_deps=False` to DNF to install only the GUI. Uninstalling
-it leaves the daemon running. See the [desktop guide](../docs/LINUX-GUI.md).
+it does not stop an independently running daemon. The shared application source
+is under `tools/desktop-gui/`; `tools/linux-gui/dnsp-gui.py` remains a source
+compatibility launcher. See the [Linux guide](../docs/LINUX-GUI.md) and
+[cross-platform desktop guide](../docs/DESKTOP-GUI.md).
 
 `build-deb.sh` produces both packages; `build-rpm.sh` produces a native daemon
 RPM and a noarch GUI subpackage. To build only the GUI DEB, use
 `sh scripts/build-gui-deb.sh "$(cat VERSION)"`. Desktop packages are available from
 v4.6.0 onward. Successful CI builds also provide package artifacts.
+
+## Windows and macOS desktop delivery
+
+Windows desktop setup bundles the native resolver with a private Python/GTK
+runtime. Choose the installer matching the Windows processor:
+
+- `dnsp-modern-VERSION-windows-amd64-gui-setup.exe`
+- `dnsp-modern-VERSION-windows-arm64-gui-setup.exe`
+
+The GUI component adds a **DNSProxy desktop** Start Menu shortcut. It runs as
+the ordinary desktop user; the service uses only the separate native resolver
+and DLLs. GUI caches/diagnostics are stored under `%LOCALAPPDATA%\DNSProxy`,
+outside the protected program/runtime directories. The smaller resolver/service
+setup EXEs and portable ZIPs remain separate choices.
+
+The matching `dnsp-modern-VERSION-windows-ARCH-gui-sources.zip` contains the exact
+corresponding runtime source packages, recipes, notices and package/version
+manifest. It accompanies redistributions of the desktop installer and is not
+needed to run the GUI. Both desktop installers, both source ZIPs and all other
+release assets are covered by the same `SHA256SUMS`.
+
+Mac archives include `gui/` source, `Start-DNSProxy-GUI.command` and a desktop
+guide. `brew install gtk4 pygobject3` supplies the optional GUI runtime. The
+source launcher selects a compatible Homebrew Python without replacing system
+Python or changing global PATH. This delivery is a Homebrew launcher, not a
+self-contained `.app`; the native CLI and launchd service remain independent
+of Homebrew. See the [Mac desktop guide](../docs/MACOS-GUI.md).
+
+On every platform, **Connect/Disconnect** observes an existing local metrics
+endpoint, while Start/Stop and window close affect only the GUI-owned resolver.
+Service installation and adapter DNS changes require their separate explicit
+workflow. Enable loopback metrics explicitly when installing a service intended
+for GUI monitoring; adding a desktop component does not silently change an
+existing service command. See the [shared desktop guide](../docs/DESKTOP-GUI.md).
 
 ## Automatic and manual releases
 
@@ -137,9 +182,12 @@ v4.6.0 onward. Successful CI builds also provide package artifacts.
    `master`.
 2. The first successful build for the new version creates the matching
    `vVERSION-modern` tag at the tested commit and publishes a regular GitHub release
-   with eight Linux daemon packages, four optional GUI packages, Windows AMD64/ARM64 ZIPs and setup EXEs, two native macOS
-   archives, and `SHA256SUMS`. Publication waits for the native Windows and both
-   macOS builds and extracted-package tests, as well as Linux packaging and
+   with eight Linux daemon packages, four optional Linux GUI packages, two
+   Windows portable ZIPs, two resolver/service setup EXEs, two bundled desktop
+   setup EXEs, two matching GUI-runtime source ZIPs and two native macOS
+   archives: **22 assets plus `SHA256SUMS`**. Publication waits for both Windows
+   desktop installer jobs, native Windows/macOS builds, extracted-package and
+   desktop acceptance tests, as well as Linux packaging and
    sanitizers. Other commits at the published version
    produce CI artifacts. A failed check prevents publication.
 3. To release from the Actions page, open **DNSProxy modern - test and package
@@ -148,7 +196,7 @@ v4.6.0 onward. Successful CI builds also provide package artifacts.
    highest release tag. The workflow stages a commit that changes only
    `VERSION`. All eight Linux package builds, Windows and both macOS builds/tests,
    and the sanitizer job check out that commit before the workflow tags it and publishes
-   the complete set of 18 packages plus `SHA256SUMS`. Both CPU architectures
+   the complete set of 22 assets plus `SHA256SUMS`. Both CPU architectures
    also install and validate the optional GUI packages. A blank
    field uses the `VERSION` from `master`. Pushing an explicit tag also works
    when it matches the tagged commit's `VERSION`.
@@ -164,7 +212,7 @@ The **Refresh release download table** workflow updates the latest release's
 table when its renderer changes on `master`, or when run manually from `master`.
 It verifies that every linked asset exists and preserves the existing changelog;
 it does not change release tags, versions or package assets. When refreshing
-older releases without macOS archives, it preserves their original package set
+older releases without macOS archives or desktop installers, it preserves their original package set
 instead of adding unavailable downloads.
 
 Manual releases with a version input stage the commit on `ci/release-<run-id>`.
@@ -201,12 +249,15 @@ The standard setup EXEs add Start Menu/Apps registration and optional service
 configuration. Releases built with this installer change include both matching
 `dnsp-modern-VERSION-windows-ARCH-setup.exe` files; older releases remain unchanged.
 Native install/upgrade/uninstall acceptance gates publication, and aggregate
-checksums cover the same installer bytes tested by that run.
+checksums cover the same installer bytes tested by that run. The desktop
+`-gui-setup.exe` installers and companion `-gui-sources.zip` files described
+above are additional assets; a portable ZIP or service-only setup does not
+include the private GUI runtime.
 macOS downloads are available from v4.2.0 onward as
 `dnsp-modern-VERSION-macos-x86_64.tar.gz` and
 `dnsp-modern-VERSION-macos-arm64.tar.gz`, also covered by `SHA256SUMS`.
-The publisher rejects missing, empty, extra, or wrong-version packages, including
-either Windows ZIP or macOS archive, before creating a release tag.
+The publisher rejects missing, empty, extra, or wrong-version assets, including
+either Windows desktop setup/source pair or Mac archive, before creating a release tag.
 Existing package assets remain unchanged.
 
 ## Protocol and performance limitations

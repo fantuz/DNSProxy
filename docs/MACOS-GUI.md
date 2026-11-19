@@ -33,6 +33,10 @@ The launcher finds Homebrew on PATH or in its usual Intel/Apple Silicon
 locations, then selects a Homebrew Python able to import GTK 4, PyGObject and
 Cairo. It does not replace system Python or change the user's global PATH.
 An incompatible/missing runtime produces the dependency-install command.
+Use a native Homebrew interpreter for the Mac's processor. With an Intel Python
+translated by Rosetta on Apple Silicon, CPU time and process uptime are shown
+as unavailable rather than applying an incorrect clock conversion. Traffic,
+resident memory and process controls remain available.
 
 The native downloads remain unsigned and unnotarized. Follow the normal
 macOS download-approval process described in the [Mac guide](MACOS.md).

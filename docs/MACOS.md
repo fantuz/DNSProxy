@@ -1,5 +1,8 @@
 # Native macOS builds
 
+The archives also offer an optional [Homebrew desktop interface](MACOS-GUI.md).
+The native resolver and service helper continue to work without Homebrew.
+
 DNSProxy uses the same C resolver on macOS, Linux and Windows. Native packages
 are built separately for **Intel (x86-64)** and **Apple Silicon (arm64)**, with
 **macOS 15 or newer** as the minimum. Intel and Apple Silicon are both tested on
