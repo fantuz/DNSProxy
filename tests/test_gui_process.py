@@ -29,13 +29,13 @@ def wait_for(test, condition, seconds=5):
 
 class OwnedProcessTests(unittest.TestCase):
     def process(self, code):
-        process = OwnedResolver([sys.executable, "-u", "-c", code]).start()
+        process = OwnedResolver([sys.executable, "-I", "-B", "-u", "-c", code]).start()
         self.addCleanup(process.close)
         return process
 
     def test_graceful_stop_reaps_only_owned_process_and_keeps_logs(self):
         unrelated = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(20)"]
+            [sys.executable, "-I", "-B", "-c", "import time; time.sleep(20)"]
         )
         self.addCleanup(
             lambda: (unrelated.terminate(), unrelated.wait(timeout=5))

@@ -49,9 +49,12 @@ class BootstrapTests(unittest.TestCase):
         self,
     ):
         with tempfile.TemporaryDirectory(prefix="DNSProxy GUI ") as temporary:
+            # Windows runners may expose TEMP through an 8.3 alias. Match the
+            # canonical paths used by the installed bootstrap.
+            temporary = Path(temporary).resolve()
             root, state = (
-                Path(temporary) / "installed/gui",
-                Path(temporary) / "user state",
+                temporary / "installed/gui",
+                temporary / "user state",
             )
             (root / "runtime/bin").mkdir(parents=True)
             before = set(root.rglob("*"))

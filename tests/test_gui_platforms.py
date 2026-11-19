@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import ctypes
+import hashlib
 import os
 from pathlib import Path
 import struct
@@ -24,22 +25,39 @@ import platform_monitor as native  # noqa: E402
 
 class NativeParsingTests(unittest.TestCase):
     def test_exiting_during_native_inspection_reaps_its_helper(self):
+        def source_inventory():
+            return {
+                path.relative_to(GUI_SOURCE).as_posix(): hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+                for path in GUI_SOURCE.rglob("*")
+                if path.is_file()
+            }
+
+        before = source_inventory()
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / "orphan-helper"
             child_code = f"import time; from pathlib import Path; time.sleep(2); Path({str(marker)!r}).touch()"
             script = (
                 f"import sys,threading,time; sys.path.insert(0,{str(GUI_SOURCE)!r}); "
                 "import platform_monitor as p; "
-                f"threading.Thread(target=lambda:p._run_inspection([sys.executable,'-c',{child_code!r}],timeout=10),daemon=True).start(); "
+                f"threading.Thread(target=lambda:p._run_inspection([sys.executable,'-I','-B','-c',{child_code!r}],timeout=10),daemon=True).start(); "
                 "\nwhile not p._INSPECTIONS: time.sleep(.01)\n"
             )
             result = subprocess.run(
-                [sys.executable, "-c", script], capture_output=True, timeout=4
+                [sys.executable, "-I", "-B", "-c", script],
+                capture_output=True,
+                timeout=4,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             time.sleep(2.1)
             self.assertFalse(
                 marker.exists(), "Read-only inspection child escaped GUI exit cleanup"
+            )
+            self.assertEqual(
+                source_inventory(),
+                before,
+                "Inspection fixtures must preserve the packaged source inventory",
             )
 
     def test_cim_microseconds_match_kernel_filetime_without_weakening_identity(self):
