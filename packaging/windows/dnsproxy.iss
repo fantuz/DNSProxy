@@ -15,6 +15,8 @@
 AppId={{439B9015-B446-4C7E-95F1-923143B86B53}
 AppName=DNSProxy
 AppVersion={#AppVersion}
+AppVerName=DNSProxy {#AppVersion}
+UninstallDisplayName=DNSProxy
 VersionInfoVersion={#AppVersion}.0
 AppPublisher=DNSProxy contributors
 AppPublisherURL=https://github.com/fantuz/DNSProxy
@@ -42,6 +44,7 @@ DisableDirPage=yes
 UsePreviousAppDir=yes
 CloseApplications=yes
 RestartApplications=no
+SetupLogging=yes
 LicenseFile={#BundleDir}\LICENSE
 UninstallDisplayIcon={app}\bin\dnsp-modern.exe
 
@@ -53,10 +56,14 @@ Source: "{#BundleDir}\ServiceFiles.ps1"; Flags: dontcopy
 Source: "{#BundleDir}\*"; DestDir: "{app}\bin"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Start DNSProxy in a console"; Filename: "{app}\bin\Start-DNSProxy.cmd"; WorkingDir: "{app}\bin"
+Name: "{group}\Start DNSProxy in a console"; Filename: "{app}\bin\Start-DNSProxy.cmd"; WorkingDir: "{app}\bin"; Check: ConsoleMode
 Name: "{group}\Windows guide"; Filename: "{app}\bin\WINDOWS.md"
-Name: "{group}\Windows Services"; Filename: "{sys}\mmc.exe"; Parameters: """{sys}\services.msc"""
+Name: "{group}\Windows Services"; Filename: "{sys}\mmc.exe"; Parameters: """{sys}\services.msc"""; Check: ServiceMode
 Name: "{group}\Uninstall DNSProxy"; Filename: "{uninstallexe}"
+
+[InstallDelete]
+Type: files; Name: "{group}\Start DNSProxy in a console.lnk"; Check: ServiceMode
+Type: files; Name: "{group}\Windows Services.lnk"; Check: ConsoleMode
 
 [Code]
 var
@@ -66,6 +73,16 @@ var
   ExistingService, Prepared, Applied: Boolean;
   SetupFailure: Integer;
   ConfigPath, ErrorPath: String;
+
+function ServiceMode: Boolean;
+begin
+  Result := ServerPage.Values[0];
+end;
+
+function ConsoleMode: Boolean;
+begin
+  Result := not ServiceMode;
+end;
 
 function SelectedParameter(const Name, Default: String): Boolean;
 var
@@ -115,6 +132,7 @@ begin
   begin
     if LoadStringFromFile(ErrorPath, ErrorText) then Result := String(ErrorText)
     else Result := 'Service setup failed. Review the setup log and Windows Services.';
+    Log('Service helper ' + Action + ' failed: ' + Result);
   end;
 end;
 
@@ -210,10 +228,18 @@ begin
     if Error <> '' then
     begin
       SetupFailure := 1;
-      RaiseException(Error);
+      SuppressibleMsgBox(Error, mbError, MB_OK, IDOK);
+      Exit;
     end;
     Applied := True;
   end;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID = wpFinished) and (SetupFailure <> 0) then
+    WizardForm.FinishedLabel.Caption := 'DNSProxy program files were installed, but Windows service setup failed. ' +
+      'Review the error and setup log, then rerun setup or remove DNSProxy through Windows Apps.';
 end;
 
 procedure DeinitializeSetup;
@@ -250,6 +276,10 @@ begin
   if CurUninstallStep = usUninstall then
   begin
     Error := RunHelper('Remove', ExpandConstant('{app}\bin\Setup-DNSProxy.ps1'));
-    if Error <> '' then RaiseException(Error);
+    if Error <> '' then
+    begin
+      SuppressibleMsgBox(Error, mbError, MB_OK, IDOK);
+      Abort;
+    end;
   end;
 end;

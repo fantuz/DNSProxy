@@ -110,9 +110,11 @@ before replacing files. Startup still performs its own listener checks; if a
 fresh service fails to start, its registration/state are rolled back and setup
 reports failure. Installed application files can remain for repair or removal.
 
-Manage it through **Windows Services**, `Get-Service DNSProxy`, `Start-Service`
+Service installs show a **Windows Services** shortcut in place of the console
+launcher, avoiding a second instance on the same port. Manage the service through
+that shortcut, `Get-Service DNSProxy`, `Start-Service`
 and `Stop-Service`. Logs are in `%ProgramData%\DNSProxy\logs\service.log`.
-Use the console shortcut when the service is not using the same listeners.
+The console shortcut is provided when service registration is not selected.
 The installed reversible DNS helper is
 `%ProgramFiles%\DNSProxy\bin\Set-DNSProxyDns.ps1`. Its automatic adapter integration
 requires an automatic service on port 53 and both loopback families. A custom

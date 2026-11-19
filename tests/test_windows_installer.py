@@ -99,7 +99,9 @@ class InstallerTests(unittest.TestCase):
         registered = self.ps("Get-ItemProperty 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{439B9015-B446-4C7E-95F1-923143B86B53}_is1' | Select-Object DisplayName,DisplayVersion | ConvertTo-Json")
         self.assertEqual(json.loads(registered.stdout)['DisplayName'], 'DNSProxy')
         start_menu = self.ps("[Environment]::GetFolderPath('CommonPrograms')").stdout.strip()
-        self.assertTrue((Path(start_menu) / 'DNSProxy/Start DNSProxy in a console.lnk').is_file())
+        service_mode = self.service() is not None
+        self.assertEqual((Path(start_menu) / 'DNSProxy/Start DNSProxy in a console.lnk').is_file(), not service_mode)
+        self.assertEqual((Path(start_menu) / 'DNSProxy/Windows Services.lnk').is_file(), service_mode)
 
     def assert_dns(self, port):
         # FORMERR is generated locally and requires no Internet or test trust edit.
@@ -232,6 +234,17 @@ class InstallerTests(unittest.TestCase):
                         self.assertEqual(record['Upstream'], upstream)
                         self.assertEqual(record['ListenAddress'], ['127.0.0.1', '::1'])
                         self.assertEqual(record['ManagedBy'], 'InnoSetup')
+                        integration = self.app / 'bin/Set-DNSProxyDns.ps1'
+                        status = self.ps(f'& {self.quoted(integration)} -Action Status')
+                        self.assertIn('No DNSProxy adapter configuration', status.stdout)
+                        for path, writable in ((self.app / 'bin', False), (self.state, False),
+                                               (self.state / 'logs', True)):
+                            rights = self.ps(
+                                f'(Get-Acl -LiteralPath {self.quoted(path)}).Access | Where-Object {{ '
+                                "$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq 'S-1-5-19' } | "
+                                'ForEach-Object { [int]$_.FileSystemRights }').stdout.strip()
+                            self.assertTrue(rights, f'No LocalService ACL on {path}')
+                            self.assertEqual(bool(int(rights) & 2), writable, f'Unexpected write permission on {path}')
                         # Trust only the controlled TLS fixture, after checking the production payload.
                         ca = self.app / 'bin/ca-bundle.crt'
                         ca.write_bytes(ca.read_bytes() + b'\n' + cert.read_bytes())
@@ -280,6 +293,21 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(service['StartMode'], 'Auto')
             record = json.loads((self.state / 'installation.json').read_text(encoding='utf-8-sig'))
             self.assertEqual(record['ListenAddress'], ['127.0.0.1'])
+
+    def test_failed_service_start_keeps_setup_owned_program_files(self):
+        with self.installation():
+            script = self.app / 'bin/Install-DNSProxyService.ps1'
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as listener:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                listener.bind(('127.0.0.1', 0))
+                result = self.ps(f'& {self.quoted(script)} -UseInstalledFiles -Port {listener.getsockname()[1]}', check=False)
+                self.assertNotEqual(result.returncode, 0)
+            self.assertIsNone(self.service())
+            self.assertFalse(self.state.exists())
+            self.assert_installed_payload()
+            self.invoke(self.installer, '/SERVICE=1', '/STARTNOW=0')
+            self.assertEqual(self.service()['State'], 'Stopped')
+            self.assert_installed_payload()
 
     def test_invalid_configuration_port_conflicts_and_foreign_service_do_not_install(self):
         for argument in ('/PORT=0', '/UPSTREAM=http://localhost/dns-query',
