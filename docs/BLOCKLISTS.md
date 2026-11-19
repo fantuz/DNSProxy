@@ -196,10 +196,11 @@ Run `systemctl daemon-reload` and restart once to change startup options.
 Later file updates reload without a restart. Do not make policy files writable
 by the resolver's service account.
 
-Windows: the installer accepts `-BlocklistFile FILE...`, `-AllowlistFile FILE...`
-and `-BlockResponse refused|nxdomain|nodata|null`. It copies and validates files
-inside the protected installation's `policy` directory. LocalService can read
-them; administrators update those installed copies. Example:
+Windows: the PowerShell service installation helper accepts
+`-BlocklistFile FILE...`, `-AllowlistFile FILE...` and
+`-BlockResponse refused|nxdomain|nodata|null`. It copies and validates files inside
+the protected installation's `policy` directory. LocalService can read them;
+administrators update those installed copies. Example:
 
 ```powershell
 .\Install-DNSProxyService.ps1 -BlocklistFile 'C:\Lists\domains.txt' -AllowlistFile 'C:\Lists\allow.txt'

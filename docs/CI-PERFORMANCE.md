@@ -1,9 +1,10 @@
 # CI dependency reuse and timing
 
 Windows CI rebuilds and tests the native AMD64/ARM64 product on each applicable
-commit. The reusable inputs are the compiler environment, the x64 Python test
-driver and Python package downloads. Product executables, DLL bundles and test
-results are never restored as build inputs.
+commit. Reusable dependencies include the compiler and GTK environments, the
+x64 Python test driver and Python package downloads. Previously built DNSProxy
+executables and test results are not restored from caches. Current-run artifacts
+transfer the tested CLI bundle and staged GUI runtime between jobs.
 
 ## Windows environment caches
 
@@ -28,11 +29,39 @@ the source tree. On subsequent hits the MSYS shell is invoked directly at the
 same temporary installation path, with the same MSYSTEM, minimal PATH and
 working-directory behavior as the setup action.
 
-Update `DNSP_PYTHON_VERSION` to adopt another CPython patch. Change the `v1`
-cache schema to invalidate prepared snapshots immediately, or delete the
+Update `DNSP_PYTHON_VERSION` and the desktop workflow's matching interpreter
+version to adopt another CPython patch. Change the CLI environment's `v1`
+cache schema to invalidate prepared CLI snapshots immediately, or delete the
 specific cache in GitHub Actions. Runner image changes also invalidate them.
 The seven-day toolchain refresh balances setup cost with dependency updates;
 urgent MSYS2 updates should invalidate the schema rather than wait for it.
+
+## Bundled Windows desktop stages
+
+The GTK runtime matrix runs in parallel with the native CLI matrix. Its separate
+MSYS2 cache uses the `dnsp-gtk-v2` schema and a hash of
+`ci/windows-gui-runtime-packages.txt`. Runner image, MSYSTEM/native architecture
+and seven-day UTC epoch remain part of the key. Changes to unrelated workflow
+steps do not invalidate this dependency environment.
+
+A migration fallback accepts a `dnsp-gtk-v1` entry only for the same runner,
+MSYSTEM, image and epoch. Every restored environment must contain the requested
+packages and successfully import GTK 4, PyGObject and Cairo. An invalid restore
+is removed and replaced by a full installation; a validated fallback is saved
+under the current key. No older epoch or different architecture is accepted.
+
+The runtime stage creates a private dependency closure from the verified
+environment and copies GUI sources from the current checkout. Package metadata,
+licenses, corresponding source archives and checksummed manifests identify the
+version, source commit and native architecture. The cache does not contain a
+previously assembled DNSProxy desktop bundle.
+
+After both matrices succeed, the desktop installer matrix downloads the tested
+CLI archive and matching staged GUI runtime without recompiling the resolver.
+It tests the extracted desktop models, compiles the optional GUI setup, and
+exercises installation, the private native runtime, upgrade and uninstallation.
+Installer acceptance runs in an isolated job for each architecture. Publication
+requires these jobs in addition to the CLI and service installer checks.
 
 ## Parallel Windows tests
 
@@ -84,6 +113,9 @@ The 4.8.0 master run, `44000148438`, provides this baseline:
 | Native build and bundle | 8 s | 6 s |
 | Portable tests | 238 s | 282 s |
 | Entire job | 355 s | 629 s |
+
+These historical job timings predate the separate GTK runtime and desktop
+installer stages. They do not measure the combined desktop delivery pipeline.
 
 Compare a first run with the prepared caches absent, then rerun the same commit
 with warm caches. Record cache hits, restoration/saving overhead, group timings

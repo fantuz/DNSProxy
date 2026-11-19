@@ -2,9 +2,9 @@
 
 ## Check the local listener
 
-The packaged service listens on `127.0.0.1:5300` and serves Prometheus metrics
-on `127.0.0.1:9153`. For a manual run, enable the metrics listener with
-`-m 9153`.
+The packaged Linux systemd service listens on `127.0.0.1:5300` and serves
+Prometheus metrics on `127.0.0.1:9153`. For a manual run, enable the metrics
+listener with `-m 9153`.
 
 ```sh
 dig @127.0.0.1 -p 5300 example.com A
@@ -41,8 +41,8 @@ curl -fsS http://127.0.0.1:9153/metrics |
 | Queries time out with many active transfers | Compare the upstream timeout and overload counters. On libcurl 8.6 or newer, the queue phase shows how much time transfers spent waiting inside libcurl. |
 | UDP responses show `TC` and TCP replies work | The client advertised a small EDNS buffer or the proxy applied its UDP reply cap. Check the client buffer and `--udp-reply-max`. |
 
-For the packaged service, inspect the launch arguments and request a status
-snapshot without restarting the service.
+For the packaged Linux service, inspect the launch arguments and request a
+status snapshot without restarting the service.
 
 ```sh
 systemctl cat dnsp-modern
@@ -73,8 +73,8 @@ For example, in Prometheus:
 histogram_quantile(0.95, sum by (le) (rate(dnsp_client_duration_seconds_bucket[5m])))
 ```
 
-The Linux GUI estimates p50/p95/p99 from histogram deltas over at most 60
-sampling intervals (roughly one minute at the default refresh). Bucket
+The [desktop GUI](DESKTOP-GUI.md) estimates p50/p95/p99 from histogram deltas over
+at most 60 sampling intervals (roughly 30 seconds at the default refresh). Bucket
 interpolation makes these estimates; they are not per-query logs. The window
 resets on process/instance changes, counter resets and collection gaps.
 

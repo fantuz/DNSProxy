@@ -5,10 +5,9 @@ and diagnostics views on Linux, Windows and macOS. The C resolver remains
 independent of Python/GTK. The desktop runs as an ordinary user and does not
 install services or change adapter DNS settings.
 
-The cross-platform interface and desktop packages described here are available
-from successful builds of this GUI change. Releases produced after merging and
-bumping `VERSION` include the Windows desktop installers and Mac launcher.
-Existing releases, including 4.9.0, retain their original assets.
+This guide describes the current source tree and its CI artifacts. The Windows
+desktop installers and Mac GUI launcher have not been published in a tagged
+release. Release 4.9.0 retains its original assets and earlier Linux interface.
 
 ## Platform delivery
 
@@ -21,11 +20,14 @@ Existing releases, including 4.9.0, retain their original assets.
 | macOS 15+, Intel and Apple Silicon | `Start-DNSProxy-GUI.command` in the matching CLI archive; Homebrew GTK/PyGObject |
 
 The Windows desktop setup includes private Python/GTK libraries and adds a
-**DNSProxy desktop** Start Menu shortcut. Users do not need Python or MSYS2.
+**DNSProxy desktop** Start Menu shortcut. No separate Python or MSYS2
+installation is required.
 The optional desktop component can be omitted; the smaller resolver/service
 setup EXEs and portable ZIPs remain available separately. The private runtime
 has no role in running the Windows service. Installed program files remain in
-protected Program Files; GUI caches and diagnostics use `%LOCALAPPDATA%\DNSProxy`.
+protected Program Files; GUI caches and runtime-startup error reports use
+`%LOCALAPPDATA%\DNSProxy`. Resolver output in the **Diagnostics** tab is held
+in bounded memory.
 
 Windows runtime licenses, package/version records, hashes and exact corresponding
 source archives accompany the installer. The matching
@@ -35,8 +37,8 @@ and is not required to run the application. Verify downloads with the release's
 
 On macOS, install `gtk4 pygobject3` with Homebrew before opening the launcher.
 The launcher chooses a compatible Homebrew Python without replacing system
-Python or changing the user's global environment. It is a launcher with external
-dependencies, not a self-contained `.app`. The native CLI still requires no
+Python or changing the user's global environment. Its runtime dependencies are
+external; a self-contained `.app` is not included. The native CLI requires no
 Homebrew packages. See the [Mac desktop guide](MACOS-GUI.md).
 
 ## Monitor an existing resolver
@@ -49,9 +51,9 @@ Requests go only to `127.0.0.1`; HTTP proxies and redirects are not followed.
 The Windows desktop shortcut initially tries port 9090. When installing a new
 Windows service with GUI setup, the wizard offers a separate **Loopback metrics
 port** field; 0 disables monitoring. Existing services retain their recorded
-command and startup behavior when upgraded, so adding a GUI does not silently
-enable metrics. Choose the actual configured port or explicitly reinstall with
-monitoring enabled after restoring any adapter DNS integration. The portable
+command and startup behavior when upgraded. Adding the GUI does not enable
+metrics on an existing service. Choose the actual configured port or explicitly
+reinstall with monitoring enabled after restoring any adapter DNS integration. The portable
 service script also accepts `-MetricsPort PORT`.
 
 The Mac service helper offers the same explicit choice:
@@ -70,9 +72,8 @@ python3 tools/desktop-gui/dnsp-gui.py --metrics-port 9090
 Use **Resolver instance** to select a readable local process, or `--pid PID` at
 startup. Native process identity and executable paths are checked before
 attributing CPU, memory and arguments. Another account's process information may
-be unavailable; Windows/macOS permission failures are displayed as unavailable,
-not inferred defaults or zero usage. In that case use traffic-only monitoring
-with an explicit metrics port. Configured service arguments are not treated as
+be unavailable; permission failures are displayed as unavailable. In that case
+use traffic-only monitoring with an explicit metrics port. Configured service arguments are not treated as
 proof of the currently running process's arguments.
 
 Service state is read independently through systemd, Windows SCM or launchd.
@@ -111,7 +112,7 @@ with aligned panels and consistent gutters.
 The default refresh interval is 0.5 seconds, adjustable from 0.25 to 30 seconds.
 Collection happens off the GTK thread, with only one worker active at a time.
 Histories and logs are bounded. Paused, unavailable or failed samples create
-gaps, not invented points; stale views retain their last known values. Closing
+gaps; stale views retain their last known values. Closing
 or unmapping the window stops automatic sampling. See the [Linux monitor guide](LINUX-GUI.md)
 for histogram interpretation and metric meanings.
 
@@ -122,17 +123,17 @@ exercise connection failures, generate local UDP/TCP DNS traffic, verify real
 metrics/latency updates and check owned-process shutdown while an unrelated
 resolver stays running. Each scenario has an isolated application process to
 respect AppKit's lifecycle. Screenshots and structured results are retained as
-CI artifacts. Linux's existing GTK and model regressions remain in the matrix.
+CI artifacts. The Linux matrix also runs GTK and model regressions.
 
 Windows runtime staging runs in parallel with native CLI validation. Desktop
 setup is compiled from that run's already-tested CLI bundle and matching runtime;
 the installed GUI is exercised before/after replacement with build-time runtime
 paths unavailable. Tests check architecture, manifests, licenses/sources,
-private-DLL loading, active-process replacement refusal, stale-file removal,
-retained user data, component opt-out and uninstall. Publication requires both
+private-DLL loading, rejection of replacement while the GUI is running,
+stale-file removal, retained user data, component opt-out and uninstall. Publication requires both
 desktop installer jobs to pass and publishes their exact tested bytes.
 
 Mac tests use the GUI source and launcher extracted from the actual release
-archive, on both Intel and Apple Silicon. Broader physical-device, mixed-DPI,
-multi-monitor, accessibility and long-duration desktop testing remains useful;
-the functional matrix does not claim complete GUI coverage.
+archive, on both Intel and Apple Silicon. The functional CI matrix does not cover
+all physical devices, mixed-DPI or multi-monitor configurations, accessibility
+tools, or long-duration desktop sessions.

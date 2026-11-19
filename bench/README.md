@@ -169,9 +169,9 @@ not appropriate. The TLS mock is the preferred reproducible baseline.
 make -f modern.mk benchmark-smoke   # optional hypercorn/h2 dependencies
 ```
 
-A separate `.github/workflows/dnsp-modern-benchmark.yml` runs a short
-loopback smoke on pull requests touching the benchmark and on manual dispatch.
-The existing `dnsp-modern.yml` release/DEB workflow is untouched.
+The reusable `.github/workflows/dnsp-modern-benchmark.yml` runs a short loopback
+smoke test. The main `dnsp-modern.yml` workflow selects it for relevant pull
+request changes; manual dispatch is also available.
 
 The same workflow runs HTTP/3 integration tests on Debian 13. With a
 QUIC-capable libcurl and the benchmark environment installed, run them locally.

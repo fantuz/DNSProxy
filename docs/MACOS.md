@@ -1,7 +1,8 @@
 # Native macOS builds
 
-The archives also offer an optional [Homebrew desktop interface](MACOS-GUI.md).
-The native resolver and service helper continue to work without Homebrew.
+Source and CI builds include an optional [Homebrew desktop interface](MACOS-GUI.md).
+Release 4.9.0 does not include the desktop source or launcher. The native
+resolver and service helper do not require Homebrew.
 
 DNSProxy uses the same C resolver on macOS, Linux and Windows. Native packages
 are built separately for **Intel (x86-64)** and **Apple Silicon (arm64)**, with
@@ -34,9 +35,10 @@ dig @::1 -p 5053 example.com AAAA
 dig @::1 -p 5053 example.com AAAA +tcp
 ```
 
-The package needs no Homebrew installation, Rosetta or third-party library
-downloads: it links to Apple's system libcurl. TLS and HTTP capabilities depend
-on the installed macOS libcurl; `./dnsp-modern --version` reports them. HTTP/2 is
+The native resolver and helper need no Homebrew installation, Rosetta or
+third-party library downloads: the resolver links to Apple's system libcurl.
+TLS and HTTP capabilities depend on the installed macOS libcurl;
+`./dnsp-modern --version` reports them. HTTP/2 is
 tested on both architectures. HTTP/3 is not guaranteed by these packages.
 `BUILD-INFO.txt` records the source commit, architecture and build environment.
 
@@ -74,8 +76,8 @@ sudo ./dnsp-macos install https://cloudflare-dns.com/dns-query 1.1.1.1
 # For private enterprise trust, add the path to your PEM CA bundle as a third argument.
 ```
 
-Existing installations, jobs or reserved log paths are refused. Failed startup
-rolls back files and jobs created by that installation attempt. Upgrade by
+Installation rejects existing installations, jobs or reserved log paths. Failed
+startup rolls back files and jobs created by that installation attempt. Upgrade by
 restoring DNS, uninstalling and installing the new bundle. This helper does not
 perform unattended upgrades.
 
@@ -90,9 +92,9 @@ sudo ./dnsp-macos start
 sudo ./dnsp-macos uninstall
 ```
 
-Stop and uninstall refuse while a DNS snapshot exists. Both require restoring
-DNS first. Commands are serialized with a root-owned lock, and destructive
-commands verify the saved job ownership record.
+Stop and uninstall require restoring any saved DNS snapshot first. Commands are
+serialized with a root-owned lock, and destructive commands verify the saved
+job ownership record.
 
 ## Reversible DNS configuration
 
@@ -106,8 +108,8 @@ sudo ./dnsp-macos status
 sudo ./dnsp-macos restore-dns
 ```
 
-Enable tests real upstream DNS through both loopback families over UDP and TCP,
-then arms recovery **before** changing DNS. It saves the configured DNS dictionary
+`enable-dns` tests real upstream DNS through both loopback families over UDP and
+TCP, then arms recovery **before** changing DNS. It saves the configured DNS dictionary
 for every selected service, including search domains and the absence of static
 settings. Restoration returns an automatic/DHCP service to automatic mode; it
 does not save DHCP's current DNS addresses as a new static configuration.
@@ -119,11 +121,11 @@ transactions. Failed post-change health checks attempt immediate rollback. An
 Active transaction persists across reboots with the resolver service; a runtime
 upstream outage does not silently switch to an unencrypted DNS provider.
 
-Restore compares current settings to the saved Before/After values. Administrator
-edits, removed services or write failures retain the snapshot and produce an
+`restore-dns` compares current settings to the saved Before/After values.
+Administrator edits, removed services or write failures retain the snapshot and produce an
 error instead of overwriting unrelated settings. Resolve the conflict/reconnect
-the service, then retry `restore-dns`. Repeated Enable refuses to replace the
-original snapshot. Do not delete the snapshot to bypass stop/uninstall guards.
+the service, then retry `restore-dns`. Repeated `enable-dns` calls do not replace
+the original snapshot. Do not delete the snapshot to bypass stop/uninstall guards.
 
 Only enabled Ethernet and Wi-Fi services are supported. VPN, scoped/split DNS,
 configuration-profile managed DNS and applications with their own DNS/DoH path
@@ -132,19 +134,21 @@ inspect `scutil --dns` and verify the intended traffic path on your Mac. A profi
 may reject or override changes; use the organization's management tools in that
 case. The helper does not remove profiles or disable VPNs.
 
-## Download approval and signing
+## Blocklists and allowlists
 
 The native helper accepts `install --blocklist FILE --allowlist FILE` alongside
 the existing upstream/bootstrap/CA arguments. It copies and validates policy
 files for the unprivileged resolver. See [blocklists](BLOCKLISTS.md) for syntax,
 DNSSEC behaviour, automatic reloads and the optional Python update helper.
 
+## Download approval and signing
 
 These packages are not Developer ID signed or notarized. macOS may request
 approval before running a downloaded executable or command file. Follow
 [Apple's guidance for opening downloaded apps](https://support.apple.com/102445)
-after verifying the release and checksum. Developer ID signing, notarization
-and an installer are deferred; no global Gatekeeper changes are needed.
+after verifying the release and checksum. Distribution uses archive files and
+command-line installation; a graphical installer is not included. Global
+Gatekeeper changes are not required.
 
 ## Build and validation
 
@@ -170,5 +174,6 @@ transaction engine is tested with injected preferences and real durable state
 files (automatic/static settings, partial writes, failed health checks, external
 edits and unavailable services). The real SystemConfiguration backend is read on
 each runner, but CI does **not** change the runner's live adapter DNS or reboot it.
-A physical Mac acceptance pass should cover actual DNS changes, sleep/wake,
-reboot, Wi-Fi/Ethernet switching and any local VPN/profile configuration.
+Actual adapter DNS changes, sleep/wake, reboot, Wi-Fi/Ethernet switching and
+interactions with local VPNs or configuration profiles require validation on
+the target Mac; these conditions are not covered by the CI fixtures.

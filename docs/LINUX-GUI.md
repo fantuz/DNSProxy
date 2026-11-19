@@ -1,29 +1,29 @@
 # Linux desktop monitor and resolver controls
 
-This source tree includes an optional **GTK 4 monitor and ordinary-user launcher** for `dnsp-modern`.
-It helps explain a running resolver's configuration and activity. The C resolver
-keeps its existing event loop and dependencies. The optional desktop package is
-separate from the daemon package. GTK and Python are
-needed only on machines where you choose to open the monitor.
+This source tree includes an optional **GTK 4 monitor and ordinary-user launcher**
+for `dnsp-modern`. It displays a running resolver's configuration and activity.
+The desktop package is separate from the daemon package; GTK and Python are
+required only for the desktop interface.
 
 On Linux, GTK 4 supports X11 and Wayland, and Python uses its PyGObject bindings.
-The same desktop source now also supports Windows and macOS. It runs as an
+The shared desktop source also supports Windows and macOS. It runs as an
 ordinary user, reads aggregate metrics, and controls only a resolver it started
 itself. System service and adapter DNS configuration remain separate.
 See the [shared desktop guide](DESKTOP-GUI.md) for Windows GUI installers,
-the Homebrew Mac launcher and cross-platform behavior. Those additions and the
-interface improvements below require builds containing this GUI change;
-existing published releases retain their original assets and interface.
+the Homebrew Mac launcher and cross-platform behavior. This guide describes the
+current source tree and CI artifacts. Release 4.9.0 contains the earlier Linux
+interface; its assets do not include Windows GUI installers or the Mac GUI launcher.
 
 ## Preview
 
-The previous Linux overview below comes from a native GTK regression using a real
-local resolver and 25 controlled DNS queries, including five NXDOMAIN replies.
-Its timestamps and rates are observed samples, with no Internet upstream.
+The screenshot below shows the earlier Linux interface during a GTK regression
+with a real local resolver and 25 controlled DNS queries, including five NXDOMAIN
+replies. Its timestamps and rates are observed samples from a local DoH fixture.
 
-![Previously validated Linux overview with live query activity and elapsed-time axes](images/linux-gui-poc-live-activity.png)
+![Earlier Linux interface with measured query activity and elapsed-time axes](images/linux-gui-poc-live-activity.png)
 
-The earlier startup-options screenshot uses explicitly synthetic demo data:
+The startup-options screenshot shows the earlier interface with labelled
+synthetic demo data:
 
 ![Read-only startup options represented by On/Off controls](images/linux-gui-poc-demo-startup-options.png)
 
@@ -63,7 +63,7 @@ The demo is explicitly labelled and generates synthetic values in memory. It
 does not start a resolver, send queries, download lists or open a listener.
 Use the system Python (`/usr/bin/python3`) so it can find the distribution's
 GTK bindings. A Python virtual environment normally cannot see those packages.
-The earlier `tools/linux-gui/dnsp-gui.py` path remains a compatibility launcher
+The `tools/linux-gui/dnsp-gui.py` path remains a compatibility launcher
 for the shared source; installed Linux packages still provide `dnsp-gui`.
 
 For Fedora, the corresponding runtime packages are `python3-gobject` and `gtk4`.
@@ -149,16 +149,12 @@ The **Startup options** controls represent the monitored invocation. They do not
 edit it. **Resolver options…** opens a grouped editor for a new ordinary-user
 process; invalid edits leave the current configuration intact. Leaving a redacted
 upstream URL unchanged preserves its complete saved value. Omitted flags
-are labelled as the current C defaults, rather than claimed to be runtime
-introspection of a different daemon version. CI checks schema coverage and key
-defaults against the current C source. Future CLI changes need corresponding
-schema updates.
+are labelled as defaults from the current C source. They are not values read
+from the running process. CI checks schema coverage and key defaults against
+the current C source.
 
-The query indicator updates after the next sample, not for each packet. With
-**Pause**, the monitor reads data only when you press **Refresh now**. This is
-the monitor's on-demand mode. It does not start the daemon or open a window when a
-query arrives. Query-triggered daemon startup would need separate service/socket
-activation design, especially for UDP and privileged port 53.
+The query indicator updates once per sample. With **Pause**, the monitor reads
+data only when **Refresh now** is selected.
 
 ## Configure monitoring in the window
 
@@ -219,8 +215,9 @@ system resolver or privileged port 53; those remain separate from this launcher.
   window stops only its GUI-owned resolver; observed external processes and
   services remain running.
 - One background collector at a time keeps HTTP I/O off the GTK main loop. HTTP
-  socket timeout is one second; responses are limited to 64 KiB and 512 samples.
-  There is no pending-work backlog. Chart history defaults to 60 samples and is bounded by the selected 20–300 limit.
+  socket timeout defaults to one second and is configurable from 0.2 to 5 seconds;
+  responses are limited to 64 KiB and 512 samples. There is no pending-work backlog.
+  Chart history defaults to 60 samples and is bounded by the selected 20–300 limit.
 - A failed or delayed scrape retains the complete last valid frame, startup
   settings and activity chart. **No fresh data** and the last-good-sample age
   clearly mark stale statistics. Missed scrapes never insert false zeros into
@@ -236,9 +233,9 @@ system resolver or privileged port 53; those remain separate from this launcher.
   reused PID requires **Reconnect**, or choosing the new process explicitly. Automatic selection
   reconnects after a restart when a single readable resolver exists. Without a
   PID, resets can only be detected through falling counters.
-- CPU may exceed 100% when several cores are busy. The daemon's CPU/RSS are
-  displayed, not the GUI's. A measured monitor-overhead
-  benchmark remains a follow-up.
+- CPU may exceed 100% when several cores are busy. The displayed CPU and resident
+  memory measurements belong to the daemon. Monitor overhead is not quantified
+  by the functional regression suite.
 - Upstream preference and negotiated protocol are different. `prefer-h3` can
   fall back; reply counters show actual use. `dnsp_build_info` exposes
   the running daemon version, numeric libcurl version and built HTTP/2/3 support.
@@ -269,7 +266,7 @@ system resolver or privileged port 53; those remain separate from this launcher.
   The GUI performs no packet capture. It keeps bounded in-memory diagnostics
   from its own resolver, with no persistent query history or telemetry.
 
-## Validation and follow-ups
+## Validation scope
 
 `tests/gui-queries-25.txt` is an original, small query list in the same `NAME TYPE`
 format used by [DNS-OARC's dnsperf/resperf sample data](https://github.com/DNS-OARC/sample-query-data).
@@ -296,7 +293,7 @@ started resolvers from GUI-owned children when closing a window. External
 processes remain running; owned children are stopped and reaped. It publishes
 source bundles and screenshots as CI artifacts. Additional native desktop tests
 exercise the shared interface on Windows, Intel Mac and Apple Silicon.
-The Xvfb tests cover X11; native Wayland validation remains a follow-up.
+The Xvfb tests cover X11. Native Wayland behavior is not covered by this workflow.
 
 ```sh
 make dnsp-modern
@@ -306,10 +303,10 @@ dbus-run-session -- xvfb-run -a -s '-screen 0 1280x960x24' \
   /usr/bin/python3 tests/test_gui_gtk.py
 ```
 
-The monitor is a troubleshooting companion. GitHub CI validates installation,
-imports, launcher and desktop metadata on both CPU architectures, exercises
+GitHub CI validates installation, imports, launcher and desktop metadata on both
+CPU architectures, exercises
 switching between two live resolvers, and publishes GTK screenshots. Native
-Wayland tests and a measured monitor-overhead comparison remain useful follow-ups.
+Wayland behavior and monitor overhead are outside this functional test coverage.
 Editing system service configuration and privileged service controls remain
 separate from the ordinary-user launch form.
 
@@ -333,5 +330,5 @@ slow reads keep their existing deadline and stale-data indication.
 The connection controls, both plots and information sections use matching
 panel borders, padding and gutters. DNS traffic and upstream statistics share
 an aligned row; cache/filtering and daemon load share the next row. Metric
-cards retain equal widths and tabular numbers. These changes follow the GTK
-foreground color so light and dark themes remain readable.
+cards retain equal widths and tabular numbers. Panels and plot labels use the GTK
+foreground color to support light and dark themes.

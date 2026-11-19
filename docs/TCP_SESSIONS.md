@@ -1,8 +1,8 @@
 # `dnsp-modern`: persistent DNS-over-TCP sessions
 
 `dnsp-modern` accepts conventional DNS-over-TCP messages, each prefixed by a
-2-byte network-order length. Starting with the TCP session patch (proposed for
-`v0.2.3-modern`), it **keeps the client TCP connection open after a response**.
+2-byte network-order length. It **keeps the client TCP connection open after a
+response**.
 This is independent of the persistent upstream libcurl/DoH connection pool.
 
 ## Protocol behavior
@@ -38,8 +38,8 @@ This is independent of the persistent upstream libcurl/DoH connection pool.
 Both TCP settings accept **100–600000 milliseconds** and default to **15000**.
 
 - `--tcp-idle-ms` limits the wait for the next query after accepting the
-  connection or writing a response. libcurl's 3-second upstream timeout applies
-  while a complete query is in flight.
+  connection or writing a response. `--doh-timeout-ms` controls the upstream
+  deadline while a complete query is in flight; its default is 3000 milliseconds.
 - `--tcp-io-ms` sets the maximum time to assemble a DNS frame from its first
   byte and, independently, to send a queued response. Partial reads and writes
   do not extend these deadlines.

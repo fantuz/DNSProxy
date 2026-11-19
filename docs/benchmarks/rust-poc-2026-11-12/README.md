@@ -39,8 +39,8 @@ generator, a 1 ms upstream delay, one A record per response, a per-host
 connection cap of 8, and the answer cache disabled. The levels were 1, 8 and
 32 concurrent UDP clients, each with 0.5 seconds of warmup and 2 seconds of
 measurement. Three runs alternated application order. The fixture recorded the
-negotiated HTTP version and simultaneous streams; both HTTP/2 and HTTP/3 were
-observed as requested, with multiplexing at higher concurrency.
+negotiated HTTP version and simultaneous streams. The recorded sessions included
+both HTTP/2 and HTTP/3, with multiplexing at higher concurrency.
 
 The proxy, Python fixture and load generator shared the host. CPU affinity was
 not restricted in this C/Rust run. Peak RSS is the proxy's Linux `VmHWM` by the
