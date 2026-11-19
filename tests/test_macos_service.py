@@ -1,5 +1,5 @@
 """Native launchd acceptance; never change the runner's actual adapter DNS."""
-import os
+import http.client
 from pathlib import Path
 import plistlib
 import re
@@ -66,8 +66,9 @@ class MacServiceTests(unittest.TestCase):
                 try:
                     blocklist = Path(directory)/'domains.txt'
                     blocklist.write_text('ads.example\n')
+                    metrics_port = fixtures.unused_ports()[0]
                     self.helper('install', f'https://localhost:{server.server_port}/dns-query', '127.0.0.1', str(cert),
-                                '--blocklist', str(blocklist))
+                                '--blocklist', str(blocklist), '--metrics-port', str(metrics_port))
                     installed = True
                     log = Path('/var/log/dnsp-modern.log').stat()
                     self.assertEqual(log.st_uid, 0)
@@ -79,6 +80,17 @@ class MacServiceTests(unittest.TestCase):
                     ], capture_output=True, text=True, timeout=10)
                     self.assertEqual(opened.returncode, 0, opened.stderr)
                     self.assert_dns()
+                    record = plistlib.loads(subprocess.check_output(['sudo', 'cat', str(ROOT/'installation.plist')]))
+                    program = record['Service']['ProgramArguments']
+                    self.assertEqual(program[program.index('-m') + 1], str(metrics_port))
+                    connection = http.client.HTTPConnection('127.0.0.1', metrics_port, timeout=5)
+                    try:
+                        connection.request('GET', '/metrics')
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, 200)
+                        self.assertIn(b'dnsp_queries_total', response.read(65536))
+                    finally:
+                        connection.close()
                     pid = self.pid()
                     self.assertGreater(pid, 0)
                     from test_policy import question, exchange
@@ -187,6 +199,16 @@ class MacServiceTests(unittest.TestCase):
         self.assertFalse(ROOT.exists())
         for label in (LABEL, LABEL + '.recovery'):
             self.assertFalse(Path('/Library/LaunchDaemons', label + '.plist').exists())
+
+    def test_invalid_metrics_ports_do_not_create_service(self):
+        for arguments in (('--metrics-port', '-1'), ('--metrics-port', '53'),
+                          ('--metrics-port', '65536'), ('--metrics-port', '9090x'),
+                          ('--metrics-port',), ('--metrics-port', '9090', '--metrics-port', '9091')):
+            with self.subTest(arguments=arguments):
+                result = self.helper('install', *arguments, check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(ROOT.exists())
+                self.assertFalse(Path('/Library/LaunchDaemons', LABEL + '.plist').exists())
 
 
 if __name__ == '__main__':

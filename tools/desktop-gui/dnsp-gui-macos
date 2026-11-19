@@ -1,0 +1,34 @@
+#!/bin/sh
+# Homebrew GTK interpreter selection adapted from entropy-service (MIT),
+# Copyright (c) 2026 Massimiliano Fantuzzi HB9GUS. See LICENSE.
+set -eu
+if [ "$(uname -s)" != Darwin ]; then
+    printf '%s\n' 'This launcher requires macOS; use dnsp-gui.py on Linux/Windows.' >&2
+    exit 2
+fi
+brew=$(command -v brew || true)
+if [ -z "$brew" ]; then
+    for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+        if [ -x "$candidate" ]; then brew=$candidate; break; fi
+    done
+fi
+if [ -z "$brew" ]; then
+    printf '%s\n' 'Install Homebrew, then: brew install gtk4 pygobject3' >&2
+    exit 2
+fi
+prefix=$("$brew" --prefix)
+script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
+for candidate in "$prefix/bin/python3" "$prefix"/opt/python@*/bin/python3.*; do
+    [ -x "$candidate" ] || continue
+    case "${candidate##*/}" in python3|python3.[0-9]|python3.[0-9][0-9]) ;; *) continue ;; esac
+    if "$candidate" -c 'import gi, cairo; gi.require_version("Gtk", "4.0"); from gi.repository import Gtk' >/dev/null 2>&1; then
+        if [ "${1:-}" = --python-check ]; then
+            shift
+            [ "$#" -gt 0 ] || { printf '%s\n' '--python-check requires a Python script or option.' >&2; exit 2; }
+            exec "$candidate" "$@"
+        fi
+        exec "$candidate" "$script_dir/dnsp-gui.py" "$@"
+    fi
+done
+printf '%s\n' 'No Homebrew Python with GTK 4/PyGObject/Cairo found. Run: brew install gtk4 pygobject3' >&2
+exit 2
