@@ -83,7 +83,8 @@ class MacGuiLauncherTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             record = json.loads((root / "argv.json").read_text())
             self.assertEqual(
-                record["argv"], [str(launcher.parent / "dnsp-gui.py"), *arguments]
+                record["argv"],
+                [str((launcher.parent / "dnsp-gui.py").resolve()), *arguments],
             )
             self.assertEqual(record["PATH"], environment["PATH"])
 
@@ -159,7 +160,12 @@ class MacGuiLauncherTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
                 json.loads(log.read_text()),
-                ["--binary", str(root / "dnsp-modern"), "--metrics-port", "9110"],
+                [
+                    "--binary",
+                    str((root / "dnsp-modern").resolve()),
+                    "--metrics-port",
+                    "9110",
+                ],
             )
 
 
