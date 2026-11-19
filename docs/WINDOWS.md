@@ -87,12 +87,12 @@ elevation and installs into the protected `%ProgramFiles%\DNSProxy` directory.
 It bundles the resolver, native DLLs, CA certificates, licenses and scripts;
 Python, MSYS2 and a separate service wrapper are not required.
 
-**Availability:** successful Windows workflow runs provide resolver/service
-setup EXEs in `dnsp-modern-windows-ARCH-poc` artifacts. The bundled desktop
-variant uses the filename `dnsp-modern-VERSION-windows-ARCH-gui-setup.exe` and
-includes the private GUI runtime. Release v4.9.0-modern contains portable ZIPs;
-it does not contain either setup variant. The release asset list and each
-artifact's source revision identify the applicable distribution.
+**Availability:** resolver/service and bundled desktop setup EXEs are release
+assets from v4.10.0-modern onward. The desktop variant uses the filename
+`dnsp-modern-VERSION-windows-ARCH-gui-setup.exe` and includes the private GUI
+runtime. Successful Windows workflow runs also provide installer artifacts.
+See the [4.10.0 release notes](releases/4.10.0.md); each build records its source
+revision alongside the version.
 
 The wizard adds Start Menu shortcuts and a single Windows Apps uninstall entry.
 The **Register DNSProxy as a Windows service** checkbox is initially off. Leave it
@@ -367,9 +367,8 @@ The publishing workflow requires both Windows portable ZIPs, both resolver/servi
 setup EXEs, both desktop setup EXEs and both matching runtime-source ZIPs,
 alongside eight Linux daemon packages, four Linux GUI packages and two macOS
 archives. Native Windows/macOS, desktop, packaging and sanitizer checks gate
-publication. `SHA256SUMS` covers all twenty-two deliverables. This is the source
-build inventory; release v4.9.0-modern retains its published sixteen-package
-inventory and checksum manifest.
+publication. Release v4.10.0-modern contains this set of twenty-two deliverables,
+all covered by `SHA256SUMS`.
 
 ## Build from source
 

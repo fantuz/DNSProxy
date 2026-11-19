@@ -1,14 +1,15 @@
 # DNSProxy desktop GUI on macOS
 
 The shared GTK 4 interface runs on Intel and Apple Silicon Macs. Native macOS
-archives built from this source tree include its Python modules under `gui/`
+archives from release 4.10.0 onward include its Python modules under `gui/`
 and an optional `Start-DNSProxy-GUI.command` launcher. The C resolver and its service helper
 still link only to macOS system libraries; the console launcher and launchd
 service do not require Homebrew, Python or GTK.
 
 The GUI uses a Homebrew-based launcher with external runtime dependencies;
-a self-contained `.app` is not included. The source and launcher are available
-in CI artifacts. Release 4.9.0 does not contain these desktop components.
+a self-contained `.app` is not included. The source and launcher are included
+in both native archive architectures. See the
+[4.10.0 release notes](releases/4.10.0.md).
 
 ## Install the desktop dependencies
 
@@ -18,9 +19,9 @@ Install Homebrew, then run:
 brew install gtk4 pygobject3
 ```
 
-Obtain a native DNSProxy archive with desktop components matching the Mac's
-processor from a successful CI build. Verify the archive against its accompanying
-checksum file; for a release download, use that release's `SHA256SUMS`. Extract
+Download the native DNSProxy archive matching the Mac's processor from release
+4.10.0 or later and verify it against that release's `SHA256SUMS`. CI artifacts
+also provide the archives with accompanying checksum files. Extract
 the complete archive. Keep `gui/`, `dnsp-modern` and
 `Start-DNSProxy-GUI.command` together. The archive's
 own checksum manifest covers every included source module and launcher.

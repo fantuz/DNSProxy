@@ -26,7 +26,7 @@ uses RFC 8484 `application/dns-message` POST requests, libcurl's event-driven
 multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
 
 <p align="center">
-  <a href="https://github.com/fantuz/DNSProxy/releases/latest#downloads"><img src="https://img.shields.io/badge/Download%20for%20Windows-AMD64%20%2F%20ARM64%20ZIPs-0078D4?style=for-the-badge" alt="Download for Windows — AMD64 or ARM64 portable ZIP" height="28"></a>
+  <a href="https://github.com/fantuz/DNSProxy/releases/latest#downloads"><img src="https://img.shields.io/badge/Download%20for%20Windows-AMD64%20%2F%20ARM64%20setup%20%2B%20ZIPs-0078D4?style=for-the-badge" alt="Download for Windows — AMD64 or ARM64 setup installer and portable ZIP" height="28"></a>
 </p>
 
 <p align="center">
@@ -48,11 +48,11 @@ by the interface. Monitoring an existing service is read-only. Linux packages,
 bundled Windows desktop installers and a Homebrew-based Mac launcher provide
 the platform-specific distribution formats.
 
-Release **v4.9.0-modern** contains Linux daemon/GUI packages, Windows portable
-ZIPs and native macOS archives. Windows setup EXEs and the cross-platform
-desktop distributions described in the desktop guide are available from source
-builds and CI artifacts; they are not assets of that release. Each build records
-its source revision in addition to the version number.
+Release **v4.10.0-modern** contains 22 deliverables plus `SHA256SUMS`: Linux
+daemon/GUI packages, Windows portable ZIPs, resolver/service and bundled desktop
+setup EXEs, matching desktop-runtime source ZIPs, and native macOS archives with
+the Homebrew GUI launcher. Each build records its source revision in addition
+to the version number. See the [4.10.0 release notes](docs/releases/4.10.0.md).
 
 [Windows setup guide](docs/WINDOWS.md)
 · [macOS setup guide](docs/MACOS.md)
@@ -592,6 +592,8 @@ before supplying a replacement. See
 
 ## Packages and releases
 
+The [4.10.0 release notes](docs/releases/4.10.0.md) describe the shared desktop
+interface, native Windows GUI installers and Homebrew Mac launcher.
 See the [4.9.0 release notes](docs/releases/4.9.0.md) for faster desktop
 sampling, timestamped charts, balanced information panels and CI build reuse.
 The [4.8.0 release notes](docs/releases/4.8.0.md) cover stable desktop refresh,
@@ -606,11 +608,13 @@ Rocky Linux 9. Each distribution has native x86-64 and ARM64 builds. Download
 the matching package and `SHA256SUMS` from
 [GitHub Releases](https://github.com/fantuz/DNSProxy/releases).
 Windows builds offer native AMD64 and Windows 11 ARM64 portable ZIPs from
-the same C resolver. Both architectures are available from v4.5.0 onward. See the
+the same C resolver. Both architectures are available from v4.5.0 onward;
+resolver/service and bundled desktop setup EXEs are available from v4.10.0 onward. See the
 [Windows guide](docs/WINDOWS.md) for architecture selection, launch and DNS setup.
 
 Set the next version in `VERSION` and merge to `master` to publish once the
-Linux package matrix, sanitizer job, and native Windows build and tests pass.
+Linux package matrix, sanitizer job, native Windows/macOS tests and both
+Windows desktop installer acceptance jobs pass.
 The publishing workflow requires eight Linux daemon packages, four architecture-independent
 GUI packages, two Windows ZIPs, two service setup EXEs, two desktop setup EXEs,
 two matching desktop-runtime source ZIPs and two macOS archives,

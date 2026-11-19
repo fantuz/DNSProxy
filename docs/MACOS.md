@@ -1,8 +1,9 @@
 # Native macOS builds
 
-Source and CI builds include an optional [Homebrew desktop interface](MACOS-GUI.md).
-Release 4.9.0 does not include the desktop source or launcher. The native
-resolver and service helper do not require Homebrew.
+Native archives from release 4.10.0 onward include an optional
+[Homebrew desktop interface](MACOS-GUI.md), with shared Python source and a Mac
+launcher. The native resolver and service helper do not require Homebrew.
+See the [4.10.0 release notes](releases/4.10.0.md).
 
 DNSProxy uses the same C resolver on macOS, Linux and Windows. Native packages
 are built separately for **Intel (x86-64)** and **Apple Silicon (arm64)**, with

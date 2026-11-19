@@ -78,12 +78,12 @@ do not replace its stub listener or symlink as part of service setup.
 
 ## Packages and architectures
 
-The table describes the formats produced by the source packaging workflow.
-Release v4.9.0-modern contains 16 package assets plus `SHA256SUMS`: eight Linux
-daemon packages, four Linux GUI packages, two Windows portable ZIPs and two
-macOS archives. Windows setup installers and the cross-platform desktop additions
-are source and CI outputs; they are not assets of that published release.
-Package metadata records the source commit as well as the version.
+Release v4.10.0-modern contains 22 deliverables plus `SHA256SUMS`: eight Linux
+daemon packages, four Linux GUI packages, two Windows portable ZIPs, two
+resolver/service setup EXEs, two desktop setup EXEs, two matching desktop-runtime
+source ZIPs and two macOS archives. See the
+[4.10.0 release notes](../docs/releases/4.10.0.md). Package metadata records the
+source commit as well as the version.
 
 | Distribution | Format | x86-64 | ARM64 |
 | --- | --- | --- | --- |
@@ -98,7 +98,7 @@ The [macOS archives](../docs/MACOS.md) use Apple's system libcurl and include a
 foreground launcher on local port 5053 plus a native launchd installation helper.
 Those C executables require neither Homebrew nor Rosetta. The optional
 [desktop launcher](../docs/MACOS-GUI.md) and shared Python source are also
-included in source workflow builds; opening the GUI requires Homebrew
+included from release 4.10.0 onward; opening the GUI requires Homebrew
 GTK/PyGObject. The native executables are unsigned and are not notarized.
 
 Build RPMs from a committed checkout on Rocky Linux 9:
@@ -150,7 +150,7 @@ v4.6.0 onward. Successful CI builds also provide package artifacts.
 ## Windows and macOS desktop delivery
 
 Windows desktop setup bundles the native resolver with a private Python/GTK
-runtime. The source workflow produces architecture-specific installers:
+runtime. Release 4.10.0 introduces architecture-specific installers:
 
 - `dnsp-modern-VERSION-windows-amd64-gui-setup.exe`
 - `dnsp-modern-VERSION-windows-arm64-gui-setup.exe`
@@ -250,7 +250,7 @@ from v4.5.0 onward as `dnsp-modern-VERSION-windows-arm64-poc.zip`; releases thro
 v4.4.0 have only the AMD64 ZIP. Both architectures are covered by `SHA256SUMS`.
 See the [Windows guide](../docs/WINDOWS.md) for PowerShell verification and setup.
 The standard setup EXEs add Start Menu/Apps registration and optional service
-configuration. The source workflow produces both matching
+configuration. Release 4.10.0 introduces both matching
 `dnsp-modern-VERSION-windows-ARCH-setup.exe` files.
 Native install/upgrade/uninstall acceptance gates publication, and aggregate
 checksums cover the same installer bytes tested by that run. The desktop
