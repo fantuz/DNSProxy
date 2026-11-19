@@ -65,7 +65,8 @@ class SettingsTests(unittest.TestCase):
         texts, displayed, checks = editor_values(original)
         texts["port"] = "0"
         changed = edited_config(original, texts, displayed, checks)
-        with self.assertRaisesRegex(ValueError, "1024"):
+        minimum = "1\\.\\.65535" if sys.platform == "win32" else "1024"
+        with self.assertRaisesRegex(ValueError, minimum):
             changed.argv()
         self.assertEqual(original.port, "5300")
         self.assertEqual(original.argv()[original.argv().index("-p") + 1], "5300")
