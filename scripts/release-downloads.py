@@ -12,7 +12,7 @@ END = "<!-- dnsp-downloads:end -->"
 VERSION = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 
 
-def downloads(version, repository, *, macos=True, windows_arm64=True, gui=True):
+def downloads(version, repository, *, macos=True, windows_arm64=True, gui=True, windows_installer=True):
     if not re.fullmatch(VERSION, version):
         raise ValueError("Expected a MAJOR.MINOR.PATCH release version")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
@@ -31,6 +31,10 @@ def downloads(version, repository, *, macos=True, windows_arm64=True, gui=True):
              "| --- | --- | --- |",
              "| Windows | " + asset("**Portable ZIP**", f"dnsp-modern-{version}-windows-amd64-poc.zip") + " | " +
              (asset("**ARM64 ZIP**", f"dnsp-modern-{version}-windows-arm64-poc.zip") if windows_arm64 else "Not available") + " |"]
+    if windows_installer:
+        links = [asset("**Setup EXE**", f"dnsp-modern-{version}-windows-{arch}-setup.exe")
+                 for arch in ("amd64", "arm64")]
+        lines.insert(-1, f"| Windows installer | {' | '.join(links)} |")
     if macos:
         links = [asset(label, f"dnsp-modern-{version}-macos-{arch}.tar.gz")
                  for label, arch in (("**Intel archive**", "x86_64"), ("**Apple Silicon archive**", "arm64"))]
@@ -53,7 +57,8 @@ def downloads(version, repository, *, macos=True, windows_arm64=True, gui=True):
         lines.append("| Rocky Linux 9 | " + asset("GUI RPM", f"dnsp-modern-gui-{version}-1.el9.noarch.rpm") + " |")
     checksums = asset("SHA256SUMS", "SHA256SUMS")
     lines.extend(["",
-                  "**Windows:** choose the ZIP matching your system type (amd64 or ARM64), "
+                  "**Windows:** " + ("use Setup EXE for Start Menu/Apps registration and optional Windows service, or " if windows_installer else "") +
+                  "choose the ZIP matching your system type (amd64 or ARM64), "
                   "extract the entire ZIP and double-click **Start-DNSProxy.cmd**. "
                   "Keep the EXE, DLLs and certificate bundle together."])
     if macos:
@@ -78,7 +83,9 @@ def refresh(release, repository):
     macos = any(name.endswith(("-macos-x86_64.tar.gz", "-macos-arm64.tar.gz")) for name in available)
     windows_arm64 = any(name.endswith('-windows-arm64-poc.zip') for name in available)
     gui = any(name.startswith(("dnsp-modern-gui_", "dnsp-modern-gui-")) for name in available)
-    block, expected = downloads(match.group(1), repository, macos=macos, windows_arm64=windows_arm64, gui=gui)
+    windows_installer = any(name.endswith(('-windows-amd64-setup.exe', '-windows-arm64-setup.exe')) for name in available)
+    block, expected = downloads(match.group(1), repository, macos=macos, windows_arm64=windows_arm64,
+                                gui=gui, windows_installer=windows_installer)
     missing = expected - available
     if missing:
         raise ValueError("Release is missing downloads: " + ", ".join(sorted(missing)))

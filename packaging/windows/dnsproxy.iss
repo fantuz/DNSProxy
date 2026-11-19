@@ -102,7 +102,8 @@ begin
   Result := '';
   DeleteFile(ErrorPath);
   Parameters := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + Script +
-    '" -Action ' + Action + ' -ConfigFile "' + ConfigPath + '" -ResultFile "' + ErrorPath + '"';
+    '" -Action ' + Action + ' -ResultFile "' + ErrorPath + '"';
+  if ConfigPath <> '' then Parameters := Parameters + ' -ConfigFile "' + ConfigPath + '"';
   if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters,
       '', SW_HIDE, ewWaitUntilTerminated, ExitCode) then
     Result := 'Windows PowerShell could not be started.'
@@ -175,7 +176,7 @@ begin
     Error := RunHelper('Validate', ExpandConstant('{tmp}\Setup-DNSProxy.ps1'));
     if Error <> '' then
     begin
-      MsgBox(Error, mbError, MB_OK);
+      SuppressibleMsgBox(Error, mbError, MB_OK, IDOK);
       Result := False;
     end;
   end;
@@ -235,7 +236,7 @@ begin
   ErrorPath := ExpandConstant('{tmp}\dnsproxy-uninstall-error.txt');
   Error := RunHelper('CheckRemove', ExpandConstant('{app}\bin\Setup-DNSProxy.ps1'));
   Result := Error = '';
-  if not Result then MsgBox(Error, mbError, MB_OK);
+  if not Result then SuppressibleMsgBox(Error, mbError, MB_OK, IDOK);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

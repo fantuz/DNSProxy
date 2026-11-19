@@ -179,12 +179,29 @@ jobs:
           & $python tests/test_windows_service.py -v
           if ($LASTEXITCODE) { $failed = $true }
           if ($failed) { exit 1 }
+      - name: Compile the matching standard installer
+        shell: pwsh
+        run: ./scripts/build-windows-installer.ps1 -Architecture '${{ matrix.arch }}'
+      - name: Test the setup wizard and real service install, upgrade and uninstall
+        shell: pwsh
+        env:
+          DNSP_TEST_WINDOWS_ARCH: ${{ matrix.arch }}
+          DNSP_TEST_OPENSSL: ${{ steps.build.outputs.openssl }}
+        run: |
+          $python = (Get-Command python).Source
+          $env:DNSP_TEST_INSTALLER = (Get-ChildItem dist/dnsp-modern-*-windows-${{ matrix.arch }}-setup.exe).FullName
+          $env:DNSP_TEST_BINARY = "$pwd/dist/windows/dnsp-modern.exe"
+          $env:Path = "$(Split-Path $python);$env:SystemRoot\System32;$env:SystemRoot"
+          & $python tests/test_windows_installer.py -v
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v6
         with:
           name: dnsp-modern-windows-${{ matrix.arch }}-poc
           path: |
             dist/dnsp-modern-*-windows-${{ matrix.arch }}-poc.zip
             dist/dnsp-modern-*-windows-${{ matrix.arch }}-poc.zip.sha256
+            dist/dnsp-modern-*-windows-${{ matrix.arch }}-setup.exe
+            dist/dnsp-modern-*-windows-${{ matrix.arch }}-setup.exe.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -196,3 +213,11 @@ jobs:
           path: dist/windows-test-logs/
           if-no-files-found: warn
           retention-days: 7
+      - name: Save installer logs and wizard evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: dnsp-windows-installer-evidence-${{ matrix.arch }}
+          path: dist/windows-installer-evidence/
+          if-no-files-found: warn
+          retention-days: 14
