@@ -83,15 +83,15 @@ static bool tcp_write_resumes_under_backpressure(void) {
     Query q={.client=&client};
     static unsigned char payload[TCP_MAX],wire[TCP_MAX+2];
     for(size_t i=0;i<sizeof(payload);i++) payload[i]=(unsigned char)(i^(i>>8));
-    uint64_t satisfied=metrics.queries_satisfied;
+    uint64_t satisfied=metrics.queries_satisfied, nxdomain=metrics.client_rcodes[3];
     if(ok) {
-        reply_dns(&q,payload,sizeof(payload),true);
+        reply_dns(&q,payload,sizeof(payload),0,true);
         uint64_t deadline=client.write_deadline;
         tcp_io(&client,POLLOUT);
         size_t first_write=client.sent;
         tcp_io(&client,POLLOUT); /* No room in the socket until the peer reads. */
         ok=first_write>0 && first_write<sizeof(wire) && client.sent==first_write &&
-           deadline && tcp_deadline(&client,TCP_IDLE_MS)==deadline && metrics.queries_satisfied==satisfied;
+           deadline && tcp_deadline(&client,TCP_IDLE_MS)==deadline && metrics.queries_satisfied==satisfied && metrics.client_rcodes[3]==nxdomain;
 
         size_t received=0;
         while(ok && received<sizeof(wire)) {
@@ -104,11 +104,11 @@ static bool tcp_write_resumes_under_backpressure(void) {
            be16(wire)==sizeof(payload) && !memcmp(wire+2,payload,sizeof(payload));
     }
     if(ok) {
-        reply_dns(&q,payload,sizeof(payload),true);
+        reply_dns(&q,payload,sizeof(payload),0,true);
         ok=client.out!=NULL;
         close(fd[1]);fd[1]=-1;
         tcp_io(&client,POLLOUT);
-        ok=ok && client.fd<0 && !client.out && metrics.queries_satisfied==satisfied+1;
+        ok=ok && client.fd<0 && !client.out && metrics.queries_satisfied==satisfied+1 && metrics.client_rcodes[3]==nxdomain+1;
     }
     close_client(&client);
     if(fd[1]>=0) close(fd[1]);

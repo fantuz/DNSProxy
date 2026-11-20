@@ -400,11 +400,18 @@ dig @127.0.0.1 -p 5300 +noedns example.com A
 curl -fsS http://127.0.0.1:9153/metrics | grep '^dnsp_cache_'
 ```
 
-The cache is disabled by default. It reuses complete positive `IN A` and
-`IN AAAA` answers, including CNAME chains, for matching UDP and TCP queries.
-The wire query must match byte for byte apart from the transaction ID. An
-empty EDNS(0) OPT is eligible. EDNS options, DNSSEC DO/CD requests, negative
-answers, and truncated upstream replies go through the upstream path.
+The cache is disabled by default. It reuses complete positive IN A, AAAA,
+SVCB and HTTPS answers, including CNAME chains, for matching UDP and TCP
+queries. The wire query must match byte for byte apart from the transaction
+ID. An empty EDNS(0) OPT is eligible. EDNS options, DNSSEC DO/CD queries
+and truncated replies use the upstream path.
+
+For these four query types, the cache also accepts direct NXDOMAIN and NODATA
+replies with a single IN SOA for the queried name or an enclosing zone. The
+lower of the SOA TTL and MINIMUM determines the negative lifetime, subject to
+HTTP freshness limits and the local retention cap. Reuse requires the same
+question type. Referrals, negative replies with aliases, and negative replies without
+a suitable SOA remain on the forwarding path.
 
 Entries expire at the earliest answer TTL or upstream HTTP freshness limit,
 with a local retention cap of one hour. Cache hits restore the caller's ID and

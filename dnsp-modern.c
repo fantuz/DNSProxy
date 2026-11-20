@@ -228,6 +228,7 @@ typedef struct {
     size_t count;
     uint16_t offset[CACHE_MAX_ANSWERS];
     uint32_t min_ttl;
+    bool negative;
 } CacheTtls;
 typedef struct {
     size_t key_len,reply_len;
@@ -714,17 +715,18 @@ static bool dns_content_type(const char *type) {
     return *type==0 || *type==';';
 }
 
-/* Cache only ordinary IN A/AAAA queries with no options beyond an empty OPT.
- * The exact wire key retains case, flags and EDNS size. Only the ID is omitted. */
+/* Exact wire keys retain flags, case and EDNS size. Only the ID is omitted. */
 static bool cache_empty_opt(const unsigned char *p,size_t n) {
     return n==DNS_OPT_SIZE && p[0]==0 && be16(p+1)==41 && be32(p+5)==0 && be16(p+9)==0;
 }
-static bool plain_address_query(const unsigned char *p,const DnsInfo *info) {
-    return be16(p+4)==1 && info->qclass==1 && (info->qtype==1 || info->qtype==28) &&
-           p[2]==1 && !(p[3]&~0x20);
+static bool address_type(uint16_t type) { return type==1 || type==28; }
+static bool binding_type(uint16_t type) { return type==64 || type==65; }
+static bool plain_query(const unsigned char *p,const DnsInfo *info) {
+    return be16(p+4)==1 && info->qclass==1 && p[2]==1 && !(p[3]&~0x20);
 }
 static CacheEntry *cache_slot_for(const unsigned char *p,size_t n,const DnsInfo *info) {
-    if(!cache_entries || n>CACHE_MAX_QUERY || !plain_address_query(p,info)) return NULL;
+    if(!cache_entries || n>CACHE_MAX_QUERY || !plain_query(p,info) ||
+       !(address_type(info->qtype) || binding_type(info->qtype))) return NULL;
     uint16_t additional=be16(p+10);
     if(additional && (additional!=1 || !cache_empty_opt(p+info->question_end,n-info->question_end))) return NULL;
     uint32_t hash=2166136261u;
@@ -801,24 +803,68 @@ static size_t collect_doh_header(char *p,size_t size,size_t count,void *arg) {
               span_is(p,name_len,"Set-Cookie")) headers->blocked=true;
     return n;
 }
-/* The normal DNS parser has already checked all wire bounds. Narrow reuse to
- * complete positive address answers and record every TTL that will be aged. */
+/* SVCB/HTTPS TargetName is uncompressed. Parameters are length-delimited
+ * and sorted by key, including keys the relay does not interpret (RFC 9460). */
+static bool cache_binding(const unsigned char *p,size_t start,size_t end,DnsNames *names) {
+    if(end-start<3) return false;
+    size_t pos=start+2,name_len;
+    unsigned char target[256];
+    if(!dns_name(p,end,&pos,target,&name_len,false,names)) return false;
+    int previous=-1;
+    while(pos<end) {
+        if(end-pos<4) return false;
+        int key=be16(p+pos);
+        size_t len=be16(p+pos+2);
+        if(key<=previous || key==65535 || len>end-pos-4) return false;
+        previous=key;
+        pos+=4+len;
+    }
+    return true;
+}
+static bool cache_end(const unsigned char *p,size_t n,size_t pos) {
+    return pos==n || (be16(p+10)==1 && cache_empty_opt(p+pos,n-pos));
+}
+static bool cache_negative(const unsigned char *p,size_t n,const DnsInfo *info,CacheTtls *ttls) {
+    /* Only a direct NXDOMAIN/NODATA with the enclosing zone's sole IN SOA.
+     * Referrals, aliases, signatures and extra data stay on the forwarding path. */
+    size_t pos=info->question_end,zone_len;
+    unsigned char zone[256];
+    DnsNames names={.remaining_pointers=n};
+    if(be16(p+8)!=1 || !dns_name(p,n,&pos,zone,&zone_len,true,&names) || n-pos<10 ||
+       be16(p+pos)!=6 || be16(p+pos+2)!=1) return false;
+    size_t at=0;
+    while(info->qname_len-at>zone_len) at+=1+info->qname[at];
+    if(info->qname_len-at!=zone_len || memcmp(info->qname+at,zone,zone_len)) return false;
+    size_t len=be16(p+pos+8);
+    if(len<22 || len>n-pos-10 || !cache_end(p,n,pos+10+len)) return false;
+    /* The envelope parser already verified the SOA names and its five integers. */
+    uint32_t ttl=be32(p+pos+4),minimum=be32(p+pos+10+len-4);
+    if(ttl>INT32_MAX || minimum>INT32_MAX) return false;
+    *ttls=(CacheTtls){.count=1,.min_ttl=ttl<minimum?ttl:minimum,.negative=true};
+    ttls->offset[0]=(uint16_t)(pos+4);
+    return true;
+}
 static bool cache_ttls(const Query *q,const DnsInfo *info,CacheTtls *ttls) {
     const unsigned char *p=q->response;
     size_t n=q->resp_len,pos=info->question_end,answers=be16(p+6);
-    if(n>CACHE_MAX_REPLY || (p[2]&2) || (p[3]&15) || be16(p+4)!=1 || be16(p+8) ||
-       !answers || answers>CACHE_MAX_ANSWERS) return false;
+    unsigned rcode=p[3]&15;
+    if(n>CACHE_MAX_REPLY || (p[2]&2) || info->opt_ext_rcode || be16(p+4)!=1 ||
+       (rcode!=0 && rcode!=3) || answers>CACHE_MAX_ANSWERS) return false;
+    if(!answers) return cache_negative(p,n,info,ttls);
+    if(rcode || be16(p+8)) return false;
     *ttls=(CacheTtls){.count=answers,.min_ttl=UINT32_MAX};
-    DnsNames names={.remaining_pointers=n}; /* The response was already validated. */
-    bool has_address=false;
+    DnsNames names={.remaining_pointers=n};
+    bool has_requested_type=false;
     for(size_t i=0;i<answers;i++) {
         unsigned char name[256];size_t name_len;
         if(!dns_name(p,n,&pos,name,&name_len,true,&names) || n-pos<10) return false;
         uint16_t type=be16(p+pos),rdlen=be16(p+pos+8);
         if(rdlen>n-pos-10 || be16(p+pos+2)!=1 || (type!=5 && type!=info->qtype)) return false;
         if(type==info->qtype) {
-            if(rdlen!=(type==1?4:16)) return false;
-            has_address=true;
+            if(address_type(type)) {
+                if(rdlen!=(type==1?4:16)) return false;
+            } else if(!binding_type(type) || !cache_binding(p,pos+10,pos+10+rdlen,&names)) return false;
+            has_requested_type=true;
         }
         uint32_t ttl=be32(p+pos+4);
         if(ttl>INT32_MAX) ttl=0;
@@ -826,7 +872,7 @@ static bool cache_ttls(const Query *q,const DnsInfo *info,CacheTtls *ttls) {
         ttls->offset[i]=(uint16_t)(pos+4);
         pos+=10+rdlen;
     }
-    return has_address && (pos==n || (be16(p+10)==1 && cache_empty_opt(p+pos,n-pos)));
+    return has_requested_type && cache_end(p,n,pos);
 }
 static void age_ttl(unsigned char *field,uint64_t age) {
     uint32_t ttl=be32(field);
@@ -860,6 +906,10 @@ static uint64_t doh_response_age_ms(const CacheHeaders *headers,double transfer_
 static void cache_store(Query *q,const DnsInfo *info,uint64_t age_ms) {
     CacheTtls ttls;
     if(!q->cache_slot || !cache_ttls(q,info,&ttls)) return;
+    if(ttls.negative) {
+        unsigned char *field=q->response+ttls.offset[0];
+        age_ttl(field,be32(field)-ttls.min_ttl);
+    }
     const CacheHeaders *headers=&q->cache_headers;
     uint32_t limit=ttls.min_ttl<CACHE_MAX_TTL?ttls.min_ttl:CACHE_MAX_TTL;
     if(headers->max_age<limit) limit=headers->max_age;
@@ -1352,7 +1402,7 @@ static bool submit_until(const unsigned char *data,size_t len,Client *client,dns
     pending.shareable_udp=!deadline_ms && !client &&
                           ((pending.peer.ss_family==AF_INET && peer_len==sizeof(struct sockaddr_in)) ||
                            (pending.peer.ss_family==AF_INET6 && peer_len==sizeof(struct sockaddr_in6))) &&
-                          !be16(data+10) && plain_address_query(data,&info);
+                          !be16(data+10) && (address_type(info.qtype) && plain_query(data,&info));
     if(pending.shareable_udp && join_udp_query(&pending,data)) {
         metrics.udp_queries_coalesced++;
         record_client_query(NULL);

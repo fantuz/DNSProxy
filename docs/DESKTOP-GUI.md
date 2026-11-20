@@ -134,6 +134,7 @@ cache-hit and connection-reuse ratios from the lifetime totals below it. The
 | Area | Indicators |
 | --- | --- |
 | Sample health | Interval state and duration, last good sample age, collection duration and detected resolver resets |
+| Client DNS replies | Counts by DNS result code for replies written to UDP and TCP clients, including policy responses and cache hits |
 | Completed attempts | Success, failure and timeout counts and percentages; connection reuse; actual HTTP/1, HTTP/2 and HTTP/3 reply counts |
 | Upstream endpoints | Primary and backup attempts, replies and failures; race wins; started, suppressed and cancelled hedges |
 | Transfer phases | Mean queue, TLS and first-byte durations, calculated from each phase's own observations |
