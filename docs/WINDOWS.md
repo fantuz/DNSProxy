@@ -91,8 +91,9 @@ Python, MSYS2 and a separate service wrapper are not required.
 assets from v4.10.0-modern onward. The desktop variant uses the filename
 `dnsp-modern-VERSION-windows-ARCH-gui-setup.exe` and includes the private GUI
 runtime. Successful Windows workflow runs also provide installer artifacts.
-See the [4.10.0 release notes](releases/4.10.0.md); each build records its source
-revision alongside the version.
+Each build records its source revision alongside the version. Release 4.11.0
+adds the **Modify DNSProxy service** shortcut for service installations.
+See the [4.11.0 release notes](releases/4.11.0.md).
 
 The wizard adds Start Menu shortcuts and a single Windows Apps uninstall entry.
 The **Register DNSProxy as a Windows service** checkbox is initially off. Leave it
@@ -379,7 +380,7 @@ The publishing workflow requires both Windows portable ZIPs, both resolver/servi
 setup EXEs, both desktop setup EXEs and both matching runtime-source ZIPs,
 alongside eight Linux daemon packages, four Linux GUI packages and two macOS
 archives. Native Windows/macOS, desktop, packaging and sanitizer checks gate
-publication. Release v4.10.0-modern contains this set of twenty-two deliverables,
+publication. Release v4.11.0-modern contains this set of twenty-two deliverables,
 all covered by `SHA256SUMS`.
 
 ## Build from source

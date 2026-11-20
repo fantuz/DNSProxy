@@ -78,11 +78,11 @@ do not replace its stub listener or symlink as part of service setup.
 
 ## Packages and architectures
 
-Release v4.10.0-modern contains 22 deliverables plus `SHA256SUMS`: eight Linux
-daemon packages, four Linux GUI packages, two Windows portable ZIPs, two
+Release v4.11.0-modern contains 22 deliverables plus `SHA256SUMS`. These include
+eight Linux daemon packages, four Linux GUI packages, two Windows portable ZIPs, two
 resolver/service setup EXEs, two desktop setup EXEs, two matching desktop-runtime
 source ZIPs and two macOS archives. See the
-[4.10.0 release notes](../docs/releases/4.10.0.md). Package metadata records the
+[4.11.0 release notes](../docs/releases/4.11.0.md). Package metadata records the
 source commit as well as the version.
 
 | Distribution | Format | x86-64 | ARM64 |
