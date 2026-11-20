@@ -102,6 +102,7 @@ class InstallerTests(unittest.TestCase):
         service_mode = self.service() is not None
         self.assertEqual((Path(start_menu) / 'DNSProxy/Start DNSProxy in a console.lnk').is_file(), not service_mode)
         self.assertEqual((Path(start_menu) / 'DNSProxy/Windows Services.lnk').is_file(), service_mode)
+        self.assertEqual((Path(start_menu) / 'DNSProxy/Modify DNSProxy service.lnk').is_file(), service_mode)
 
     def assert_dns(self, port):
         # FORMERR is generated locally and requires no Internet or test trust edit.
@@ -252,6 +253,25 @@ class InstallerTests(unittest.TestCase):
                             client.settimeout(5)
                             client.sendto(fixtures.query(28), ('127.0.0.1', port))
                             self.assertEqual(client.recv(4096)[3] & 15, 0)
+                        modify = self.quoted(self.app / 'bin/Set-DNSProxyService.ps1')
+                        metrics_port = fixtures.unused_ports()[0]
+                        self.ps(f'& {modify} -MetricsPort {metrics_port}')
+                        self.assertIn('dnsp_queries_total', fixtures.Tests.metrics(self, metrics_port))
+                        record = json.loads((self.state / 'installation.json').read_text(encoding='utf-8-sig'))
+                        self.assertEqual(record['MetricsPort'], metrics_port)
+                        self.assertNotEqual(self.service()['ProcessId'], service['ProcessId'])
+                        # A syntactically valid but unreachable provider must restore the old command and state.
+                        unused = fixtures.unused_ports()[0]
+                        failed = self.ps(f"& {modify} -Upstream 'https://localhost:{unused}/dns-query'", check=False)
+                        self.assertNotEqual(failed.returncode, 0)
+                        self.assertIn('Previous settings restored', failed.stderr)
+                        self.assertEqual(json.loads((self.state / 'installation.json').read_text(encoding='utf-8-sig')), record)
+                        self.assertFalse((self.state / 'service-change.json').exists())
+                        self.assertIn('dnsp_queries_total', fixtures.Tests.metrics(self, metrics_port))
+                        service = self.service()
+                        invalid = self.ps(f'& {modify} -MetricsPort {port}', check=False)
+                        self.assertNotEqual(invalid.returncode, 0)
+                        self.assertEqual(self.service()['ProcessId'], service['ProcessId'])
                         # A guard must fail before stopping or deleting an owned resolver.
                         pending = self.state / 'dns-state.json'
                         pending.write_text('{"synthetic_pending_test":true}')
@@ -280,6 +300,11 @@ class InstallerTests(unittest.TestCase):
                         self.assertEqual(log_marker.read_text(), 'keep logs')
                         self.assertEqual(user_file.read_text(), 'keep unowned data')
                         self.ps('Stop-Service DNSProxy')
+                        ca.write_bytes(ca.read_bytes() + b'\n' + cert.read_bytes())
+                        self.ps(f'& {modify} -MetricsPort 0')
+                        self.assertEqual(self.service()['State'], 'Stopped')
+                        stopped_record = json.loads((self.state / 'installation.json').read_text(encoding='utf-8-sig'))
+                        self.assertEqual(stopped_record['MetricsPort'], 0)
                         self.invoke(self.installer, '/SERVICE=1')
                         self.assertEqual(self.service()['State'], 'Stopped')
                 finally:

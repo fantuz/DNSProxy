@@ -24,7 +24,11 @@ $uri = [Uri]$Upstream
 if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne 'https' -or $Upstream -match '[\s"]' -or $uri.UserInfo) {
     throw 'Use an HTTPS upstream URL without credentials, whitespace, or quotation marks.'
 }
-$null = [Net.IPAddress]::Parse($BootstrapAddress)
+if ($uri.Fragment -or $uri.Port -lt 1) { throw 'Use an HTTPS endpoint without a fragment and with a valid port.' }
+if ($BootstrapAddress) {
+    $null = [Net.IPAddress]::Parse($BootstrapAddress)
+    if ($uri.HostNameType -in @('IPv4','IPv6') -or $BootstrapAddress.Contains('%')) { throw 'A bootstrap IP requires a hostname and an unscoped IP address.' }
+}
 if ($MetricsPort -and $MetricsPort -eq $Port) { throw 'DNS and loopback metrics ports must differ.' }
 if ($ListenAddress.Count -lt 1 -or $ListenAddress.Count -gt 8) { throw 'Choose one to eight listen addresses.' }
 foreach ($address in $ListenAddress) {
@@ -105,10 +109,8 @@ try {
         if ($LASTEXITCODE) { throw 'Policy validation failed; no service was installed.' }
     }
     $log = Join-Path $logs 'service.log'
-    # Every configurable argument is validated above; paths are quoted separately.
-    $command = '"{0}" --service {1} --service-log "{2}" -p {3} -s {4} --bootstrap-address {5} --cache-entries 256' -f $binary,$ServiceName,$log,$Port,$Upstream,$BootstrapAddress
-    if ($MetricsPort) { $command += ' -m ' + $MetricsPort }
-    foreach ($address in $ListenAddress) { $command += ' -l ' + $address }
+    $options = @{Port=$Port; Upstream=$Upstream; BootstrapAddress=$BootstrapAddress; MetricsPort=$MetricsPort; ListenAddress=$ListenAddress}
+    $command = Get-ResolverServiceCommand $binary $ServiceName $log $options
     foreach ($argument in $policyArgs) { $command += ' "' + $argument + '"' }
     if ($sources.Count) { $command += ' --block-response ' + $BlockResponse + ' --blocklist-reload-ms ' + $BlocklistReloadMs }
     $credential = New-Object Management.Automation.PSCredential('NT AUTHORITY\LocalService', (New-Object Security.SecureString))

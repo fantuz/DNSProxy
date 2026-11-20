@@ -76,6 +76,7 @@ Source: "{#GuiBundleDir}\*"; DestDir: "{app}\gui"; Components: gui; Flags: ignor
 [Icons]
 Name: "{group}\Start DNSProxy in a console"; Filename: "{app}\bin\Start-DNSProxy.cmd"; WorkingDir: "{app}\bin"; Check: ConsoleMode
 Name: "{group}\Windows guide"; Filename: "{app}\bin\WINDOWS.md"
+Name: "{group}\Modify DNSProxy service"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\bin\Set-DNSProxyService.ps1"" -Interactive"; Check: ServiceMode
 Name: "{group}\Windows Services"; Filename: "{sys}\mmc.exe"; Parameters: """{sys}\services.msc"""; Check: ServiceMode
 Name: "{group}\Uninstall DNSProxy"; Filename: "{uninstallexe}"
 #ifdef GuiBundleDir
@@ -87,6 +88,7 @@ Filename: "{app}\gui\runtime\bin\pythonw.exe"; Parameters: "-I -B ""{app}\gui\ap
 
 [InstallDelete]
 Type: files; Name: "{group}\Start DNSProxy in a console.lnk"; Check: ServiceMode
+Type: files; Name: "{group}\Modify DNSProxy service.lnk"; Check: ConsoleMode
 Type: files; Name: "{group}\Windows Services.lnk"; Check: ConsoleMode
 #ifdef GuiBundleDir
 ; These are installer-owned runtime/application trees, never per-user state.

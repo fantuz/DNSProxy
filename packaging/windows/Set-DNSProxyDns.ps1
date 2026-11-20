@@ -66,7 +66,8 @@ function Test-Resolver {
         $record.Port -ne 53 -or '127.0.0.1' -notin $record.ListenAddress -or '::1' -notin $record.ListenAddress) {
         throw 'Enable DNS only with the owned automatic service running on both loopback addresses, port 53.'
     }
-    $null = [Net.IPAddress]::Parse($record.BootstrapAddress)
+    if ($record.BootstrapAddress) { $null = [Net.IPAddress]::Parse($record.BootstrapAddress) }
+    elseif (([Uri]$record.Upstream).HostNameType -notin @('IPv4','IPv6')) { throw 'Configure an upstream bootstrap address before enabling adapter DNS.' }
     foreach ($server in @('127.0.0.1','::1')) {
         $null = Resolve-DnsName example.com -Type A -Server $server -DnsOnly -NoHostsFile -QuickTimeout
         $null = Resolve-DnsName example.com -Type A -Server $server -DnsOnly -NoHostsFile -QuickTimeout -TcpOnly

@@ -23,6 +23,8 @@ $recordPath = Join-Path $state 'installation.json'
 $resumePath = Join-Path $state 'setup-resume.json'
 $uninstallKey = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{439B9015-B446-4C7E-95F1-923143B86B53}_is1'
 
+. (Join-Path $PSScriptRoot 'ServiceFiles.ps1')
+
 function Assert-RegularPath([string]$Path) {
     # Never follow a junction supplied by a service-writable or unrelated tree.
     $current = [IO.Path]::GetFullPath($Path)
@@ -35,6 +37,7 @@ function Assert-RegularPath([string]$Path) {
 }
 
 function Get-OwnedRecord {
+    if (Test-Path -LiteralPath (Join-Path $state 'service-change.json')) { throw 'Recover the interrupted service modification with Set-DNSProxyService.ps1 -Recover first.' }
     Assert-RegularPath $recordPath
     Assert-RegularPath $bin
     $service = Get-CimInstance Win32_Service -Filter "Name='DNSProxy'"
@@ -142,7 +145,9 @@ function Remove-ObsoleteBundleFiles {
     Remove-Item -LiteralPath $previous
 }
 
+$maintenance = $null
 try {
+    $maintenance = Enter-ServiceMaintenance 'DNSProxy'
     Assert-RegularPath $app
     if ($Action -eq 'Validate') { $null = Read-SetupOptions; exit 0 }
     if ($Action -eq 'Resume') { Resume-OwnedService; exit 0 }
@@ -187,4 +192,4 @@ try {
     if ($ResultFile) { [IO.File]::WriteAllText($ResultFile, [string]$_) }
     Write-Error -ErrorAction Continue $_
     exit 1
-}
+} finally { Exit-ServiceMaintenance $maintenance }
