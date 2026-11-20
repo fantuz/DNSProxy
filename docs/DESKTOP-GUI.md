@@ -86,7 +86,7 @@ platform's explicit tools.
 Select **Resolver options…** to choose a native executable and edit grouped
 listener, upstream, cache and filtering settings. File pickers select blocklists,
 CA bundles and executables. **Validate and apply** rejects invalid values without
-changing the current configuration. Unchanged redacted endpoint values retain
+changing the current configuration. Changing a provider hostname clears its previous bootstrap IP unless you explicitly edit that IP. Numeric HTTPS endpoints use their own address. With filtering enabled, the editor checks the files using the selected resolver and displays its diagnostic before applying the settings. Unchanged redacted endpoint values retain
 their original URL rather than overwriting hidden credentials/query parameters.
 
 The editor also exposes the resolver's advanced startup parameters: multiple
@@ -134,6 +134,7 @@ cache-hit and connection-reuse ratios from the lifetime totals below it. The
 | Area | Indicators |
 | --- | --- |
 | Sample health | Interval state and duration, last good sample age, collection duration and detected resolver resets |
+| Client DNS replies | Counts by DNS result code for replies written to UDP and TCP clients, including policy responses and cache hits |
 | Completed attempts | Success, failure and timeout counts and percentages; connection reuse; actual HTTP/1, HTTP/2 and HTTP/3 reply counts |
 | Upstream endpoints | Primary and backup attempts, replies and failures; race wins; started, suppressed and cancelled hedges |
 | Transfer phases | Mean queue, TLS and first-byte durations, calculated from each phase's own observations |

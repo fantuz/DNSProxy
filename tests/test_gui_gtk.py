@@ -56,6 +56,13 @@ def monitoring_sample(at, *, factor=0, uptime=100, process=True):
         ("dnsp_tcp_clients", ()): 2,
         ("dnsp_tcp_clients_capacity", ()): 128,
     }
+    for code, count in (
+        ("NOERROR", 8),
+        ("NXDOMAIN", 1),
+        ("SERVFAIL", 3),
+        ("REFUSED", 0),
+    ):
+        values[("dnsp_client_responses_total", (("rcode", code),))] = count * factor
     for version, count in (("1", 0), ("2", 10), ("3", 0)):
         values[("dnsp_upstream_http_responses_total", (("version", version),))] = (
             count * factor
@@ -169,6 +176,8 @@ class GuiTests(unittest.TestCase):
         for key, expected in (
             ("sample_state", "Live interval"),
             ("sample_elapsed", "2.00 s"),
+            ("recent_answers", "8 / 1"),
+            ("recent_dns_errors", "3 / 0"),
             ("recent_completed", "10"),
             ("recent_failure", "2 · 20.0%"),
             ("recent_timeout", "1 · 10.0%"),

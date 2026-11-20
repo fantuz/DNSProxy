@@ -126,6 +126,19 @@ The installed reversible DNS helper is
 requires an automatic service on port 53 and both loopback families. A custom
 port, Manual startup or IPv4-only choice requires explicit client configuration.
 
+### Modify an installed service
+
+Open **Modify DNSProxy service** from the Start menu. The administrator dialog shows the registered DNS and metrics ports, upstream, bootstrap IP, listeners and startup type. Apply validates the proposed settings, restarts the service and checks a DNS reply on UDP and TCP on each configured listener. Choose a health-check name your upstream and filtering policy permit. A previously stopped service runs for the checks and returns to its stopped state.
+
+The installed PowerShell command also accepts partial updates. Existing policy paths, logs, recovery actions and the service account are preserved. For a portable installation use the script installed directly under the service's Program Files directory and supply its service name.
+
+```powershell
+& "$env:ProgramFiles\DNSProxy\bin\Set-DNSProxyService.ps1" -MetricsPort 9090
+& "$env:ProgramFiles\DNSProxy\bin\Set-DNSProxyService.ps1" -Upstream https://dns.google/dns-query -BootstrapAddress 8.8.8.8
+```
+
+A failed restart or DNS check restores the previous command, startup mode and running state. An interrupted modification leaves a recovery record in the protected service state directory. Rerun the command or use `-Recover` to restore it. Active adapter integration requires automatic startup, port 53, both loopback listeners and independent upstream resolution. The settings tool leaves adapter DNS configuration in place.
+
 ### Upgrade, cancellation and uninstall
 
 Run the setup EXE for the target version in the existing location. The installer verifies ownership
@@ -133,7 +146,7 @@ before stopping an existing setup-managed service. It retains the exact service
 command, startup mode, protected state and logs, and restores its previous
 running/stopped state after replacing files. Existing-service options are retained
 rather than reconfigured by the wizard or silent-install arguments. To change
-those options, restore adapter DNS, uninstall, and install again with the desired
+those options, use **Modify DNSProxy service** with the desired
 settings. Portable PowerShell installations are not silently adopted: restore DNS
 and remove them with their original uninstall script first.
 
@@ -296,8 +309,7 @@ that point to DNSProxy. Then run the bundled uninstall script as Administrator:
 
 Portable PowerShell installation refuses existing service names/directories,
 and uninstall checks its installation record against SCM before removing
-anything. Reconfiguration or upgrade of a portable installation uses explicit
-uninstall/reinstall after restoring DNS. Setup-managed installations use the
+anything. Use the installed settings command for in-place reconfiguration. Upgrading portable binaries requires explicit uninstall/reinstall after restoring DNS. Setup-managed installations use the
 upgrade and removal procedures in the setup section. Service files are unsigned.
 Native CI tests real SCM startup/stop, LocalService HTTPS queries,
 IPv4/IPv6 UDP and TCP, crash and reported-error recovery, log-rotation failure,

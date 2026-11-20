@@ -104,4 +104,4 @@ function Enable-DnsTransaction([string]$Path, [string[]]$AdapterGuids, [hashtabl
     & $Backend.Disarm
 }
 
-Export-ModuleMember -Function Enable-DnsTransaction,Restore-DnsTransaction,Read-DnsState,Test-DnsSettingEqual
+Export-ModuleMember -Function Enable-DnsTransaction,Restore-DnsTransaction,Read-DnsState,Write-DnsState,Test-DnsSettingEqual

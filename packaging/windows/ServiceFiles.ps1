@@ -20,3 +20,55 @@ function Remove-ServiceDirectory([string]$Path) {
     }
     $directory.Delete()
 }
+
+function Get-ResolverServiceCommand($Binary, $Name, $Log, $Options) {
+    $command = '"{0}" --service {1} --service-log "{2}" -p {3} -s {4}' -f $Binary,$Name,$Log,$Options.Port,$Options.Upstream
+    if ($Options.BootstrapAddress) { $command += ' --bootstrap-address ' + $Options.BootstrapAddress }
+    $command += ' --cache-entries 256'
+    if ($Options.MetricsPort) { $command += ' -m ' + $Options.MetricsPort }
+    foreach ($address in $Options.ListenAddress) { $command += ' -l ' + $address }
+    return $command
+}
+
+function Enter-ServiceMaintenance([string]$Name) {
+    $mutex = [Threading.Mutex]::new($false, "Global\DNSProxy-Service-$Name")
+    try {
+        try { $owned = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $owned = $true }
+        if (-not $owned) { throw 'Another DNSProxy service maintenance operation is running.' }
+        return $mutex
+    } catch { $mutex.Dispose(); throw }
+}
+
+function Exit-ServiceMaintenance($Mutex) {
+    if ($Mutex) { $Mutex.ReleaseMutex(); $Mutex.Dispose() }
+}
+
+function Get-ServiceListeners($Options) {
+    foreach ($address in $Options.ListenAddress) {
+        $endpoint = [Net.IPEndPoint]::new([Net.IPAddress]::Parse($address), [int]$Options.Port)
+        foreach ($protocol in @('Udp','Tcp')) { [pscustomobject]@{Endpoint=$endpoint; Protocol=$protocol} }
+    }
+    if ([int]$Options.MetricsPort -gt 0) {
+        [pscustomobject]@{Endpoint=[Net.IPEndPoint]::new([Net.IPAddress]::Loopback, [int]$Options.MetricsPort); Protocol='Tcp'}
+    }
+}
+
+function Assert-FreeListeners($Arguments, $RunningSettings=$null) {
+    $sockets = @()
+    $owned = @{}
+    if ($RunningSettings) {
+        foreach ($item in Get-ServiceListeners $RunningSettings) { $owned["$($item.Protocol) $($item.Endpoint)"] = $true }
+    }
+    try {
+        foreach ($item in Get-ServiceListeners $Arguments) {
+            if ($owned.ContainsKey("$($item.Protocol) $($item.Endpoint)")) { continue }
+            $kind = if ($item.Protocol -eq 'Tcp') { 'Stream' } else { 'Dgram' }
+            $socket = [Net.Sockets.Socket]::new($item.Endpoint.AddressFamily, $kind, $item.Protocol)
+            $sockets += $socket
+            $socket.ExclusiveAddressUse = $true
+            if ($item.Endpoint.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetworkV6) { $socket.DualMode = $false }
+            $socket.Bind($item.Endpoint)
+        }
+    } catch { throw "The selected DNS port/listeners are unavailable. Choose another port or resolve the conflict. $_" }
+    finally { foreach ($socket in $sockets) { $socket.Dispose() } }
+}

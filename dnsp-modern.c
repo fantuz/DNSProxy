@@ -228,6 +228,7 @@ typedef struct {
     size_t count;
     uint16_t offset[CACHE_MAX_ANSWERS];
     uint32_t min_ttl;
+    bool negative;
 } CacheTtls;
 typedef struct {
     size_t key_len,reply_len;
@@ -252,6 +253,7 @@ struct Client {
     struct sockaddr_storage source;
     unsigned char length[2];
     unsigned char *in,*out;
+    unsigned out_rcode;
     bool busy,read_eof,out_satisfies_query;uint64_t generation,queries_started;
     uint64_t idle_since_ms,frame_deadline,write_deadline,query_started_ms,out_started_ms;
 };
@@ -282,6 +284,10 @@ enum { LATENCY_BUCKETS=14 };
 static const double latency_bounds[LATENCY_BUCKETS]={
     .001,.0025,.005,.01,.025,.05,.1,.25,.5,1,2.5,5,10,60
 };
+enum { RCODE_BADVERS=6, RCODE_OTHER, RCODE_BUCKETS };
+static const char *const rcode_labels[RCODE_BUCKETS]={
+    "NOERROR","FORMERR","SERVFAIL","NXDOMAIN","NOTIMP","REFUSED","BADVERS","OTHER"
+};
 typedef struct {uint64_t buckets[LATENCY_BUCKETS],count;double sum,max;} Histogram;
 typedef struct {
     uint64_t udp_queries,tcp_queries,queries_satisfied,invalid_queries,overload,upstream_requests,
@@ -290,7 +296,7 @@ typedef struct {
       http1,http2,http3,socket_callbacks,timer_callbacks,timer_fires,
       tcp_accepted,tcp_rejected_source,tcp_rejected_capacity,tcp_closed,tcp_keepalive_queries,tcp_pipeline_buffered,
       tcp_half_closes,tcp_idle_timeouts,tcp_io_timeouts,tcp_cancelled_upstream,cache_hits,cache_misses;
-    uint64_t udp_queries_coalesced;
+    uint64_t udp_queries_coalesced,client_rcodes[RCODE_BUCKETS];
     double upstream_seconds;
     PhaseTiming upstream_phase[PHASE_COUNT];
     Histogram client_latency[2],upstream_latency;
@@ -576,7 +582,9 @@ static void observe_latency(Histogram *hist,double seconds) {
     if(seconds>hist->max) hist->max=seconds;
     for(size_t i=0;i<LATENCY_BUCKETS;i++) if(seconds<=latency_bounds[i]) hist->buckets[i]++;
 }
-static void observe_client_latency(uint64_t started_ms,bool tcp) {
+static void record_client_reply(uint64_t started_ms,bool tcp,bool satisfied,unsigned bucket) {
+    metrics.client_rcodes[bucket]++;
+    if(satisfied) metrics.queries_satisfied++;
     uint64_t now=clock_ms();
     if(started_ms && now>=started_ms)
         observe_latency(&metrics.client_latency[tcp?1:0],(double)(now-started_ms)/1000.0);
@@ -603,7 +611,9 @@ static void close_client(Client *c) {
     c->frame_deadline=c->write_deadline=0;
     c->query_started_ms=c->out_started_ms=0;
 }
-static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_query) {
+static void reply_dns(Query *q,const unsigned char *p,size_t n,unsigned ext_rcode,bool satisfies_query) {
+    unsigned rcode=(ext_rcode<<4)|(p[3]&15);
+    unsigned bucket=rcode<=5?rcode:(rcode==16?RCODE_BADVERS:RCODE_OTHER);
     if(q->client) {
         Client *c=q->client;
         if(c->fd!=DNSP_BAD_SOCKET && c->generation==q->generation) {
@@ -614,6 +624,7 @@ static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_qu
             }
             c->out[0]=(unsigned char)(n>>8);c->out[1]=(unsigned char)n;
             memcpy(c->out+2,p,n);c->out_len=n+2;c->sent=0;
+            c->out_rcode=bucket;
             c->out_satisfies_query=satisfies_query;
             c->out_started_ms=q->started_ms;
             c->write_deadline=clock_ms()+tcp_io_ms;
@@ -621,15 +632,13 @@ static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_qu
     } else {
         dnsp_ssize_t written=dnsp_send_udp(q->udp_fd,(const struct sockaddr*)&q->peer,q->peer_len,
                                           NULL,0,p,n,q->udp_local);
-        if(satisfies_query && written==(dnsp_ssize_t)n) metrics.queries_satisfied++;
-        if(written==(dnsp_ssize_t)n) observe_client_latency(q->started_ms,false);
+        if(written==(dnsp_ssize_t)n) record_client_reply(q->started_ms,false,satisfies_query,bucket);
         for(size_t i=0;i<q->udp_waiter_count;i++) {
             UdpWaiter *waiter=&q->udp_waiters[i];
             unsigned char id[]={ (unsigned char)(waiter->id>>8),(unsigned char)waiter->id };
             written=dnsp_send_udp(q->udp_fd,(const struct sockaddr*)&waiter->peer,waiter->peer_len,
                                   id,sizeof(id),p+2,n-2,waiter->local);
-            if(satisfies_query && written==(dnsp_ssize_t)n) metrics.queries_satisfied++;
-            if(written==(dnsp_ssize_t)n) observe_client_latency(waiter->started_ms,false);
+            if(written==(dnsp_ssize_t)n) record_client_reply(waiter->started_ms,false,satisfies_query,bucket);
         }
     }
 }
@@ -652,7 +661,7 @@ static void send_error(Query *q,const unsigned char *request,unsigned char rcode
     p[3]=(unsigned char)((p[3]&0x10)|(rcode&0x0f));
     if(length==DNS_HEADER) p[4]=p[5]=0;
     memset(p+6,0,6);
-    reply_dns(q,p,append_local_opt(q,p,length,0),false);
+    reply_dns(q,p,append_local_opt(q,p,length,0),0,false);
 }
 static void send_policy_block(Query *q,const unsigned char *request,bool alias) {
     size_t n=q->info.question_end;
@@ -664,7 +673,7 @@ static void send_policy_block(Query *q,const unsigned char *request,bool alias) 
     memset(p+6,0,6);
     if(q->info.has_opt && q->info.opt_version) {
         /* RFC 6891: negotiate EDNS(0), even when the name is locally denied. */
-        reply_dns(q,p,append_local_opt(q,p,n,1),false);return;
+        reply_dns(q,p,append_local_opt(q,p,n,1),1,false);return;
     }
     if(block_mode==BLOCK_REFUSED) p[3]|=5;
     else if(block_mode==BLOCK_NXDOMAIN) p[3]|=3;
@@ -683,7 +692,7 @@ static void send_policy_block(Query *q,const unsigned char *request,bool alias) 
     }
     policy_blocked_queries+=1+q->udp_waiter_count;
     if(alias) policy_blocked_aliases+=1+q->udp_waiter_count;
-    reply_dns(q,p,n,false);
+    reply_dns(q,p,n,0,false);
 }
 static void send_truncated(Query *q,const DnsInfo *response) {
     size_t n=q->info.question_end;
@@ -695,7 +704,7 @@ static void send_truncated(Query *q,const DnsInfo *response) {
     p[4]=0;p[5]=n>DNS_HEADER;
     memset(p+6,0,6);
     memcpy(p+DNS_HEADER,q->request+DNS_HEADER,n-DNS_HEADER);
-    reply_dns(q,p,append_local_opt(q,p,n,response->opt_ext_rcode),false);
+    reply_dns(q,p,append_local_opt(q,p,n,response->opt_ext_rcode),q->info.has_opt?response->opt_ext_rcode:0,false);
     metrics.truncated++;
 }
 static bool dns_content_type(const char *type) {
@@ -706,17 +715,18 @@ static bool dns_content_type(const char *type) {
     return *type==0 || *type==';';
 }
 
-/* Cache only ordinary IN A/AAAA queries with no options beyond an empty OPT.
- * The exact wire key retains case, flags and EDNS size. Only the ID is omitted. */
+/* Exact wire keys retain flags, case and EDNS size. Only the ID is omitted. */
 static bool cache_empty_opt(const unsigned char *p,size_t n) {
     return n==DNS_OPT_SIZE && p[0]==0 && be16(p+1)==41 && be32(p+5)==0 && be16(p+9)==0;
 }
-static bool plain_address_query(const unsigned char *p,const DnsInfo *info) {
-    return be16(p+4)==1 && info->qclass==1 && (info->qtype==1 || info->qtype==28) &&
-           p[2]==1 && !(p[3]&~0x20);
+static bool address_type(uint16_t type) { return type==1 || type==28; }
+static bool binding_type(uint16_t type) { return type==64 || type==65; }
+static bool plain_query(const unsigned char *p,const DnsInfo *info) {
+    return be16(p+4)==1 && info->qclass==1 && p[2]==1 && !(p[3]&~0x20);
 }
 static CacheEntry *cache_slot_for(const unsigned char *p,size_t n,const DnsInfo *info) {
-    if(!cache_entries || n>CACHE_MAX_QUERY || !plain_address_query(p,info)) return NULL;
+    if(!cache_entries || n>CACHE_MAX_QUERY || !plain_query(p,info) ||
+       !(address_type(info->qtype) || binding_type(info->qtype))) return NULL;
     uint16_t additional=be16(p+10);
     if(additional && (additional!=1 || !cache_empty_opt(p+info->question_end,n-info->question_end))) return NULL;
     uint32_t hash=2166136261u;
@@ -793,24 +803,68 @@ static size_t collect_doh_header(char *p,size_t size,size_t count,void *arg) {
               span_is(p,name_len,"Set-Cookie")) headers->blocked=true;
     return n;
 }
-/* The normal DNS parser has already checked all wire bounds. Narrow reuse to
- * complete positive address answers and record every TTL that will be aged. */
+/* SVCB/HTTPS TargetName is uncompressed. Parameters are length-delimited
+ * and sorted by key, including keys the relay does not interpret (RFC 9460). */
+static bool cache_binding(const unsigned char *p,size_t start,size_t end,DnsNames *names) {
+    if(end-start<3) return false;
+    size_t pos=start+2,name_len;
+    unsigned char target[256];
+    if(!dns_name(p,end,&pos,target,&name_len,false,names)) return false;
+    int previous=-1;
+    while(pos<end) {
+        if(end-pos<4) return false;
+        int key=be16(p+pos);
+        size_t len=be16(p+pos+2);
+        if(key<=previous || key==65535 || len>end-pos-4) return false;
+        previous=key;
+        pos+=4+len;
+    }
+    return true;
+}
+static bool cache_end(const unsigned char *p,size_t n,size_t pos) {
+    return pos==n || (be16(p+10)==1 && cache_empty_opt(p+pos,n-pos));
+}
+static bool cache_negative(const unsigned char *p,size_t n,const DnsInfo *info,CacheTtls *ttls) {
+    /* Only a direct NXDOMAIN/NODATA with the enclosing zone's sole IN SOA.
+     * Referrals, aliases, signatures and extra data stay on the forwarding path. */
+    size_t pos=info->question_end,zone_len;
+    unsigned char zone[256];
+    DnsNames names={.remaining_pointers=n};
+    if(be16(p+8)!=1 || !dns_name(p,n,&pos,zone,&zone_len,true,&names) || n-pos<10 ||
+       be16(p+pos)!=6 || be16(p+pos+2)!=1) return false;
+    size_t at=0;
+    while(info->qname_len-at>zone_len) at+=1+info->qname[at];
+    if(info->qname_len-at!=zone_len || memcmp(info->qname+at,zone,zone_len)) return false;
+    size_t len=be16(p+pos+8);
+    if(len<22 || len>n-pos-10 || !cache_end(p,n,pos+10+len)) return false;
+    /* The envelope parser already verified the SOA names and its five integers. */
+    uint32_t ttl=be32(p+pos+4),minimum=be32(p+pos+10+len-4);
+    if(ttl>INT32_MAX || minimum>INT32_MAX) return false;
+    *ttls=(CacheTtls){.count=1,.min_ttl=ttl<minimum?ttl:minimum,.negative=true};
+    ttls->offset[0]=(uint16_t)(pos+4);
+    return true;
+}
 static bool cache_ttls(const Query *q,const DnsInfo *info,CacheTtls *ttls) {
     const unsigned char *p=q->response;
     size_t n=q->resp_len,pos=info->question_end,answers=be16(p+6);
-    if(n>CACHE_MAX_REPLY || (p[2]&2) || (p[3]&15) || be16(p+4)!=1 || be16(p+8) ||
-       !answers || answers>CACHE_MAX_ANSWERS) return false;
+    unsigned rcode=p[3]&15;
+    if(n>CACHE_MAX_REPLY || (p[2]&2) || info->opt_ext_rcode || be16(p+4)!=1 ||
+       (rcode!=0 && rcode!=3) || answers>CACHE_MAX_ANSWERS) return false;
+    if(!answers) return cache_negative(p,n,info,ttls);
+    if(rcode || be16(p+8)) return false;
     *ttls=(CacheTtls){.count=answers,.min_ttl=UINT32_MAX};
-    DnsNames names={.remaining_pointers=n}; /* The response was already validated. */
-    bool has_address=false;
+    DnsNames names={.remaining_pointers=n};
+    bool has_requested_type=false;
     for(size_t i=0;i<answers;i++) {
         unsigned char name[256];size_t name_len;
         if(!dns_name(p,n,&pos,name,&name_len,true,&names) || n-pos<10) return false;
         uint16_t type=be16(p+pos),rdlen=be16(p+pos+8);
         if(rdlen>n-pos-10 || be16(p+pos+2)!=1 || (type!=5 && type!=info->qtype)) return false;
         if(type==info->qtype) {
-            if(rdlen!=(type==1?4:16)) return false;
-            has_address=true;
+            if(address_type(type)) {
+                if(rdlen!=(type==1?4:16)) return false;
+            } else if(!binding_type(type) || !cache_binding(p,pos+10,pos+10+rdlen,&names)) return false;
+            has_requested_type=true;
         }
         uint32_t ttl=be32(p+pos+4);
         if(ttl>INT32_MAX) ttl=0;
@@ -818,7 +872,7 @@ static bool cache_ttls(const Query *q,const DnsInfo *info,CacheTtls *ttls) {
         ttls->offset[i]=(uint16_t)(pos+4);
         pos+=10+rdlen;
     }
-    return has_address && (pos==n || (be16(p+10)==1 && cache_empty_opt(p+pos,n-pos)));
+    return has_requested_type && cache_end(p,n,pos);
 }
 static void age_ttl(unsigned char *field,uint64_t age) {
     uint32_t ttl=be32(field);
@@ -852,6 +906,10 @@ static uint64_t doh_response_age_ms(const CacheHeaders *headers,double transfer_
 static void cache_store(Query *q,const DnsInfo *info,uint64_t age_ms) {
     CacheTtls ttls;
     if(!q->cache_slot || !cache_ttls(q,info,&ttls)) return;
+    if(ttls.negative) {
+        unsigned char *field=q->response+ttls.offset[0];
+        age_ttl(field,be32(field)-ttls.min_ttl);
+    }
     const CacheHeaders *headers=&q->cache_headers;
     uint32_t limit=ttls.min_ttl<CACHE_MAX_TTL?ttls.min_ttl:CACHE_MAX_TTL;
     if(headers->max_age<limit) limit=headers->max_age;
@@ -881,7 +939,7 @@ static bool cache_reply(Query *q,const unsigned char *request) {
     memcpy(reply,request,2);
     uint64_t age_ms=entry->age_ms+(now-entry->received_ms);
     for(size_t i=0;i<entry->ttls.count;i++) age_ttl(reply+entry->ttls.offset[i],(age_ms+999u)/1000u);
-    reply_dns(q,reply,entry->reply_len,true);
+    reply_dns(q,reply,entry->reply_len,0,true);
     return true;
 }
 static void record_client_query(Client *client) {
@@ -1278,7 +1336,7 @@ static void complete(Query *q,CURLcode code,bool deadline_expired) {
             unsigned rcode=q->response[3]&0x0f;
             bool satisfies_query=!(q->response[2]&0x02) && !response.opt_ext_rcode &&
                                  (rcode==0 || rcode==3); /* Complete NOERROR or NXDOMAIN. */
-            reply_dns(q,q->response,q->resp_len,satisfies_query);
+            reply_dns(q,q->response,q->resp_len,response.opt_ext_rcode,satisfies_query);
         }
     } else {
         metrics.upstream_failed++;q->upstream->failures++;
@@ -1344,7 +1402,7 @@ static bool submit_until(const unsigned char *data,size_t len,Client *client,dns
     pending.shareable_udp=!deadline_ms && !client &&
                           ((pending.peer.ss_family==AF_INET && peer_len==sizeof(struct sockaddr_in)) ||
                            (pending.peer.ss_family==AF_INET6 && peer_len==sizeof(struct sockaddr_in6))) &&
-                          !be16(data+10) && plain_address_query(data,&info);
+                          !be16(data+10) && (address_type(info.qtype) && plain_query(data,&info));
     if(pending.shareable_udp && join_udp_query(&pending,data)) {
         metrics.udp_queries_coalesced++;
         record_client_query(NULL);
@@ -1485,8 +1543,8 @@ static void tcp_io(Client *c,short events) {
         else if(n<0 && dnsp_socket_retry()) return;
         else {close_client(c);return;}
         if(c->sent==c->out_len) {
-            if(c->out_satisfies_query) metrics.queries_satisfied++;
-            observe_client_latency(c->out_started_ms,true);c->out_started_ms=0;
+            record_client_reply(c->out_started_ms,true,c->out_satisfies_query,c->out_rcode);
+            c->out_started_ms=0;
             c->out_satisfies_query=false;
             free(c->out);c->out=NULL;
             c->out_len=c->sent=0;
@@ -1781,6 +1839,8 @@ static void metric_response(MetricClient *c) {
     int extra=snprintf(body+used,sizeof(body)-used,
         "# TYPE dnsp_build_info gauge\n"
         "dnsp_build_info{version=\"%s\",libcurl=\"%u.%u.%u\",http2=\"%s\",http3=\"%s\"} 1\n"
+        "# HELP dnsp_client_responses_total DNS replies fully written to clients, by wire response code.\n"
+        "# TYPE dnsp_client_responses_total counter\n"
         "# TYPE dnsp_client_duration_seconds histogram\n"
         "# TYPE dnsp_upstream_hedges_started_total counter\n"
         "dnsp_upstream_hedges_started_total %" PRIu64 "\n"
@@ -1798,6 +1858,12 @@ static void metric_response(MetricClient *c) {
         metrics.hedges_cancelled,metrics.hedge_primary_wins,metrics.hedge_backup_wins,parallel_backups());
     if(extra<0 || (size_t)extra>=sizeof(body)-used) {close_metric(c);return;}
     used+=(size_t)extra;
+    for(size_t i=0;i<RCODE_BUCKETS;i++) {
+        extra=snprintf(body+used,sizeof(body)-used,"dnsp_client_responses_total{rcode=\"%s\"} %" PRIu64 "\n",
+                       rcode_labels[i],metrics.client_rcodes[i]);
+        if(extra<0 || (size_t)extra>=sizeof(body)-used) {close_metric(c);return;}
+        used+=(size_t)extra;
+    }
     if(!append_histogram(body,sizeof(body),&used,"dnsp_client_duration_seconds","udp",&metrics.client_latency[0],true) ||
        !append_histogram(body,sizeof(body),&used,"dnsp_client_duration_seconds","tcp",&metrics.client_latency[1],true) ||
        !append_histogram(body,sizeof(body),&used,"dnsp_upstream_duration_seconds",NULL,&metrics.upstream_latency,false)) {

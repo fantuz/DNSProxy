@@ -48,6 +48,17 @@ COUNTERS = {
     "tcp_closed": ("dnsp_tcp_connections_closed_total", {}),
 }
 
+RCODES = (
+    "NOERROR",
+    "NXDOMAIN",
+    "SERVFAIL",
+    "REFUSED",
+    "FORMERR",
+    "NOTIMP",
+    "BADVERS",
+    "OTHER",
+)
+
 GAUGES = {
     "uptime": ("dnsp_uptime_seconds", {}),
     "cache_entries": ("dnsp_cache_entries", {}),
@@ -92,6 +103,7 @@ class Telemetry:
     phases: dict = field(default_factory=dict)
     gauges: dict = field(default_factory=dict)
     capacity_percentages: dict = field(default_factory=dict)
+    rcodes: dict = field(default_factory=dict)
 
 
 class TelemetryWindow:
@@ -202,6 +214,10 @@ class TelemetryWindow:
             phases,
             gauges,
             capacity,
+            {
+                code: delta("dnsp_client_responses_total", {"rcode": code})
+                for code in RCODES
+            },
         )
 
 
@@ -238,6 +254,7 @@ def diagnostic_report(snapshot, telemetry, *, now=None):
             "status": telemetry.status,
             "seconds": telemetry.elapsed,
             "counts": telemetry.counts,
+            "client_response_codes": telemetry.rcodes,
             "percentages": telemetry.percentages,
             "protocols": telemetry.protocols,
             "protocol_percentages": telemetry.protocol_percentages,

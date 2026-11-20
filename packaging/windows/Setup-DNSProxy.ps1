@@ -23,6 +23,8 @@ $recordPath = Join-Path $state 'installation.json'
 $resumePath = Join-Path $state 'setup-resume.json'
 $uninstallKey = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{439B9015-B446-4C7E-95F1-923143B86B53}_is1'
 
+. (Join-Path $PSScriptRoot 'ServiceFiles.ps1')
+
 function Assert-RegularPath([string]$Path) {
     # Never follow a junction supplied by a service-writable or unrelated tree.
     $current = [IO.Path]::GetFullPath($Path)
@@ -35,6 +37,7 @@ function Assert-RegularPath([string]$Path) {
 }
 
 function Get-OwnedRecord {
+    if (Test-Path -LiteralPath (Join-Path $state 'service-change.json')) { throw 'Recover the interrupted service modification with Set-DNSProxyService.ps1 -Recover first.' }
     Assert-RegularPath $recordPath
     Assert-RegularPath $bin
     $service = Get-CimInstance Win32_Service -Filter "Name='DNSProxy'"
@@ -81,30 +84,6 @@ function Read-SetupOptions {
     return @{Enabled=($values.Service -eq '1'); Arguments=$arguments}
 }
 
-function Assert-FreeListeners($Arguments) {
-    $sockets = @()
-    try {
-        foreach ($address in $Arguments.ListenAddress) {
-            $ip = [Net.IPAddress]::Parse($address)
-            foreach ($kind in @([Net.Sockets.SocketType]::Dgram, [Net.Sockets.SocketType]::Stream)) {
-                $protocol = if ($kind -eq [Net.Sockets.SocketType]::Dgram) { [Net.Sockets.ProtocolType]::Udp } else { [Net.Sockets.ProtocolType]::Tcp }
-                $socket = New-Object Net.Sockets.Socket($ip.AddressFamily, $kind, $protocol)
-                $sockets += $socket
-                $socket.ExclusiveAddressUse = $true
-                if ($ip.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetworkV6) { $socket.DualMode = $false }
-                $socket.Bind((New-Object Net.IPEndPoint($ip, [int]$Arguments.Port)))
-            }
-        }
-        if ([int]$Arguments.MetricsPort -gt 0) {
-            $socket = New-Object Net.Sockets.Socket([Net.Sockets.AddressFamily]::InterNetwork, [Net.Sockets.SocketType]::Stream, [Net.Sockets.ProtocolType]::Tcp)
-            $sockets += $socket
-            $socket.ExclusiveAddressUse = $true
-            $socket.Bind((New-Object Net.IPEndPoint([Net.IPAddress]::Loopback, [int]$Arguments.MetricsPort)))
-        }
-    } catch { throw "The selected DNS port/listeners are unavailable. Choose another port or resolve the conflict. $_" }
-    finally { foreach ($socket in $sockets) { $socket.Dispose() } }
-}
-
 function Resume-OwnedService {
     if (Test-Path -LiteralPath $resumePath) {
         $null = Get-OwnedRecord
@@ -142,7 +121,9 @@ function Remove-ObsoleteBundleFiles {
     Remove-Item -LiteralPath $previous
 }
 
+$maintenance = $null
 try {
+    $maintenance = Enter-ServiceMaintenance 'DNSProxy'
     Assert-RegularPath $app
     if ($Action -eq 'Validate') { $null = Read-SetupOptions; exit 0 }
     if ($Action -eq 'Resume') { Resume-OwnedService; exit 0 }
@@ -187,4 +168,4 @@ try {
     if ($ResultFile) { [IO.File]::WriteAllText($ResultFile, [string]$_) }
     Write-Error -ErrorAction Continue $_
     exit 1
-}
+} finally { Exit-ServiceMaintenance $maintenance }

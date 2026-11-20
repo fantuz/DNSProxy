@@ -770,6 +770,17 @@ class DemoCollector:
             "dnsp_blocklist_reload_success_total": 3,
             "dnsp_blocklist_reload_failures_total": 0,
         }
+        for code, replies in (
+            ("NOERROR", count),
+            ("NXDOMAIN", 174 + int(elapsed)),
+            ("SERVFAIL", failures),
+            ("REFUSED", 3),
+            ("FORMERR", 0),
+            ("NOTIMP", 0),
+            ("BADVERS", 0),
+            ("OTHER", 0),
+        ):
+            values[f'dnsp_client_responses_total{{rcode="{code}"}}'] = replies
         for phase, observations, duration in (
             ("queue", completed, 0.001),
             ("tls", connections, 0.012),

@@ -8,6 +8,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -43,6 +45,60 @@ def command_preview(command, redact=True):
         if sys.platform == "win32"
         else shlex.join(values)
     )
+
+
+def endpoint_host(url):
+    return (urlsplit(url).hostname or "").rstrip(".").lower()
+
+
+def bootstrap_args(option, url, address):
+    if not address:
+        return []
+    try:
+        ipaddress.ip_address(endpoint_host(url))
+    except ValueError:
+        pass
+    else:
+        raise ValueError("Leave the bootstrap IP empty for a numeric HTTPS endpoint")
+    if "%" in address:
+        raise ValueError("Use an unscoped numeric bootstrap IP")
+    ipaddress.ip_address(address)
+    return [option, address]
+
+
+def validate_policy(command, cancel):
+    """Run the selected resolver's offline policy parser without blocking GTK."""
+    from owned_process import safe_text
+
+    with (
+        tempfile.TemporaryFile() as diagnostic,
+        subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=diagnostic,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        ) as child,
+    ):
+        deadline = time.monotonic() + 30
+        try:
+            while child.poll() is None:
+                if cancel.wait(0.05):
+                    return
+                if time.monotonic() >= deadline:
+                    raise ValueError("Policy validation timed out after 30 seconds")
+            if child.returncode:
+                diagnostic.seek(0)
+                detail = safe_text(
+                    diagnostic.read(4096).decode("utf-8", "replace")
+                ).strip()
+                raise ValueError(
+                    detail or f"Policy validation exited with status {child.returncode}"
+                )
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait()
 
 
 @dataclass
@@ -139,9 +195,7 @@ class ResolverConfig:
             if metric == port:
                 raise ValueError("DNS and metrics ports must differ")
             command += ["-m", metric]
-        if self.bootstrap:
-            ipaddress.ip_address(self.bootstrap)
-            command += ["--bootstrap-address", self.bootstrap]
+        command += bootstrap_args("--bootstrap-address", self.upstream, self.bootstrap)
         if self.cache:
             command += [
                 "--cache-entries",
@@ -153,9 +207,16 @@ class ResolverConfig:
             command += ["--upstream-http=prefer-h3"]
         if self.backup_enabled:
             command += ["--backup-upstream", url(self.backup)]
-            if self.backup_bootstrap:
-                ipaddress.ip_address(self.backup_bootstrap)
-                command += ["--backup-bootstrap-address", self.backup_bootstrap]
+            if (endpoint_host(self.upstream), urlsplit(self.upstream).port or 443) == (
+                endpoint_host(self.backup),
+                urlsplit(self.backup).port or 443,
+            ):
+                raise ValueError(
+                    "Choose a different host or port for the backup upstream"
+                )
+            command += bootstrap_args(
+                "--backup-bootstrap-address", self.backup, self.backup_bootstrap
+            )
         limits = (
             (
                 "--max-host-connections",

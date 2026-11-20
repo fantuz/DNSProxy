@@ -234,8 +234,19 @@ class CacheDoH(DoH):
         address = ADDRESS if qtype == 28 else bytes([192, 0, 2, 1])
         ttl = 0 if label == b'zero' else 30
         answer = struct.pack('!2sHHIH', b'\xc0\x0c', qtype, 1, ttl, len(address)) + address
-        count, flags = 1, 0x8180
-        if label == b'short-dns':
+        if qtype in (64, 65):
+            binding = RR_FIXTURES[qtype]
+            if label == b'unsorted':
+                binding += b'\0\0\0\0'
+            answer = rr(qtype, binding, ttl=ttl)
+        count, authority, flags = 1, 0, 0x8180
+        if label.startswith(b'soa'):
+            count, authority = 0, 1
+            flags |= 0 if label == b'soa-nodata' else 3
+            minimum = {b'soa-zero': 0, b'soa-short': 1}.get(label, 12)
+            owner = b'\x07foreign\x07example\0' if label == b'soa-foreign' else b'\x06google\x03com\0'
+            answer = rr(6, SOA[:-4] + struct.pack('!I', minimum), owner=owner, ttl=30)
+        elif label == b'short-dns':
             answer = (struct.pack('!2sHHIH', b'\xc0\x0c', 5, 1, 1, len(ALT)) + ALT
                       + rr(qtype, address, owner=ALT))
             count = 2
@@ -245,15 +256,15 @@ class CacheDoH(DoH):
         elif label == b'tc':
             flags |= 0x0200
         response = (data[:2] + struct.pack('!H', flags) + data[4:6] + struct.pack('!H', count)
-                    + data[8:end] + answer + data[end:])
+                    + struct.pack('!H', authority) + data[10:end] + answer + data[end:])
         # Keep short lifetimes independent of whole-second Date rounding.
         self.send_response_only(200)
         if label == b'old-date':
             self.send_header('Date', self.date_time_string(time.time()-60))
         self.send_header('Content-Type', 'application/dns-message')
-        if label in (b'aged', b'short-http', b'already-stale'):
+        if label in (b'aged', b'short-http', b'already-stale', b'soa-aged'):
             self.send_header('Age', '31' if label == b'already-stale' else '7')
-        controls = {b'short-http': 'public, max-age=8', b'nostore': 'public, no-store, max-age=30',
+        controls = {b'short-http': 'public, max-age=8', b'nostore': 'public, no-store, max-age=30', b'soa-private': 'private',
                     b'nocache': 'no-cache', b'private': 'private, max-age=30'}
         if label in controls:
             self.send_header('Cache-Control', controls[label])
@@ -728,6 +739,11 @@ class Tests(unittest.TestCase):
                         with self.assertRaises(socket.timeout):
                             sock.recv(4096)
 
+                    outcome = "SERVFAIL" if expected_rcode else "NOERROR"
+                    key = f'dnsp_client_responses_total{{rcode="{outcome}"}}'
+                    self.assertEqual(self.metric(self.metrics(), key) - self.metric(before, key),
+                                     2 if expected_rcode else 12)
+
     def test_coalesced_no_store_response_retries_waiter(self):
         gate = threading.Event()
         self.server.coalesce_gate = gate
@@ -1100,6 +1116,9 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.udp(query(65022, edns=1232))[-6], 1)  # BADVERS.
 
         after = self.metrics()
+        for code, count in (("NOERROR", 3), ("FORMERR", 1), ("SERVFAIL", 1), ("NXDOMAIN", 1), ("BADVERS", 1)):
+            key = f'dnsp_client_responses_total{{rcode="{code}"}}'
+            self.assertEqual(self.metric(after, key) - self.metric(before, key), count)
         satisfied = 'dnsp_queries_satisfied_total'
         self.assertEqual(self.metric(after, satisfied) - self.metric(before, satisfied), 2)
 
@@ -1353,7 +1372,36 @@ class Tests(unittest.TestCase):
                 do[-4] |= 0x80
                 cd = bytearray(packet(b'checking'))
                 cd[3] |= 0x10
-                bypass = (b'zero', b'negative', b'nodata', b'tc', b'already-stale', b'old-date',
+                for typ in (64, 65):
+                    before = counter('upstream_requests')
+                    for ident in range(101, 106):
+                        service_reply = exchange(packet(b'service', ident=ident, qtype=typ), tcp=(ident == 105))
+                        self.assertEqual(struct.unpack_from('!H', service_reply)[0], ident)
+                        self.assertTrue(service_reply.endswith(RR_FIXTURES[typ]))
+                    self.assertEqual(counter('upstream_requests') - before, 1)
+                    before = counter('upstream_requests')
+                    for _ in range(2):
+                        exchange(packet(b'unsorted', qtype=typ))
+                    self.assertEqual(counter('upstream_requests') - before, 2)
+
+                for label, code, max_ttl in ((b'soa', 3, 12), (b'soa-nodata', 0, 12), (b'soa-aged', 3, 5)):
+                    before = counter('upstream_requests')
+                    for ident in range(201, 206):
+                        result = exchange(packet(label, ident=ident), tcp=(ident == 205))
+                        self.assertEqual(struct.unpack_from('!H', result)[0], ident)
+                        self.assertEqual(result[3] & 15, code)
+                        self.assertEqual(result[6:10], b'\0\0\0\1')
+                        owner_end = question_end(result) + len(b'\x06google\x03com\0')
+                        soa_ttl = struct.unpack_from('!I', result, owner_end+4)[0]
+                        self.assertGreater(soa_ttl, 0)
+                        self.assertLessEqual(soa_ttl, max_ttl)
+                    self.assertEqual(counter('upstream_requests') - before, 1)
+                before = counter('upstream_requests')
+                exchange(packet(b'soa-short'))
+                time.sleep(1.1)
+                exchange(packet(b'soa-short'))
+                self.assertEqual(counter('upstream_requests') - before, 2)
+                bypass = (b'zero', b'negative', b'nodata', b'soa-foreign', b'soa-zero', b'soa-private', b'tc', b'already-stale', b'old-date',
                           b'nostore', b'nocache', b'private', b'vary')
                 for data in (*map(packet, bypass), option, do, cd):
                     before = counter('upstream_requests')
@@ -1619,6 +1667,18 @@ class FailoverTests(unittest.TestCase):
                     self.assertEqual(primary.received, [packet])
                     self.assertEqual(backup.received, [packet])
                     self.assertLess(elapsed, 2.1)  # Two independent timeouts would take 2.4 s.
+
+    def test_written_dns_outcomes_are_independent_of_transport_success(self):
+        with self.endpoint() as primary, self.endpoint() as backup:
+            with self.proxy(self.url(primary), self.url(backup)) as (port, metrics):
+                for mode, code in (("answer", 0), ("nxdomain", 3), ("servfail", 2), ("refused", 5), ("http503", 2)):
+                    primary.mode = mode
+                    self.assertEqual(self.udp(port)[3] & 15, code)
+                stats = Tests.metrics(self, metrics)
+                for code, count in (("NOERROR", 1), ("NXDOMAIN", 1), ("SERVFAIL", 2), ("REFUSED", 1), ("OTHER", 0)):
+                    self.assertEqual(Tests.metric(stats, f'dnsp_client_responses_total{{rcode="{code}"}}'), count)
+                self.assertEqual(Tests.metric(stats, 'dnsp_upstream_success_total'), 4)
+                self.assertEqual(Tests.metric(stats, 'dnsp_queries_satisfied_total'), 2)
 
     def test_dns_results_and_http_errors_do_not_fail_over(self):
         with self.endpoint() as primary, self.endpoint() as backup:

@@ -9,6 +9,9 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'ServiceFiles.ps1')
 $program = Join-Path $env:ProgramFiles $ServiceName
 $state = Join-Path $env:ProgramData $ServiceName
+$maintenance = Enter-ServiceMaintenance $ServiceName
+try {
+if (Test-Path -LiteralPath (Join-Path $state 'service-change.json')) { throw 'Recover the interrupted service modification with Set-DNSProxyService.ps1 -Recover first.' }
 $record = Get-Content -LiteralPath (Join-Path $state 'installation.json') -Raw | ConvertFrom-Json
 if ($record.ManagedBy -eq 'InnoSetup') {
     if (-not $KeepProgramFiles -or $ServiceName -ne 'DNSProxy') { throw 'Remove this installation through Windows Apps or its setup uninstaller.' }
@@ -39,3 +42,4 @@ if (-not $KeepProgramFiles) {
 }
 # Do not follow reparse points planted in the service-writable log directory.
 Remove-ServiceDirectory $state
+} finally { Exit-ServiceMaintenance $maintenance }
