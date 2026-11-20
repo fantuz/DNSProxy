@@ -225,6 +225,8 @@ try {
     }
     $command = (Get-ResolverServiceCommand $record.BinaryPath $ServiceName $log $options) + $suffix
     if ($command -ceq $record.Command -and $mode -eq $options.StartupType) { return }
+    $current = if ($svc.State -eq 'Running') { $record } else { $null }
+    Assert-FreeListeners $options $current
     $change = @{Before=$record; BeforeMode=$mode; AfterCommand=$command; WasRunning=($svc.State -eq 'Running')}
     Write-DnsState $journal $change
     try {

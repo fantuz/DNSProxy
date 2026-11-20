@@ -138,6 +138,13 @@ class ServiceTests(unittest.TestCase):
                 if (-not $entries.Count) {{ throw 'No adapter DNS configuration was tested' }}
                 @{{Version=1; Phase='Active'; Deadline=[DateTime]::UtcNow.ToString('o'); Entries=$entries}} |
                     ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+                $modify = Join-Path (Split-Path {self.quoted(integration)}) 'Set-DNSProxyService.ps1'
+                $originalState = Get-Content -LiteralPath $statePath -Raw
+                & $modify -ServiceName {name} -MetricsPort {fixtures.unused_ports()[0]}
+                if ((Get-Content -LiteralPath $statePath -Raw) -cne $originalState) {{ throw 'Modified adapter settings' }}
+                $blocked = $false
+                try {{ & $modify -ServiceName {name} -Port 5300 }} catch {{ $blocked = $true }}
+                if (-not $blocked) {{ throw 'Incompatible active adapter settings were accepted' }}
                 & {self.quoted(integration)} -ServiceName {name} -Action Restore
                 if (Test-Path -LiteralPath $statePath) {{ throw 'Restoration retained state' }}
                 if (Get-ScheduledTask -TaskName '{name}-DNS-Recovery' -ErrorAction SilentlyContinue) {{ throw 'Recovery task was not removed' }}

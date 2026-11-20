@@ -84,30 +84,6 @@ function Read-SetupOptions {
     return @{Enabled=($values.Service -eq '1'); Arguments=$arguments}
 }
 
-function Assert-FreeListeners($Arguments) {
-    $sockets = @()
-    try {
-        foreach ($address in $Arguments.ListenAddress) {
-            $ip = [Net.IPAddress]::Parse($address)
-            foreach ($kind in @([Net.Sockets.SocketType]::Dgram, [Net.Sockets.SocketType]::Stream)) {
-                $protocol = if ($kind -eq [Net.Sockets.SocketType]::Dgram) { [Net.Sockets.ProtocolType]::Udp } else { [Net.Sockets.ProtocolType]::Tcp }
-                $socket = New-Object Net.Sockets.Socket($ip.AddressFamily, $kind, $protocol)
-                $sockets += $socket
-                $socket.ExclusiveAddressUse = $true
-                if ($ip.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetworkV6) { $socket.DualMode = $false }
-                $socket.Bind((New-Object Net.IPEndPoint($ip, [int]$Arguments.Port)))
-            }
-        }
-        if ([int]$Arguments.MetricsPort -gt 0) {
-            $socket = New-Object Net.Sockets.Socket([Net.Sockets.AddressFamily]::InterNetwork, [Net.Sockets.SocketType]::Stream, [Net.Sockets.ProtocolType]::Tcp)
-            $sockets += $socket
-            $socket.ExclusiveAddressUse = $true
-            $socket.Bind((New-Object Net.IPEndPoint([Net.IPAddress]::Loopback, [int]$Arguments.MetricsPort)))
-        }
-    } catch { throw "The selected DNS port/listeners are unavailable. Choose another port or resolve the conflict. $_" }
-    finally { foreach ($socket in $sockets) { $socket.Dispose() } }
-}
-
 function Resume-OwnedService {
     if (Test-Path -LiteralPath $resumePath) {
         $null = Get-OwnedRecord

@@ -199,6 +199,29 @@ class InstallerTests(unittest.TestCase):
             if process.poll() is None:
                 subprocess.run(['taskkill.exe', '/PID', str(process.pid), '/T', '/F'], capture_output=True)
 
+    def assert_modify_dialog_cancels(self):
+        from ctypes import wintypes
+        user = ctypes.WinDLL('user32', use_last_error=True)
+        user.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+        user.FindWindowW.restype = wintypes.HWND
+        user.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        engine = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+        with subprocess.Popen([str(engine), '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File',
+                               str(self.app / 'bin/Set-DNSProxyService.ps1'), '-Interactive'], env=self.environment) as dialog:
+            try:
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline and dialog.poll() is None:
+                    handle = user.FindWindowW(None, 'Modify DNSProxy service')
+                    if handle:
+                        self.assertTrue(user.PostMessageW(handle, 0x0010, 0, 0))  # Close without applying changes.
+                        self.assertEqual(dialog.wait(timeout=10), 0)
+                        return
+                    time.sleep(.1)
+                self.fail('Installed Modify service dialog did not open')
+            finally:
+                if dialog.poll() is None:
+                    dialog.terminate()
+
     def test_default_install_is_optional_service_and_can_be_removed(self):
         before = self.ps('Get-DnsClientServerAddress | Select-Object InterfaceIndex,AddressFamily,ServerAddresses | ConvertTo-Json -Depth 4').stdout
         with self.installation():
@@ -254,6 +277,14 @@ class InstallerTests(unittest.TestCase):
                             client.sendto(fixtures.query(28), ('127.0.0.1', port))
                             self.assertEqual(client.recv(4096)[3] & 15, 0)
                         modify = self.quoted(self.app / 'bin/Set-DNSProxyService.ps1')
+                        self.assert_modify_dialog_cancels()
+                        self.assertEqual(self.service()['ProcessId'], service['ProcessId'])
+                        with socket.socket() as occupied:
+                            occupied.bind(('127.0.0.1', 0))
+                            occupied.listen()
+                            conflict = self.ps(f'& {modify} -MetricsPort {occupied.getsockname()[1]}', check=False)
+                            self.assertNotEqual(conflict.returncode, 0)
+                            self.assertEqual(self.service()['ProcessId'], service['ProcessId'])
                         metrics_port = fixtures.unused_ports()[0]
                         self.ps(f'& {modify} -MetricsPort {metrics_port}')
                         self.assertIn('dnsp_queries_total', fixtures.Tests.metrics(self, metrics_port))
@@ -305,6 +336,12 @@ class InstallerTests(unittest.TestCase):
                         self.assertEqual(self.service()['State'], 'Stopped')
                         stopped_record = json.loads((self.state / 'installation.json').read_text(encoding='utf-8-sig'))
                         self.assertEqual(stopped_record['MetricsPort'], 0)
+                        journal = self.state / 'service-change.json'
+                        journal.write_text(json.dumps({'Before': stopped_record, 'BeforeMode': 'Manual',
+                                                       'AfterCommand': stopped_record['Command'], 'WasRunning': False}))
+                        self.ps(f'& {modify} -Recover')
+                        self.assertFalse(journal.exists())
+                        self.assertEqual(self.service()['State'], 'Stopped')
                         self.invoke(self.installer, '/SERVICE=1')
                         self.assertEqual(self.service()['State'], 'Stopped')
                 finally:

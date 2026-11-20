@@ -42,3 +42,33 @@ function Enter-ServiceMaintenance([string]$Name) {
 function Exit-ServiceMaintenance($Mutex) {
     if ($Mutex) { $Mutex.ReleaseMutex(); $Mutex.Dispose() }
 }
+
+function Get-ServiceListeners($Options) {
+    foreach ($address in $Options.ListenAddress) {
+        $endpoint = [Net.IPEndPoint]::new([Net.IPAddress]::Parse($address), [int]$Options.Port)
+        foreach ($protocol in @('Udp','Tcp')) { [pscustomobject]@{Endpoint=$endpoint; Protocol=$protocol} }
+    }
+    if ([int]$Options.MetricsPort -gt 0) {
+        [pscustomobject]@{Endpoint=[Net.IPEndPoint]::new([Net.IPAddress]::Loopback, [int]$Options.MetricsPort); Protocol='Tcp'}
+    }
+}
+
+function Assert-FreeListeners($Arguments, $RunningSettings=$null) {
+    $sockets = @()
+    $owned = @{}
+    if ($RunningSettings) {
+        foreach ($item in Get-ServiceListeners $RunningSettings) { $owned["$($item.Protocol) $($item.Endpoint)"] = $true }
+    }
+    try {
+        foreach ($item in Get-ServiceListeners $Arguments) {
+            if ($owned.ContainsKey("$($item.Protocol) $($item.Endpoint)")) { continue }
+            $kind = if ($item.Protocol -eq 'Tcp') { 'Stream' } else { 'Dgram' }
+            $socket = [Net.Sockets.Socket]::new($item.Endpoint.AddressFamily, $kind, $item.Protocol)
+            $sockets += $socket
+            $socket.ExclusiveAddressUse = $true
+            if ($item.Endpoint.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetworkV6) { $socket.DualMode = $false }
+            $socket.Bind($item.Endpoint)
+        }
+    } catch { throw "The selected DNS port/listeners are unavailable. Choose another port or resolve the conflict. $_" }
+    finally { foreach ($socket in $sockets) { $socket.Dispose() } }
+}
