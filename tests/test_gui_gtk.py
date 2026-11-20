@@ -2,13 +2,16 @@
 
 import importlib.util
 from dataclasses import replace
+import json
 from pathlib import Path
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import Mock, patch
 import uuid
 
 from test_gui_monitor import (
@@ -27,7 +30,46 @@ from test_gui_monitor import (
 spec = importlib.util.spec_from_file_location("dnsp_gui", GUI_SOURCE / "dnsp-gui.py")
 gui = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gui)
-from monitor import Collector, DemoCollector, Invocation  # noqa: E402
+from monitor import Collector, DemoCollector, Invocation, Metrics  # noqa: E402
+
+
+def monitoring_sample(at, *, factor=0, uptime=100, process=True):
+    """Known interval populations, including failures that are not new attempts."""
+    values = {
+        ("dnsp_queries_total", (("transport", "udp"),)): 12 * factor,
+        ("dnsp_queries_total", (("transport", "tcp"),)): 8 * factor,
+        ("dnsp_upstream_requests_total", ()): 13 * factor,
+        ("dnsp_upstream_success_total", ()): 8 * factor,
+        ("dnsp_upstream_failures_total", ()): 2 * factor,
+        ("dnsp_upstream_timeouts_total", ()): factor,
+        ("dnsp_upstream_reused_requests_total", ()): 5 * factor,
+        ("dnsp_cache_hits_total", ()): 3 * factor,
+        ("dnsp_cache_misses_total", ()): factor,
+        ("dnsp_blocked_queries_total", ()): 2 * factor,
+        ("dnsp_blocked_aliases_total", ()): factor,
+        ("dnsp_udp_queries_coalesced_total", ()): factor,
+        ("dnsp_uptime_seconds", ()): uptime,
+        ("dnsp_cache_entries", ()): 4,
+        ("dnsp_cache_capacity", ()): 8,
+        ("dnsp_upstream_attempts_inflight", ()): 1,
+        ("dnsp_queries_capacity", ()): 128,
+        ("dnsp_tcp_clients", ()): 2,
+        ("dnsp_tcp_clients_capacity", ()): 128,
+    }
+    for version, count in (("1", 0), ("2", 10), ("3", 0)):
+        values[("dnsp_upstream_http_responses_total", (("version", version),))] = (
+            count * factor
+        )
+    for phase in ("queue", "tls", "first_byte"):
+        labels = (("phase", phase),)
+        values[("dnsp_upstream_phase_duration_seconds_count", labels)] = 2 * factor
+        values[("dnsp_upstream_phase_duration_seconds_sum", labels)] = 0.04 * factor
+    snapshot = sample(at=at)
+    return replace(
+        snapshot,
+        process=snapshot.process if process else None,
+        metrics=Metrics(values),
+    )
 
 
 class GuiTests(unittest.TestCase):
@@ -111,11 +153,147 @@ class GuiTests(unittest.TestCase):
         self.window.refresh.emit("clicked")
         self.wait_for(lambda: self.window.snapshot is not before)
         # Many updates cannot grow the in-memory chart indefinitely.
+        demo = DemoCollector()
         for _ in range(75):
-            self.window.apply(DemoCollector().collect())
+            self.window.apply(demo.collect())
         self.assertEqual(len(self.window.history), 60)
         self.window.pause.set_active(False)
         self.assertIsNone(self.window.rates.previous)
+
+    def test_recent_monitoring_uses_completed_attempts_and_cache_populations(self):
+        self.window.pause.set_active(True)
+        self.wait_for(lambda: not self.window.busy)
+        self.window.apply(monitoring_sample(10))
+        self.window.apply(monitoring_sample(12, factor=1, uptime=102))
+        labels = self.window.values
+        for key, expected in (
+            ("sample_state", "Live interval"),
+            ("sample_elapsed", "2.00 s"),
+            ("recent_completed", "10"),
+            ("recent_failure", "2 · 20.0%"),
+            ("recent_timeout", "1 · 10.0%"),
+            ("recent_http", "0 · 10 · 0"),
+            ("recent_queue", "20.00 ms"),
+            ("health_failure", "20.0%"),
+            ("health_cache", "75.0%"),
+            ("health_reuse", "50.0%"),
+            ("cache_used", "4 / 8 · 50.0%"),
+        ):
+            self.assertEqual(labels[key].get_text(), expected, key)
+        page = self.window.notebook.get_n_pages() - 1
+        self.assertEqual(
+            self.window.notebook.get_tab_label_text(
+                self.window.notebook.get_nth_page(page)
+            ),
+            "Monitoring",
+        )
+        self.window.notebook.set_current_page(page)
+        self.screenshot("monitoring-recent-interval.png")
+        # An idle interval has real zero counts but no outcome denominator.
+        self.window.apply(monitoring_sample(14, factor=1, uptime=104))
+        self.assertEqual(labels["recent_completed"].get_text(), "0")
+        self.assertEqual(labels["health_failure"].get_text(), "—")
+        self.assertEqual(labels["health_cache"].get_text(), "—")
+
+    def test_monitoring_export_marks_retained_sample_and_excludes_startup_secrets(self):
+        from monitor import parse_invocation
+
+        self.window.pause.set_active(True)
+        self.wait_for(lambda: not self.window.busy)
+        first = monitoring_sample(10)
+        second = monitoring_sample(12, factor=1, uptime=102)
+        secret = (
+            "https://private-user:private-password@example.test/dns?token=private-token"
+        )
+        invocation = parse_invocation(
+            [
+                "/private/location/dnsp-modern",
+                "-s",
+                secret,
+                "--blocklist",
+                "/private/list",
+            ]
+        )
+        second = replace(second, process=replace(second.process, invocation=invocation))
+        self.window.apply(first)
+        self.window.apply(second)
+        self.window.apply(replace(second, at=13, metrics=None, error="Timed out"))
+        self.assertTrue(self.window.monitoring_page.has_css_class("stale"))
+        self.assertEqual(self.window.values["health_failure"].get_text(), "20.0%")
+        report = self.window.monitoring_report()
+        encoded = json.dumps(report, allow_nan=False)
+        self.assertFalse(report["monitor"]["latest_sample_succeeded"])
+        self.assertEqual(report["interval"]["counts"]["completed"], 10)
+        self.assertGreaterEqual(report["sample_age_seconds"], 0)
+        for forbidden in (
+            "private-user",
+            "private-password",
+            "private-token",
+            "/private/",
+            "argv",
+            "logs",
+        ):
+            self.assertNotIn(forbidden, encoded)
+        # Recovery cannot make a rate out of traffic accumulated in the gap.
+        self.window.apply(monitoring_sample(20, factor=10, uptime=110))
+        self.assertEqual(self.window.values["health_failure"].get_text(), "—")
+        self.assertFalse(self.window.monitoring_page.has_css_class("stale"))
+        self.assertEqual(self.window.telemetry_frame.status, "baseline")
+
+    def test_metrics_uptime_restart_resets_traffic_only_peak_and_interval(self):
+        self.window.pause.set_active(True)
+        self.wait_for(lambda: not self.window.busy)
+        self.window.apply(monitoring_sample(10, process=False))
+        self.window.apply(monitoring_sample(12, factor=1, uptime=102, process=False))
+        self.assertEqual(self.window.values["peak_qps"].get_text(), "10")
+        # New counters may already exceed the old counts when a daemon restarts.
+        self.window.apply(monitoring_sample(14, factor=2, uptime=1, process=False))
+        self.assertEqual(self.window.values["peak_qps"].get_text(), "—")
+        self.assertEqual(self.window.values["health_failure"].get_text(), "—")
+        self.assertEqual(len(self.window.history), 0)
+        self.assertEqual(self.window.telemetry_frame.status, "reset")
+        self.assertIn("new baseline", self.window.values["sample_state"].get_text())
+        # A failed scrape clears the interval baseline; the last good uptime
+        # still proves a subsequent restart even if every query count grew.
+        self.window.apply(monitoring_sample(16, factor=3, uptime=5, process=False))
+        resets = self.window.baseline_resets
+        self.window.apply(
+            replace(
+                monitoring_sample(17, factor=3, uptime=6, process=False), metrics=None
+            )
+        )
+        self.window.apply(monitoring_sample(18, factor=4, uptime=1, process=False))
+        self.assertEqual(self.window.baseline_resets, resets + 1)
+        self.assertEqual(self.window.values["peak_qps"].get_text(), "—")
+        self.assertEqual(len(self.window.history), 0)
+
+    def test_export_response_saves_private_valid_json_and_cancels_cleanly(self):
+        self.window.pause.set_active(True)
+        self.wait_for(lambda: not self.window.busy)
+        self.window.apply(monitoring_sample(10))
+        self.window.apply(monitoring_sample(12, factor=1, uptime=102))
+        with tempfile.TemporaryDirectory(prefix="dnsp report ") as directory:
+            target = Path(directory) / "monitoring.json"
+            # Selecting a native filename belongs to the OS dialog. Exercise
+            # its response boundary with a real Gio file and actual disk I/O.
+            chooser = Mock()
+            chooser.get_file.return_value = self.Gio.File.new_for_path(str(target))
+            with patch.object(self.Gtk.FileChooserNative, "new", return_value=chooser):
+                self.window.export_button.emit("clicked")
+                callback = chooser.connect.call_args.args[1]
+                callback(chooser, self.Gtk.ResponseType.ACCEPT)
+            self.assertIsNone(self.window.export_dialog)
+            report = json.loads(target.read_text(encoding="utf-8"))
+            self.assertEqual(report["interval"]["counts"]["completed"], 10)
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(
+                self.window.export_status.get_text(), "Monitoring snapshot exported"
+            )
+            with patch.object(self.Gtk.FileChooserNative, "new", return_value=chooser):
+                self.window.export_button.emit("clicked")
+                callback = chooser.connect.call_args.args[1]
+                callback(chooser, self.Gtk.ResponseType.CANCEL)
+            self.assertIsNone(self.window.export_dialog)
 
     def test_time_axis_gaps_and_balanced_panels(self):
         self.window.pause.set_active(True)
@@ -135,6 +313,9 @@ class GuiTests(unittest.TestCase):
         for width, height in ((1120, 920), (800, 680)):
             self.window.set_default_size(width, height)
             self.pump(0.3)
+            self.assertTrue(self.window.notebook.get_scrollable())
+            if width == 800:
+                self.assertLessEqual(self.window.get_width(), 810)
             self.assertGreaterEqual(self.window.chart.get_content_height(), 160)
             self.assertLessEqual(self.window.chart.get_content_height(), 240)
             self.assertGreater(
@@ -161,6 +342,32 @@ class GuiTests(unittest.TestCase):
         adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
         self.pump(0.1)
         self.screenshot("balanced-information-panels.png")
+
+    def test_compact_window_with_stale_status_and_wider_font(self):
+        settings = self.Gtk.Settings.get_default()
+        original_font = settings.get_property("gtk-font-name")
+        self.addCleanup(settings.set_property, "gtk-font-name", original_font)
+        settings.set_property("gtk-font-name", "DejaVu Sans 12")
+        self.window.pause.set_active(True)
+        self.wait_for(lambda: not self.window.busy)
+        self.window.apply(sample(at=time.monotonic()))
+        self.window.apply(replace(sample(at=time.monotonic()), metrics=None))
+        self.assertIn("last values retained", self.window.status.get_text())
+        self.window.set_default_size(800, 680)
+        self.wait_for(lambda: self.window.get_width() <= 810)
+
+        launch = self.window.start_button.get_ancestor(self.Gtk.ScrolledWindow)
+        self.window.notebook.set_current_page(self.window.notebook.page_num(launch))
+        self.pump(0.1)
+        self.assertLessEqual(self.window.get_width(), 810)
+        self.assertEqual(launch.get_hadjustment().get_value(), 0)
+        for control in (self.window.start_button, self.window.stop_button):
+            ok, bounds = control.compute_bounds(launch)
+            self.assertTrue(ok)
+            self.assertGreaterEqual(bounds.get_x(), 0)
+            self.assertLessEqual(
+                bounds.get_x() + bounds.get_width(), launch.get_width()
+            )
 
     def test_quarter_second_sampling_updates_without_a_backlog(self):
         self.window.pause.set_active(True)
@@ -335,9 +542,15 @@ class GuiTests(unittest.TestCase):
                 replace(second, at=at, process=process, metrics=None, error="Timed out")
             )
         self.assertEqual(
-            before, {key: label.get_text() for key, label in self.window.values.items()}
+            {key: value for key, value in before.items() if key != "sample_state"},
+            {
+                key: label.get_text()
+                for key, label in self.window.values.items()
+                if key != "sample_state"
+            },
         )
-        self.assertEqual(changes, [])
+        self.assertEqual(changes, ["sample_state"])
+        self.assertIn("No fresh metrics", self.window.values["sample_state"].get_text())
         self.assertEqual(list(self.window.history), history)
         self.assertIs(self.window.startup.get_first_child(), startup)
         self.assertEqual(self.window.last_success, 11)

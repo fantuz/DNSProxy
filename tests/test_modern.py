@@ -797,6 +797,8 @@ class Tests(unittest.TestCase):
                 self.assertEqual(rejected[:2], extra_id)
                 self.assertEqual(rejected[3] & 15, 2)
                 after = self.metrics()
+                self.assertEqual(self.metric(after, 'dnsp_queries_capacity'), capacity)
+                self.assertEqual(self.metric(after, 'dnsp_upstream_attempts_inflight'), capacity)
                 self.assertEqual(self.metric(after, overload), self.metric(before, overload) + 1)
                 self.assertEqual(self.metric(after, requests), self.metric(before, requests) + capacity)
             finally:
@@ -1057,6 +1059,17 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.metric(after, 'dnsp_queries_inflight'), 0)
         self.assertGreater(self.metric(after, 'dnsp_upstream_http_responses_total{version="1"}'), 0)
         self.assertGreater(self.metric(after, 'dnsp_upstream_duration_seconds_count'), 0)
+        self.assertGreaterEqual(self.metric(after, 'dnsp_uptime_seconds'),
+                                self.metric(before, 'dnsp_uptime_seconds'))
+        self.assertGreaterEqual(self.metric(before, 'dnsp_uptime_seconds'), 0)
+        for name, expected in (('dnsp_cache_entries', 0), ('dnsp_cache_capacity', 0),
+                               ('dnsp_queries_capacity', 128),
+                               ('dnsp_upstream_attempts_inflight', 0),
+                               ('dnsp_tcp_clients_capacity', 128)):
+            with self.subTest(gauge=name):
+                self.assertIn(f'# TYPE {name} gauge\n', after)
+                self.assertIn(f'# HELP {name} ', after)
+                self.assertEqual(self.metric(after, name), expected)
 
     def test_metrics_handles_partial_and_invalid_requests(self):
         target = ('127.0.0.1', self.metrics_port)
@@ -1288,8 +1301,12 @@ class Tests(unittest.TestCase):
                     log.seek(0)
                     self.fail(f'cache proxy failed to start: {log.read()!r}')
 
+                stats = self.metrics(metrics_port)
+                self.assertEqual(self.metric(stats, 'dnsp_cache_capacity'), 1)
+                self.assertEqual(self.metric(stats, 'dnsp_cache_entries'), 0)
                 first = exchange(packet(b'aged', qtype=28, edns=1232))
                 self.assertEqual(ttl(first), 23)
+                self.assertEqual(self.metric(self.metrics(metrics_port), 'dnsp_cache_entries'), 1)
                 time.sleep(1.05)
                 hit = exchange(packet(b'aged', ident=0x2222, qtype=28, edns=1232), tcp=True)
                 self.assertEqual(hit[:2], b'\x22\x22')
@@ -1321,8 +1338,15 @@ class Tests(unittest.TestCase):
                         self.assertEqual(counter('cache_hits'), hits+1)
                         before = counter('upstream_requests')
                         time.sleep(1.1)
+                        # Scraping must exclude stale slots without sending a
+                        # DNS request that could evict or refresh the entry.
+                        stats = self.metrics(metrics_port)
+                        self.assertEqual(self.metric(stats, 'dnsp_cache_entries'), 0)
+                        self.assertEqual(self.metric(stats, 'dnsp_cache_capacity'), 1)
+                        self.assertEqual(counter('upstream_requests'), before)
                         exchange(data)
                         self.assertEqual(counter('upstream_requests'), before+1)
+                        self.assertEqual(self.metric(self.metrics(metrics_port), 'dnsp_cache_entries'), 1)
 
                 option = edns_options(packet(b'opts', edns=1232), padding_option(4))
                 do = bytearray(packet(b'dnssec', edns=1232))

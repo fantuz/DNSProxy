@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+import json
 import math
 import sys
 import threading
 import time
 
 from chart import draw as draw_chart, scale_ceiling
+from telemetry import TelemetryWindow, diagnostic_report
 
 from monitor import (
     Collector,
@@ -20,6 +22,7 @@ from monitor import (
     Rates,
     Snapshot,
     display_value,
+    same_instance,
 )
 
 
@@ -112,6 +115,11 @@ def build_application(options):
             )
             self.rates = Rates()
             self.latencies = LatencyWindow()
+            self.telemetry = TelemetryWindow()
+            self.telemetry_frame = None
+            self.collection_seconds = None
+            self.baseline_resets = 0
+            self.export_dialog = None
             self.selected_pid = options.pid
             self.metrics_port = options.metrics_port
             self.monitor_connected = True
@@ -175,6 +183,7 @@ def build_application(options):
 
             toolbar = Gtk.Box(spacing=12)
             self.status = self.label("Connecting…", "title-3")
+            self.status.set_wrap(True)
             self.status.set_hexpand(True)
             toolbar.append(self.status)
             self.pause = Gtk.ToggleButton(label="Pause")
@@ -239,6 +248,7 @@ def build_application(options):
                 )
 
             notebook = Gtk.Notebook()
+            notebook.set_scrollable(True)
             self.notebook = notebook
             notebook.set_vexpand(True)
             root.append(notebook)
@@ -267,6 +277,14 @@ def build_application(options):
                 cards.attach(box, col, 0, 1, 1)
             self.metric_cards = cards
             overview.append(cards)
+            interval_health = self.group(
+                "Recent interval · completed attempts and cache lookups",
+                [
+                    ("health_failure", "Failed upstream attempts"),
+                    ("health_cache", "Cache hit ratio"),
+                    ("health_reuse", "Reused upstream attempts"),
+                ],
+            )
             self.chart_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
             self.chart_panel.add_css_class("info-panel")
             chart_heading = Gtk.Box(spacing=12)
@@ -346,6 +364,7 @@ def build_application(options):
             self.latency_panel.set_valign(Gtk.Align.FILL)
             self.charts_grid.append(self.latency_panel)
             overview.append(self.charts_grid)
+            overview.append(interval_health)
             overview.append(
                 self.group(
                     "Estimated latency · last 60 sampling intervals",
@@ -466,6 +485,7 @@ def build_application(options):
                 label.set_wrap(True)
                 notes.append(label)
             notebook.append_page(self.scroll(notes), self.label("How to read this"))
+            self.add_monitoring(notebook)
             self.freshness = self.label(
                 "Sampling every " + str(self.interval) + " s · Read only", "dim-label"
             )
@@ -516,6 +536,240 @@ def build_application(options):
                 grid.attach(value, 1, row, 1, 1)
             box.append(grid)
             return box
+
+        def add_monitoring(self, notebook):
+            page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+            self.monitoring_page = page
+            note = self.label(
+                "Recent interval values use changes between consecutive successful samples. "
+                "Idle ratios and unsupported metrics appear as a dash. Capacity and policy "
+                "values describe the latest sample; overview totals describe daemon lifetime."
+            )
+            note.set_wrap(True)
+            page.append(note)
+            sections = (
+                (
+                    "Sample health",
+                    [
+                        ("sample_state", "Interval status"),
+                        ("sample_elapsed", "Observed interval"),
+                        ("sample_age", "Last good sample age"),
+                        ("collection_ms", "Collection duration"),
+                        ("sample_resets", "Detected resets · session"),
+                    ],
+                ),
+                (
+                    "Completed upstream attempts · recent interval",
+                    [
+                        ("recent_completed", "Completed attempts"),
+                        ("recent_success", "Successful attempts"),
+                        ("recent_failure", "Failed attempts"),
+                        ("recent_timeout", "Timeouts / completed attempts"),
+                        ("recent_reuse", "Reused / completed attempts"),
+                        ("recent_http", "HTTP/1 · HTTP/2 · HTTP/3 replies"),
+                    ],
+                ),
+                (
+                    "Endpoints and transfer phases · recent interval",
+                    [
+                        ("recent_primary", "Primary attempts / replies / failures"),
+                        ("recent_backup", "Backup attempts / replies / failures"),
+                        ("recent_wins", "Primary / backup race wins"),
+                        ("recent_hedges", "Hedges started / suppressed / cancelled"),
+                        ("recent_queue", "Mean queue time"),
+                        ("recent_tls", "Mean TLS time"),
+                        ("recent_first_byte", "Mean time to first byte"),
+                    ],
+                ),
+                (
+                    "Cache and policy",
+                    [
+                        ("recent_cache", "Cache hits / misses · interval"),
+                        ("recent_cache_ratio", "Cache hit ratio · interval"),
+                        ("cache_used", "Live cache slots / capacity"),
+                        ("recent_blocked", "Blocked queries / aliases · interval"),
+                        ("recent_coalesced", "Coalesced UDP queries · interval"),
+                        ("policy_generation", "Policy generation"),
+                        ("policy_age", "Policy age"),
+                        ("policy_memory", "Policy memory"),
+                        ("recent_reload", "Reload successes / failures · interval"),
+                    ],
+                ),
+                (
+                    "Capacity and TCP",
+                    [
+                        ("slot_pressure", "Active attempts / shared slots"),
+                        ("tcp_pressure", "TCP clients / capacity"),
+                        ("recent_overload", "Overload rejections · interval"),
+                        ("recent_tcp_rejected", "TCP source / capacity rejections"),
+                        ("recent_tcp_timeouts", "TCP idle / I/O timeouts"),
+                        ("daemon_uptime", "Resolver uptime from metrics"),
+                    ],
+                ),
+            )
+            for title, rows in sections:
+                page.append(self.group(title, rows))
+            notebook.append_page(self.scroll(page), self.label("Monitoring"))
+
+        @staticmethod
+        def telemetry_labels(telemetry):
+            counts, percentages, gauges = (
+                telemetry.counts,
+                telemetry.percentages,
+                telemetry.gauges,
+            )
+
+            def percent(value):
+                return "—" if value is None else f"{value:.1f}%"
+
+            def pair(*keys):
+                return " / ".join(number(counts.get(key)) for key in keys)
+
+            def capacity(used, total, key):
+                label = number(gauges.get(used)) + " / " + number(gauges.get(total))
+                value = telemetry.capacity_percentages.get(key)
+                return label + (f" · {value:.1f}%" if value is not None else "")
+
+            result = {
+                "health_failure": percent(percentages.get("failure")),
+                "health_cache": percent(percentages.get("cache_hit")),
+                "health_reuse": percent(percentages.get("reuse")),
+                "sample_state": {
+                    "baseline": "Collecting baseline",
+                    "live": "Live interval",
+                    "reset": "Resolver counters reset · new baseline",
+                    "gap": "No fresh metrics · interval unavailable",
+                }[telemetry.status],
+                "sample_elapsed": (
+                    f"{telemetry.elapsed:.2f} s"
+                    if telemetry.elapsed is not None
+                    else "—"
+                ),
+                "recent_completed": number(counts.get("completed")),
+                "recent_success": number(counts.get("success"))
+                + " · "
+                + percent(percentages.get("success")),
+                "recent_failure": number(counts.get("failures"))
+                + " · "
+                + percent(percentages.get("failure")),
+                "recent_timeout": number(counts.get("timeouts"))
+                + " · "
+                + percent(percentages.get("timeout")),
+                "recent_reuse": number(counts.get("reused_requests"))
+                + " · "
+                + percent(percentages.get("reuse")),
+                "recent_http": " · ".join(
+                    number(telemetry.protocols.get(v)) for v in ("1", "2", "3")
+                ),
+                "recent_wins": " / ".join(
+                    number(telemetry.roles[role].get("wins"))
+                    for role in ("primary", "backup")
+                ),
+                "recent_hedges": pair(
+                    "hedges_started", "hedges_suppressed", "hedges_cancelled"
+                ),
+                "recent_cache": pair("cache_hits", "cache_misses"),
+                "recent_cache_ratio": percent(percentages.get("cache_hit")),
+                "cache_used": capacity("cache_entries", "cache_capacity", "cache"),
+                "recent_blocked": pair("blocked_queries", "blocked_aliases"),
+                "recent_coalesced": number(counts.get("coalesced")),
+                "policy_generation": number(gauges.get("generation")),
+                "policy_age": number(gauges.get("blocklist_age"), " s"),
+                "policy_memory": number(gauges.get("blocklist_memory"), " B"),
+                "recent_reload": pair("reload_success", "reload_failures"),
+                "slot_pressure": capacity(
+                    "attempts_inflight", "queries_capacity", "attempts"
+                ),
+                "tcp_pressure": capacity("tcp_clients", "tcp_capacity", "tcp"),
+                "recent_overload": number(counts.get("overload")),
+                "recent_tcp_rejected": pair(
+                    "tcp_rejected_source", "tcp_rejected_capacity"
+                ),
+                "recent_tcp_timeouts": pair("tcp_idle_timeouts", "tcp_io_timeouts"),
+                "daemon_uptime": number(gauges.get("uptime"), " s"),
+            }
+            for role in ("primary", "backup"):
+                result["recent_" + role] = " / ".join(
+                    number(telemetry.roles[role].get(key))
+                    for key in ("attempts", "replies", "failures")
+                )
+            for phase in ("queue", "tls", "first_byte"):
+                value = telemetry.phases.get(phase)
+                result["recent_" + phase] = (
+                    f"{value * 1000:.2f} ms" if value is not None else "—"
+                )
+            return result
+
+        def monitoring_report(self):
+            if self.good_snapshot is None or self.telemetry_frame is None:
+                raise ValueError("Collect a successful metrics sample before exporting")
+            report = diagnostic_report(
+                self.good_snapshot, self.telemetry_frame, now=time.monotonic()
+            )
+            report["monitor"] = {
+                "demo": options.demo,
+                "paused": self.pause.get_active(),
+                "connected": self.monitor_connected,
+                "latest_sample_succeeded": bool(
+                    self.snapshot and self.snapshot.metrics
+                ),
+                "collection_seconds": self.collection_seconds,
+                "missed_samples": self.missed_samples,
+                "detected_resets": self.baseline_resets,
+            }
+            return report
+
+        def export_monitoring(self, *_):
+            try:
+                self.monitoring_report()
+            except ValueError as error:
+                self.export_status.set_text(str(error))
+                return
+            if self.export_dialog is not None:
+                self.export_dialog.show()
+                return
+            dialog = Gtk.FileChooserNative.new(
+                "Export DNSProxy monitoring snapshot",
+                self,
+                Gtk.FileChooserAction.SAVE,
+                "Save",
+                "Cancel",
+            )
+            self.export_dialog = dialog
+            dialog.set_current_name("dnsproxy-monitoring.json")
+
+            def save(chooser, response):
+                try:
+                    if response == Gtk.ResponseType.ACCEPT:
+                        target = chooser.get_file()
+                        if target is None or target.get_path() is None:
+                            raise ValueError(
+                                "Choose a local file for the monitoring report"
+                            )
+                        data = (
+                            json.dumps(
+                                self.monitoring_report(), indent=2, allow_nan=False
+                            )
+                            + "\n"
+                        )
+                        target.replace_contents(
+                            data.encode("utf-8"),
+                            None,
+                            False,
+                            Gio.FileCreateFlags.PRIVATE,
+                            None,
+                        )
+                        self.export_status.set_text("Monitoring snapshot exported")
+                except (OSError, ValueError, GLib.Error) as error:
+                    self.export_status.set_text(
+                        f"Export failed: {type(error).__name__}"
+                    )
+                finally:
+                    chooser.destroy()
+                    self.export_dialog = None
+
+            dialog.connect("response", save)
+            dialog.show()
 
         def add_preferences(self, notebook):
             page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
@@ -625,7 +879,15 @@ def build_application(options):
             )
             note.set_wrap(True)
             page.append(note)
-            buttons = Gtk.Box(spacing=12)
+            buttons = Gtk.FlowBox(
+                min_children_per_line=1,
+                max_children_per_line=4,
+                column_spacing=8,
+                row_spacing=4,
+                selection_mode=Gtk.SelectionMode.NONE,
+                activate_on_single_click=False,
+                halign=Gtk.Align.START,
+            )
             for title, handler in (
                 ("Resolver options…", self.open_settings),
                 ("Preview command", self.preview_launch),
@@ -686,7 +948,7 @@ def build_application(options):
                 if enabled:
                     features.append(caption)
             self.launch_summary.set_text(
-                f"DNS {config.listen}:{config.port} · "
+                f"DNS {config.listen.replace(chr(10), ', ')} · port {config.port} · "
                 + (
                     f"metrics 127.0.0.1:{config.metrics_port}"
                     if config.metrics
@@ -736,6 +998,17 @@ def build_application(options):
             )
             note.set_wrap(True)
             page.append(note)
+            exports = Gtk.Box(spacing=12)
+            self.export_button = Gtk.Button(label="Export monitoring snapshot…")
+            self.export_button.set_tooltip_text(
+                "Save aggregate metrics and resource readings as JSON. URLs, startup arguments, file paths and resolver logs are excluded."
+            )
+            self.export_button.connect("clicked", self.export_monitoring)
+            exports.append(self.export_button)
+            self.export_status = self.label("Aggregate metrics only", "dim-label")
+            self.export_status.set_wrap(True)
+            exports.append(self.export_status)
+            page.append(exports)
             self.log_status = self.label(
                 "No GUI-owned resolver has been started", "dim-label"
             )
@@ -873,6 +1146,7 @@ def build_application(options):
             self.epoch += 1
             self.rates.reset()
             self.latencies.reset()
+            self.telemetry.reset()
             self.pause.set_label("Resume" if self.pause.get_active() else "Pause")
             if hasattr(self, "auto_refresh"):
                 self.auto_refresh.set_active(not self.pause.get_active())
@@ -883,6 +1157,7 @@ def build_application(options):
             self.epoch += 1
             self.rates.reset()
             self.latencies.reset()
+            self.telemetry.reset()
             self.last_started = 0
 
         def instance_changed(self, *_args, force=False):
@@ -974,6 +1249,7 @@ def build_application(options):
         def finish_sample(self, epoch, result):
             self.busy = False
             if not self.closed and epoch == self.epoch:
+                self.collection_seconds = max(0.0, time.monotonic() - self.last_started)
                 self.apply(result)
             if self.pending_sample and not self.closed and self.monitor_connected:
                 self.pending_sample = False
@@ -1031,6 +1307,7 @@ def build_application(options):
             ):
                 self.set_label(self.status, "No fresh data · last values retained")
                 self.overview.add_css_class("stale")
+                self.monitoring_page.add_css_class("stale")
             age = (
                 f" · Last good traffic sample {int(now - self.last_success)} s ago"
                 if self.last_success
@@ -1042,6 +1319,12 @@ def build_application(options):
                 if self.monitor_connected
                 else "Disconnected · statistics held",
             )
+            self.set_label(
+                self.values["sample_age"],
+                f"{max(0.0, now - self.last_success):.1f} s"
+                if self.last_success is not None
+                else "—",
+            )
             return True
 
         @staticmethod
@@ -1051,6 +1334,9 @@ def build_application(options):
 
         def apply(self, snapshot):
             previous = self.good_snapshot
+            telemetry = self.telemetry.update(snapshot)
+            if telemetry.status == "reset":
+                self.baseline_resets += 1
             # An absent /proc read is not proof of a different resolver. Clear
             # retained values only after a confirmed identity/endpoint change.
             changed = previous and (
@@ -1065,12 +1351,10 @@ def build_application(options):
                 )
             )
             if previous and snapshot.metrics and previous.identity == snapshot.identity:
-                changed = changed or any(
-                    snapshot.metrics.get("dnsp_queries_total", transport=t)
-                    < previous.metrics.get("dnsp_queries_total", transport=t)
-                    for t in ("udp", "tcp")
-                )
+                changed = changed or not same_instance(previous, snapshot)
             if changed:
+                if telemetry.status != "reset":
+                    self.baseline_resets += 1
                 self.clear_history()
                 self.rates.reset()
                 self.latencies.reset()
@@ -1116,6 +1400,11 @@ def build_application(options):
                     else "Waiting for the first traffic sample",
                 )
                 self.overview.add_css_class("stale")
+                self.monitoring_page.add_css_class("stale")
+                self.set_label(
+                    self.values["sample_state"],
+                    "No fresh metrics · last interval retained",
+                )
                 if not retained:
                     self.show_settings(process.invocation if process else None)
                     if process:
@@ -1152,7 +1441,9 @@ def build_application(options):
                     )
                 return
             self.overview.remove_css_class("stale")
+            self.monitoring_page.remove_css_class("stale")
             self.good_snapshot = snapshot
+            self.telemetry_frame = telemetry
             if (
                 self.owned_process is not None
                 and process
@@ -1181,6 +1472,14 @@ def build_application(options):
             # blank the displayed frame between two successful snapshots.
             before = {key: label.get_text() for key, label in self.values.items()}
             frame = {key: "—" for key in self.values}
+            frame.update(self.telemetry_labels(telemetry))
+            frame["sample_age"] = "0.0 s"
+            frame["sample_resets"] = number(self.baseline_resets)
+            frame["collection_ms"] = (
+                f"{self.collection_seconds * 1000:.1f} ms"
+                if self.collection_seconds is not None
+                else "—"
+            )
             if (
                 previous
                 and not changed
@@ -1582,6 +1881,9 @@ def build_application(options):
                 if self.settings_window.chooser:
                     self.settings_window.chooser.destroy()
                 self.settings_window.destroy()
+            if self.export_dialog is not None:
+                self.export_dialog.destroy()
+                self.export_dialog = None
             from gi.repository import Gdk
 
             Gtk.StyleContext.remove_provider_for_display(

@@ -66,6 +66,7 @@ jobs:
           DNSP_GUI_SOURCE=/usr/share/dnsp-modern-gui /usr/bin/python3 tests/test_gui_platforms.py
           DNSP_GUI_SOURCE=/usr/share/dnsp-modern-gui /usr/bin/python3 tests/test_gui_process.py
           DNSP_GUI_SOURCE=/usr/share/dnsp-modern-gui /usr/bin/python3 tests/test_gui_settings.py
+          DNSP_GUI_SOURCE=/usr/share/dnsp-modern-gui /usr/bin/python3 tests/test_gui_telemetry.py
       - name: Test GTK with real incoming DNS queries and save screenshots
         env:
           DNSP_GUI_SOURCE: /usr/share/dnsp-modern-gui

@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import ipaddress
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -58,6 +59,16 @@ class ResolverConfig:
     hedge_ms: str = "100"
     blocklist: str = ""
     ca_file: str = ""
+    allowlist: str = ""
+    block_response: str = "refused"
+    blocklist_reload_ms: str = "5000"
+    max_host_connections: str = "8"
+    tcp_max_per_source: str = "32"
+    tcp_idle_ms: str = "15000"
+    tcp_io_ms: str = "15000"
+    doh_connect_ms: str = "1500"
+    doh_timeout_ms: str = "3000"
+    udp_reply_max: str = "1232"
     cache: bool = True
     metrics: bool = True
     padding: bool = False
@@ -66,7 +77,15 @@ class ResolverConfig:
     hedge: bool = False
     filtering: bool = False
 
-    def argv(self):
+    def argv(self, *, check_blocklists=False):
+        """Return native arguments with the resolver's bounds and dependencies.
+
+        Listener addresses are separated by commas or lines. Policy paths use
+        one complete path per line, so spaces and shell punctuation stay literal.
+        ``check_blocklists`` is the CLI's validation-only mode, not a service
+        operation; callers must capture its output and bound its lifetime.
+        """
+
         def integer(value, low, high, name):
             if (
                 not str(value).isascii()
@@ -100,10 +119,21 @@ class ResolverConfig:
             )
         if not self.binary.strip() or "\x00" in self.binary:
             raise ValueError("Choose the dnsp-modern executable")
-        ipaddress.ip_address(self.listen)
+        listeners = [
+            value.strip() for value in re.split(r"[,\n]", self.listen) if value.strip()
+        ]
+        if not 1 <= len(listeners) <= 8:
+            raise ValueError(
+                "Choose 1..8 numeric listen addresses, one per line or separated by commas"
+            )
+        for address in listeners:
+            ipaddress.ip_address(address)
         minimum = 1 if sys.platform == "win32" else 1024
         port = integer(self.port, minimum, 65535, "DNS port for a user process")
-        command = [self.binary, "-l", self.listen, "-p", port, "-s", url(self.upstream)]
+        command = [self.binary]
+        for address in listeners:
+            command += ["-l", address]
+        command += ["-p", port, "-s", url(self.upstream)]
         if self.metrics:
             metric = integer(self.metrics_port, minimum, 65535, "Metrics port")
             if metric == port:
@@ -126,19 +156,103 @@ class ResolverConfig:
             if self.backup_bootstrap:
                 ipaddress.ip_address(self.backup_bootstrap)
                 command += ["--backup-bootstrap-address", self.backup_bootstrap]
+        limits = (
+            (
+                "--max-host-connections",
+                self.max_host_connections,
+                1,
+                16,
+                "Upstream connection limit",
+            ),
+            (
+                "--tcp-max-per-source",
+                self.tcp_max_per_source,
+                1,
+                128,
+                "TCP connections per source",
+            ),
+            ("--tcp-idle-ms", self.tcp_idle_ms, 100, 600000, "TCP idle timeout (ms)"),
+            (
+                "--tcp-io-ms",
+                self.tcp_io_ms,
+                100,
+                600000,
+                "TCP read/write deadline (ms)",
+            ),
+            (
+                "--doh-connect-ms",
+                self.doh_connect_ms,
+                100,
+                60000,
+                "DoH connection deadline (ms)",
+            ),
+            (
+                "--doh-timeout-ms",
+                self.doh_timeout_ms,
+                100,
+                60000,
+                "DoH total deadline (ms)",
+            ),
+            (
+                "--udp-reply-max",
+                self.udp_reply_max,
+                512,
+                4096,
+                "UDP reply ceiling (bytes)",
+            ),
+        )
+        for option, value, low, high, caption in limits:
+            command += [option, integer(value, low, high, caption)]
+        if int(self.doh_connect_ms) > int(self.doh_timeout_ms):
+            raise ValueError(
+                "DoH connection deadline must not exceed the total deadline"
+            )
         if self.hedge:
             if not self.backup_enabled:
                 raise ValueError("Delayed parallel requests require a backup upstream")
-            command += [
-                "--upstream-hedge-ms",
-                integer(self.hedge_ms, 1, 60000, "Hedge delay"),
+            delay = integer(self.hedge_ms, 1, 60000, "Hedge delay")
+            if int(delay) >= int(self.doh_timeout_ms):
+                raise ValueError("Hedge delay must be below the DoH total deadline")
+            command += ["--upstream-hedge-ms", delay]
+        if self.filtering or check_blocklists:
+            deny = [
+                value.strip() for value in self.blocklist.splitlines() if value.strip()
             ]
-        for enabled, value, option in (
-            (self.filtering, self.blocklist, "--blocklist"),
-            (bool(self.ca_file), self.ca_file, "--ca-file"),
-        ):
-            if enabled:
-                if not value or not Path(value).is_file():
-                    raise ValueError(f"Choose an existing file for {option}")
-                command += [option, value]
+            allow = [
+                value.strip() for value in self.allowlist.splitlines() if value.strip()
+            ]
+            if not deny:
+                raise ValueError("Choose an existing file for --blocklist")
+            if len(deny) + len(allow) > 64:
+                raise ValueError(
+                    "Blocklists and allowlists may use at most 64 files in total"
+                )
+            for option, paths in (("--blocklist", deny), ("--allowlist", allow)):
+                for path in paths:
+                    if "\x00" in path or not Path(path).is_file():
+                        raise ValueError(f"Choose an existing file for {option}")
+                    command += [option, path]
+            if self.block_response not in {"refused", "nxdomain", "nodata", "null"}:
+                raise ValueError(
+                    "Block response must be refused, nxdomain, nodata or null"
+                )
+            reload_ms = integer(
+                self.blocklist_reload_ms, 0, 86400000, "Blocklist reload interval (ms)"
+            )
+            if 0 < int(reload_ms) < 100:
+                raise ValueError(
+                    "Blocklist reload interval must be 0 or 100..86400000 ms"
+                )
+            command += [
+                "--block-response",
+                self.block_response,
+                "--blocklist-reload-ms",
+                reload_ms,
+            ]
+            if check_blocklists:
+                command += ["--check-blocklists"]
+        if self.ca_file:
+            if "\x00" in self.ca_file or not Path(self.ca_file).is_file():
+                raise ValueError("Choose an existing file for --ca-file")
+            command += ["--ca-file", self.ca_file]
         return command

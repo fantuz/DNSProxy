@@ -14,7 +14,7 @@ GROUPS = (
         "Local listeners",
         (
             ("binary", "Resolver executable", "file"),
-            ("listen", "Listen address", "text"),
+            ("listen", "Listen addresses (up to 8)", "lines"),
             ("port", "DNS port", "text"),
             ("metrics_port", "Metrics port", "text"),
         ),
@@ -41,9 +41,29 @@ GROUPS = (
         "Cache and filtering",
         (
             ("cache_entries", "Cache entries", "text"),
-            ("blocklist", "Blocklist file", "file"),
+            ("blocklist", "Blocklist files (one per line)", "files"),
+            ("allowlist", "Allowlist files (one per line)", "files"),
+            (
+                "block_response",
+                "Block response (refused / nxdomain / nodata / null)",
+                "text",
+            ),
+            ("blocklist_reload_ms", "File check interval (ms; 0 disables)", "text"),
         ),
         (("cache", "Enable DNS cache"), ("filtering", "Enable domain filtering")),
+    ),
+    (
+        "Connection limits and deadlines",
+        (
+            ("max_host_connections", "Upstream connections (1–16)", "text"),
+            ("tcp_max_per_source", "TCP connections per source (1–128)", "text"),
+            ("tcp_idle_ms", "TCP idle timeout (ms)", "text"),
+            ("tcp_io_ms", "TCP read/write deadline (ms)", "text"),
+            ("doh_connect_ms", "DoH connection deadline (ms)", "text"),
+            ("doh_timeout_ms", "DoH total deadline (ms)", "text"),
+            ("udp_reply_max", "UDP reply ceiling (512–4096 bytes)", "text"),
+        ),
+        (),
     ),
 )
 
@@ -62,6 +82,24 @@ def edited_config(config, texts, displayed, checks):
 
 
 def create_settings_window(parent, config, on_apply, Gtk):
+    class MultilineField(Gtk.TextView):
+        """Retain the entry editing boundary used by native interface tests."""
+
+        def __init__(self):
+            super().__init__(hexpand=True)
+            self.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+            self.set_top_margin(6)
+            self.set_bottom_margin(6)
+            self.set_left_margin(6)
+            self.set_right_margin(6)
+
+        def get_text(self):
+            buffer = self.get_buffer()
+            return buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
+
+        def set_text(self, text):
+            self.get_buffer().set_text(text)
+
     class SettingsWindow(Gtk.Window):
         def __init__(self):
             super().__init__(
@@ -105,23 +143,44 @@ def create_settings_window(parent, config, on_apply, Gtk):
                 for row, (key, caption, kind) in enumerate(entries):
                     label = Gtk.Label(label=caption, xalign=0, wrap=True)
                     label.set_max_width_chars(23)
-                    entry = Gtk.Entry(hexpand=True)
+                    entry = (
+                        MultilineField()
+                        if kind in {"lines", "files"}
+                        else Gtk.Entry(hexpand=True)
+                    )
+                    widget = entry
+                    if kind in {"lines", "files"}:
+                        widget = Gtk.ScrolledWindow(hexpand=True)
+                        widget.set_policy(
+                            Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC
+                        )
+                        widget.set_min_content_height(74)
+                        widget.set_max_content_height(112)
+                        widget.set_child(entry)
+                        entry.set_tooltip_text(
+                            "One complete file path per line. Spaces are part of the path; Browse appends a file."
+                            if kind == "files"
+                            else "One numeric IPv4 or IPv6 address per line; commas are also accepted."
+                        )
                     label.set_mnemonic_widget(entry)
                     grid.attach(label, 0, row, 1, 1)
-                    if kind == "file":
+                    if kind in {"file", "files"}:
                         field = Gtk.Box(spacing=6, hexpand=True)
-                        field.append(entry)
+                        field.append(widget)
                         browse = Gtk.Button(label="Browse…")
                         browse.connect(
                             "clicked",
-                            lambda _button, target=entry, name=caption: self.browse(
-                                target, name
+                            lambda _button,
+                            target=entry,
+                            name=caption,
+                            append=kind == "files": self.browse(
+                                target, name, append=append
                             ),
                         )
                         field.append(browse)
                         grid.attach(field, 1, row, 1, 1)
                     else:
-                        grid.attach(entry, 1, row, 1, 1)
+                        grid.attach(widget, 1, row, 1, 1)
                     if kind == "url":
                         entry.set_tooltip_text(
                             "Saved credentials, query parameters and fragments are hidden. Leaving this field unchanged retains the original full URL; editing it replaces that URL."
@@ -191,7 +250,7 @@ def create_settings_window(parent, config, on_apply, Gtk):
                 self.chooser = None
             return True
 
-        def browse(self, target, caption):
+        def browse(self, target, caption, *, append=False):
             if self.chooser:
                 self.chooser.show()
                 return
@@ -208,7 +267,11 @@ def create_settings_window(parent, config, on_apply, Gtk):
                 if response == Gtk.ResponseType.ACCEPT:
                     chosen = dialog.get_file()
                     if chosen and chosen.get_path():
-                        target.set_text(chosen.get_path())
+                        path = chosen.get_path()
+                        previous = target.get_text().strip()
+                        target.set_text(
+                            previous + "\n" + path if append and previous else path
+                        )
                 dialog.destroy()
                 self.chooser = None
 

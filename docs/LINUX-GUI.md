@@ -134,10 +134,11 @@ Do not run the GUI with `sudo` or change the system DNS settings just to try it.
 | Latency | Estimated client-reply and completed-upstream-attempt p50/p95/p99 over the last 60 sampling intervals |
 | Startup options | Disabled On/Off radio pairs and an invocation table showing explicit values versus defaults |
 | Preferences | Live refresh interval, socket timeout, bounded history size, automatic refresh and chart visibility |
-| Resolver options | Grouped local-listener, DoH-upstream and cache/filtering settings with file selection and validation for the next GUI-owned run |
+| Resolver options | Grouped listeners, upstreams, policy files, connection limits and deadlines with file selection and validation for the next GUI-owned run |
 | Launch resolver | Redacted CLI preview and start/stop of a separate unprivileged resolver |
-| Diagnostics | Bounded, selectable, URL-redacted output and startup/exit errors from the GUI-owned resolver |
+| Diagnostics | Bounded, selectable, URL-redacted output and startup/exit errors from the GUI-owned resolver; aggregate JSON monitoring export |
 | How to read this | Counter meanings, limitations and troubleshooting |
+| Monitoring | Consecutive-sample outcomes, endpoint and transfer-phase diagnostics, cache occupancy, policy freshness, capacity pressure and TCP rejections/timeouts |
 
 Network configuration appears in **Startup options**: listen addresses, DNS and
 metrics ports, upstream URLs, bootstrap addresses, transport preference,
@@ -195,6 +196,12 @@ saves valid settings for the next owned run. **Preview command** validates the
 draft and displays a command with URL credentials/query values hidden.
 Start resolver uses the same argument list directly, with no shell. Demo mode
 allows preview but disables launching.
+
+The advanced groups add repeated listen addresses and policy files, allowlists,
+block response/reload settings, connection limits, TCP/DoH deadlines and the UDP
+reply ceiling. Policy files use one literal path per line. See the
+[shared desktop guide](DESKTOP-GUI.md#interval-monitoring-and-diagnostics) for
+interval definitions, capacity indicators and JSON export contents.
 
 The form defaults to loopback, DNS port 5300, metrics port 9090 and a 256-entry
 cache. It runs as your desktop user and accepts ports 1024–65535. It never edits

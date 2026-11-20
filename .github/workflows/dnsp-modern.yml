@@ -64,6 +64,7 @@ jobs:
       protocols: ${{ steps.pr.outputs.protocols }}
       windows: ${{ steps.pr.outputs.windows }}
       macos: ${{ steps.pr.outputs.macos }}
+      measure_macos: ${{ steps.pr.outputs.measure_macos }}
       gui: ${{ steps.pr.outputs.gui }}
       containers: ${{ steps.pr.outputs.containers }}
     steps:
@@ -89,6 +90,7 @@ jobs:
           python3 tests/test_gui_platforms.py -v
           python3 tests/test_gui_process.py -v
           python3 tests/test_gui_settings.py -v
+          python3 tests/test_gui_telemetry.py -v
           python3 tests/test_gui_macos_launcher.py -v
           python3 tests/test_windows_gui_bundle.py -v
           python3 tests/test_gui_bootstrap.py -v
@@ -117,7 +119,8 @@ jobs:
           check_paths windows "${common[@]}" bench/ tests/ packaging/windows/ docs/WINDOWS.md \
             scripts/build-windows.sh scripts/build-windows-installer.ps1 scripts/bundle-windows.py scripts/build-windows-gui-bundle.py packaging/windows/gui-bootstrap.py tools/desktop-gui/ scripts/run-windows-tests.py ci/ scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-windows.yml .github/workflows/dnsp-windows-gui.yml
           check_paths macos "${common[@]}" bench/ tests/ packaging/macos/ docs/MACOS.md \
-            scripts/build-macos.sh tools/desktop-gui/ scripts/update-blocklist.py docs/BLOCKLISTS.md docs/MACOS-GUI.md docs/DESKTOP-GUI.md .github/workflows/dnsp-modern-macos.yml
+            scripts/build-macos.sh scripts/measure-macos-build.py tools/desktop-gui/ scripts/update-blocklist.py docs/BLOCKLISTS.md docs/MACOS-GUI.md docs/DESKTOP-GUI.md .github/workflows/dnsp-modern-macos.yml
+          check_paths measure_macos scripts/build-macos.sh scripts/measure-macos-build.py .github/workflows/dnsp-modern-macos.yml
           check_paths gui "${common[@]}" packaging/gui/ scripts/build-gui-deb.sh scripts/test-gui-package.py tools/desktop-gui/ tools/linux-gui/ 'tests/test_gui_*.py' \
             docs/LINUX-GUI.md docs/DESKTOP-GUI.md docs/MACOS-GUI.md docs/images/ scripts/build-windows-gui-bundle.py packaging/windows/ .github/workflows/dnsp-linux-gui-poc.yml .github/workflows/dnsp-windows-gui.yml
           check_paths containers "${common[@]}" ci/ Dockerfile .dockerignore compose.yaml packaging/container/ \
@@ -382,6 +385,7 @@ jobs:
     uses: ./.github/workflows/dnsp-modern-macos.yml
     with:
       ref: ${{ needs.plan.outputs.commit }}
+      measure_build: ${{ needs.plan.outputs.measure_macos == 'true' }}
 
   gui-runtime:
     needs: plan
