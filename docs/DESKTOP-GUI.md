@@ -5,10 +5,10 @@ and diagnostics views on Linux, Windows and macOS. The C resolver remains
 independent of Python/GTK. The desktop runs as an ordinary user and does not
 install services or change adapter DNS settings.
 
-Release 4.10.0 includes the shared interface in Linux GUI packages, Windows
-desktop installers and native Mac archives with the Homebrew launcher. See the
-[4.10.0 release notes](releases/4.10.0.md) and the release asset list for the
-matching platform downloads.
+The shared interface ships in Linux GUI packages, Windows desktop installers
+and native Mac archives with the Homebrew launcher. Release 4.11.0 adds client
+DNS response codes, interval monitoring and validation of filtering files.
+See the [4.11.0 release notes](releases/4.11.0.md).
 
 ## Platform delivery
 

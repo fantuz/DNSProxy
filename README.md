@@ -48,11 +48,11 @@ by the interface. Monitoring an existing service is read-only. Linux packages,
 bundled Windows desktop installers and a Homebrew-based Mac launcher provide
 the platform-specific distribution formats.
 
-Release **v4.10.0-modern** contains 22 deliverables plus `SHA256SUMS`: Linux
+Release **v4.11.0-modern** contains 22 deliverables plus `SHA256SUMS`. These include Linux
 daemon/GUI packages, Windows portable ZIPs, resolver/service and bundled desktop
 setup EXEs, matching desktop-runtime source ZIPs, and native macOS archives with
 the Homebrew GUI launcher. Each build records its source revision in addition
-to the version number. See the [4.10.0 release notes](docs/releases/4.10.0.md).
+to the version number. See the [4.11.0 release notes](docs/releases/4.11.0.md).
 
 [Windows setup guide](docs/WINDOWS.md)
 · [macOS setup guide](docs/MACOS.md)
@@ -599,6 +599,9 @@ before supplying a replacement. See
 
 ## Packages and releases
 
+The [4.11.0 release notes](docs/releases/4.11.0.md) cover DNS outcome metrics,
+HTTPS/SVCB and negative caching, desktop settings validation, Windows service
+reconfiguration and measured Apple Silicon build times.
 The [4.10.0 release notes](docs/releases/4.10.0.md) describe the shared desktop
 interface, native Windows GUI installers and Homebrew Mac launcher.
 See the [4.9.0 release notes](docs/releases/4.9.0.md) for faster desktop
