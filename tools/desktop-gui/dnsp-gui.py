@@ -278,8 +278,10 @@ def build_application(options):
             self.metric_cards = cards
             overview.append(cards)
             interval_health = self.group(
-                "Recent interval · completed attempts and cache lookups",
+                "Recent interval · client replies and upstream attempts",
                 [
+                    ("health_answers", "NOERROR / NXDOMAIN"),
+                    ("health_errors", "SERVFAIL / REFUSED"),
                     ("health_failure", "Failed upstream attempts"),
                     ("health_cache", "Cache hit ratio"),
                     ("health_reuse", "Reused upstream attempts"),
@@ -570,6 +572,14 @@ def build_application(options):
                     ],
                 ),
                 (
+                    "Client DNS replies · recent interval",
+                    [
+                        ("recent_answers", "NOERROR / NXDOMAIN"),
+                        ("recent_dns_errors", "SERVFAIL / REFUSED"),
+                        ("recent_dns_other", "FORMERR / NOTIMP / BADVERS / Other"),
+                    ],
+                ),
+                (
                     "Endpoints and transfer phases · recent interval",
                     [
                         ("recent_primary", "Primary attempts / replies / failures"),
@@ -625,12 +635,20 @@ def build_application(options):
             def pair(*keys):
                 return " / ".join(number(counts.get(key)) for key in keys)
 
+            def outcomes(*codes):
+                return " / ".join(number(telemetry.rcodes.get(code)) for code in codes)
+
             def capacity(used, total, key):
                 label = number(gauges.get(used)) + " / " + number(gauges.get(total))
                 value = telemetry.capacity_percentages.get(key)
                 return label + (f" · {value:.1f}%" if value is not None else "")
 
             result = {
+                "health_answers": outcomes("NOERROR", "NXDOMAIN"),
+                "health_errors": outcomes("SERVFAIL", "REFUSED"),
+                "recent_answers": outcomes("NOERROR", "NXDOMAIN"),
+                "recent_dns_errors": outcomes("SERVFAIL", "REFUSED"),
+                "recent_dns_other": outcomes("FORMERR", "NOTIMP", "BADVERS", "OTHER"),
                 "health_failure": percent(percentages.get("failure")),
                 "health_cache": percent(percentages.get("cache_hit")),
                 "health_reuse": percent(percentages.get("reuse")),

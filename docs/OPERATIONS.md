@@ -83,6 +83,8 @@ role-labelled wins and `dnsp_upstream_hedges_inflight`. Compare percentiles and
 upstream request volume with the default sequential mode before enabling it
 permanently. See [the upstream policy](UPSTREAM_FAILOVER.md).
 
+`dnsp_client_responses_total{rcode="SERVFAIL"}` counts completed writes of DNS replies to clients. The desktop shows interval counts on Overview and Monitoring and includes them in the diagnostics export. NOERROR, FORMERR, SERVFAIL, NXDOMAIN, NOTIMP, REFUSED and BADVERS have individual labels. Remaining codes use OTHER. Each coalesced recipient counts separately. A provider can return a valid DoH exchange carrying SERVFAIL; transport success and the DNS outcome measure different stages.
+
 ## Inspect live capacity
 
 | Gauge | Meaning |

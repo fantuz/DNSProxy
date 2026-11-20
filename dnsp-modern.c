@@ -252,6 +252,7 @@ struct Client {
     struct sockaddr_storage source;
     unsigned char length[2];
     unsigned char *in,*out;
+    unsigned out_rcode;
     bool busy,read_eof,out_satisfies_query;uint64_t generation,queries_started;
     uint64_t idle_since_ms,frame_deadline,write_deadline,query_started_ms,out_started_ms;
 };
@@ -282,6 +283,10 @@ enum { LATENCY_BUCKETS=14 };
 static const double latency_bounds[LATENCY_BUCKETS]={
     .001,.0025,.005,.01,.025,.05,.1,.25,.5,1,2.5,5,10,60
 };
+enum { RCODE_BADVERS=6, RCODE_OTHER, RCODE_BUCKETS };
+static const char *const rcode_labels[RCODE_BUCKETS]={
+    "NOERROR","FORMERR","SERVFAIL","NXDOMAIN","NOTIMP","REFUSED","BADVERS","OTHER"
+};
 typedef struct {uint64_t buckets[LATENCY_BUCKETS],count;double sum,max;} Histogram;
 typedef struct {
     uint64_t udp_queries,tcp_queries,queries_satisfied,invalid_queries,overload,upstream_requests,
@@ -290,7 +295,7 @@ typedef struct {
       http1,http2,http3,socket_callbacks,timer_callbacks,timer_fires,
       tcp_accepted,tcp_rejected_source,tcp_rejected_capacity,tcp_closed,tcp_keepalive_queries,tcp_pipeline_buffered,
       tcp_half_closes,tcp_idle_timeouts,tcp_io_timeouts,tcp_cancelled_upstream,cache_hits,cache_misses;
-    uint64_t udp_queries_coalesced;
+    uint64_t udp_queries_coalesced,client_rcodes[RCODE_BUCKETS];
     double upstream_seconds;
     PhaseTiming upstream_phase[PHASE_COUNT];
     Histogram client_latency[2],upstream_latency;
@@ -576,7 +581,9 @@ static void observe_latency(Histogram *hist,double seconds) {
     if(seconds>hist->max) hist->max=seconds;
     for(size_t i=0;i<LATENCY_BUCKETS;i++) if(seconds<=latency_bounds[i]) hist->buckets[i]++;
 }
-static void observe_client_latency(uint64_t started_ms,bool tcp) {
+static void record_client_reply(uint64_t started_ms,bool tcp,bool satisfied,unsigned bucket) {
+    metrics.client_rcodes[bucket]++;
+    if(satisfied) metrics.queries_satisfied++;
     uint64_t now=clock_ms();
     if(started_ms && now>=started_ms)
         observe_latency(&metrics.client_latency[tcp?1:0],(double)(now-started_ms)/1000.0);
@@ -603,7 +610,9 @@ static void close_client(Client *c) {
     c->frame_deadline=c->write_deadline=0;
     c->query_started_ms=c->out_started_ms=0;
 }
-static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_query) {
+static void reply_dns(Query *q,const unsigned char *p,size_t n,unsigned ext_rcode,bool satisfies_query) {
+    unsigned rcode=(ext_rcode<<4)|(p[3]&15);
+    unsigned bucket=rcode<=5?rcode:(rcode==16?RCODE_BADVERS:RCODE_OTHER);
     if(q->client) {
         Client *c=q->client;
         if(c->fd!=DNSP_BAD_SOCKET && c->generation==q->generation) {
@@ -614,6 +623,7 @@ static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_qu
             }
             c->out[0]=(unsigned char)(n>>8);c->out[1]=(unsigned char)n;
             memcpy(c->out+2,p,n);c->out_len=n+2;c->sent=0;
+            c->out_rcode=bucket;
             c->out_satisfies_query=satisfies_query;
             c->out_started_ms=q->started_ms;
             c->write_deadline=clock_ms()+tcp_io_ms;
@@ -621,15 +631,13 @@ static void reply_dns(Query *q,const unsigned char *p,size_t n,bool satisfies_qu
     } else {
         dnsp_ssize_t written=dnsp_send_udp(q->udp_fd,(const struct sockaddr*)&q->peer,q->peer_len,
                                           NULL,0,p,n,q->udp_local);
-        if(satisfies_query && written==(dnsp_ssize_t)n) metrics.queries_satisfied++;
-        if(written==(dnsp_ssize_t)n) observe_client_latency(q->started_ms,false);
+        if(written==(dnsp_ssize_t)n) record_client_reply(q->started_ms,false,satisfies_query,bucket);
         for(size_t i=0;i<q->udp_waiter_count;i++) {
             UdpWaiter *waiter=&q->udp_waiters[i];
             unsigned char id[]={ (unsigned char)(waiter->id>>8),(unsigned char)waiter->id };
             written=dnsp_send_udp(q->udp_fd,(const struct sockaddr*)&waiter->peer,waiter->peer_len,
                                   id,sizeof(id),p+2,n-2,waiter->local);
-            if(satisfies_query && written==(dnsp_ssize_t)n) metrics.queries_satisfied++;
-            if(written==(dnsp_ssize_t)n) observe_client_latency(waiter->started_ms,false);
+            if(written==(dnsp_ssize_t)n) record_client_reply(waiter->started_ms,false,satisfies_query,bucket);
         }
     }
 }
@@ -652,7 +660,7 @@ static void send_error(Query *q,const unsigned char *request,unsigned char rcode
     p[3]=(unsigned char)((p[3]&0x10)|(rcode&0x0f));
     if(length==DNS_HEADER) p[4]=p[5]=0;
     memset(p+6,0,6);
-    reply_dns(q,p,append_local_opt(q,p,length,0),false);
+    reply_dns(q,p,append_local_opt(q,p,length,0),0,false);
 }
 static void send_policy_block(Query *q,const unsigned char *request,bool alias) {
     size_t n=q->info.question_end;
@@ -664,7 +672,7 @@ static void send_policy_block(Query *q,const unsigned char *request,bool alias) 
     memset(p+6,0,6);
     if(q->info.has_opt && q->info.opt_version) {
         /* RFC 6891: negotiate EDNS(0), even when the name is locally denied. */
-        reply_dns(q,p,append_local_opt(q,p,n,1),false);return;
+        reply_dns(q,p,append_local_opt(q,p,n,1),1,false);return;
     }
     if(block_mode==BLOCK_REFUSED) p[3]|=5;
     else if(block_mode==BLOCK_NXDOMAIN) p[3]|=3;
@@ -683,7 +691,7 @@ static void send_policy_block(Query *q,const unsigned char *request,bool alias) 
     }
     policy_blocked_queries+=1+q->udp_waiter_count;
     if(alias) policy_blocked_aliases+=1+q->udp_waiter_count;
-    reply_dns(q,p,n,false);
+    reply_dns(q,p,n,0,false);
 }
 static void send_truncated(Query *q,const DnsInfo *response) {
     size_t n=q->info.question_end;
@@ -695,7 +703,7 @@ static void send_truncated(Query *q,const DnsInfo *response) {
     p[4]=0;p[5]=n>DNS_HEADER;
     memset(p+6,0,6);
     memcpy(p+DNS_HEADER,q->request+DNS_HEADER,n-DNS_HEADER);
-    reply_dns(q,p,append_local_opt(q,p,n,response->opt_ext_rcode),false);
+    reply_dns(q,p,append_local_opt(q,p,n,response->opt_ext_rcode),q->info.has_opt?response->opt_ext_rcode:0,false);
     metrics.truncated++;
 }
 static bool dns_content_type(const char *type) {
@@ -881,7 +889,7 @@ static bool cache_reply(Query *q,const unsigned char *request) {
     memcpy(reply,request,2);
     uint64_t age_ms=entry->age_ms+(now-entry->received_ms);
     for(size_t i=0;i<entry->ttls.count;i++) age_ttl(reply+entry->ttls.offset[i],(age_ms+999u)/1000u);
-    reply_dns(q,reply,entry->reply_len,true);
+    reply_dns(q,reply,entry->reply_len,0,true);
     return true;
 }
 static void record_client_query(Client *client) {
@@ -1278,7 +1286,7 @@ static void complete(Query *q,CURLcode code,bool deadline_expired) {
             unsigned rcode=q->response[3]&0x0f;
             bool satisfies_query=!(q->response[2]&0x02) && !response.opt_ext_rcode &&
                                  (rcode==0 || rcode==3); /* Complete NOERROR or NXDOMAIN. */
-            reply_dns(q,q->response,q->resp_len,satisfies_query);
+            reply_dns(q,q->response,q->resp_len,response.opt_ext_rcode,satisfies_query);
         }
     } else {
         metrics.upstream_failed++;q->upstream->failures++;
@@ -1485,8 +1493,8 @@ static void tcp_io(Client *c,short events) {
         else if(n<0 && dnsp_socket_retry()) return;
         else {close_client(c);return;}
         if(c->sent==c->out_len) {
-            if(c->out_satisfies_query) metrics.queries_satisfied++;
-            observe_client_latency(c->out_started_ms,true);c->out_started_ms=0;
+            record_client_reply(c->out_started_ms,true,c->out_satisfies_query,c->out_rcode);
+            c->out_started_ms=0;
             c->out_satisfies_query=false;
             free(c->out);c->out=NULL;
             c->out_len=c->sent=0;
@@ -1781,6 +1789,8 @@ static void metric_response(MetricClient *c) {
     int extra=snprintf(body+used,sizeof(body)-used,
         "# TYPE dnsp_build_info gauge\n"
         "dnsp_build_info{version=\"%s\",libcurl=\"%u.%u.%u\",http2=\"%s\",http3=\"%s\"} 1\n"
+        "# HELP dnsp_client_responses_total DNS replies fully written to clients, by wire response code.\n"
+        "# TYPE dnsp_client_responses_total counter\n"
         "# TYPE dnsp_client_duration_seconds histogram\n"
         "# TYPE dnsp_upstream_hedges_started_total counter\n"
         "dnsp_upstream_hedges_started_total %" PRIu64 "\n"
@@ -1798,6 +1808,12 @@ static void metric_response(MetricClient *c) {
         metrics.hedges_cancelled,metrics.hedge_primary_wins,metrics.hedge_backup_wins,parallel_backups());
     if(extra<0 || (size_t)extra>=sizeof(body)-used) {close_metric(c);return;}
     used+=(size_t)extra;
+    for(size_t i=0;i<RCODE_BUCKETS;i++) {
+        extra=snprintf(body+used,sizeof(body)-used,"dnsp_client_responses_total{rcode=\"%s\"} %" PRIu64 "\n",
+                       rcode_labels[i],metrics.client_rcodes[i]);
+        if(extra<0 || (size_t)extra>=sizeof(body)-used) {close_metric(c);return;}
+        used+=(size_t)extra;
+    }
     if(!append_histogram(body,sizeof(body),&used,"dnsp_client_duration_seconds","udp",&metrics.client_latency[0],true) ||
        !append_histogram(body,sizeof(body),&used,"dnsp_client_duration_seconds","tcp",&metrics.client_latency[1],true) ||
        !append_histogram(body,sizeof(body),&used,"dnsp_upstream_duration_seconds",NULL,&metrics.upstream_latency,false)) {

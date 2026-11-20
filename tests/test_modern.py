@@ -728,6 +728,11 @@ class Tests(unittest.TestCase):
                         with self.assertRaises(socket.timeout):
                             sock.recv(4096)
 
+                    outcome = "SERVFAIL" if expected_rcode else "NOERROR"
+                    key = f'dnsp_client_responses_total{{rcode="{outcome}"}}'
+                    self.assertEqual(self.metric(self.metrics(), key) - self.metric(before, key),
+                                     2 if expected_rcode else 12)
+
     def test_coalesced_no_store_response_retries_waiter(self):
         gate = threading.Event()
         self.server.coalesce_gate = gate
@@ -1619,6 +1624,18 @@ class FailoverTests(unittest.TestCase):
                     self.assertEqual(primary.received, [packet])
                     self.assertEqual(backup.received, [packet])
                     self.assertLess(elapsed, 2.1)  # Two independent timeouts would take 2.4 s.
+
+    def test_written_dns_outcomes_are_independent_of_transport_success(self):
+        with self.endpoint() as primary, self.endpoint() as backup:
+            with self.proxy(self.url(primary), self.url(backup)) as (port, metrics):
+                for mode, code in (("answer", 0), ("nxdomain", 3), ("servfail", 2), ("refused", 5), ("http503", 2)):
+                    primary.mode = mode
+                    self.assertEqual(self.udp(port)[3] & 15, code)
+                stats = Tests.metrics(self, metrics)
+                for code, count in (("NOERROR", 1), ("NXDOMAIN", 1), ("SERVFAIL", 2), ("REFUSED", 1), ("OTHER", 0)):
+                    self.assertEqual(Tests.metric(stats, f'dnsp_client_responses_total{{rcode="{code}"}}'), count)
+                self.assertEqual(Tests.metric(stats, 'dnsp_upstream_success_total'), 4)
+                self.assertEqual(Tests.metric(stats, 'dnsp_queries_satisfied_total'), 2)
 
     def test_dns_results_and_http_errors_do_not_fail_over(self):
         with self.endpoint() as primary, self.endpoint() as backup:
