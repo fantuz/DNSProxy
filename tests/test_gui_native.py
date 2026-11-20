@@ -681,8 +681,21 @@ class NativeScenario:
                     editor.entries[key].set_text(value)
                 editor.checks["filtering"].set_active(True)
                 editor.checks["metrics"].set_active(True)
+                blocklist.write_text("invalid rule with extra fields\n")
                 editor.apply_button.emit("clicked")
-                assert not editor.get_visible()
+                wait_for(
+                    self.context,
+                    lambda: "validation failed" in editor.status_label.get_text(),
+                    "native blocklist parser diagnostic",
+                )
+                assert editor.get_visible() and window.launch_config == original
+                blocklist.write_text("blocked.example\n")
+                editor.apply_button.emit("clicked")
+                wait_for(
+                    self.context,
+                    lambda: not editor.get_visible(),
+                    "validated resolver settings",
+                )
                 assert window.launch_config.blocklist == str(blocklist)
                 window.pause.set_active(False)
                 if no_console:

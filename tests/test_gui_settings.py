@@ -60,6 +60,40 @@ class SettingsTests(unittest.TestCase):
             original.upstream, "https://user:secret@localhost/a?token=private"
         )
 
+    def test_pins_follow_provider_hosts_and_explicit_edits(self):
+        config = ResolverConfig(backup_enabled=True)
+        texts, displayed, checks = editor_values(config)
+        texts.update(
+            upstream="https://192.0.2.53/query", backup="https://provider.example/dns"
+        )
+        changed = edited_config(config, texts, displayed, checks)
+        self.assertNotIn("--bootstrap-address", changed.argv())
+        self.assertNotIn("--backup-bootstrap-address", changed.argv())
+        texts["backup_bootstrap"] = "192.0.2.4"
+        self.assertEqual(
+            edited_config(config, texts, displayed, checks).backup_bootstrap,
+            "192.0.2.4",
+        )
+        texts["backup_bootstrap"] = config.backup_bootstrap
+        self.assertEqual(
+            edited_config(
+                config, texts, displayed, checks, {"backup_bootstrap"}
+            ).backup_bootstrap,
+            config.backup_bootstrap,
+        )
+        texts["upstream"] = "https://CLOUDFLARE-DNS.COM./other"
+        self.assertEqual(
+            edited_config(config, texts, displayed, checks).bootstrap, config.bootstrap
+        )
+        for url in ("https://192.0.2.53/dns", "https://[2001:db8::1]/dns"):
+            with (
+                self.subTest(url=url),
+                self.assertRaisesRegex(ValueError, "numeric HTTPS"),
+            ):
+                replace(config, upstream=url).argv()
+        with self.assertRaisesRegex(ValueError, "different host or port"):
+            replace(config, backup="https://CLOUDFLARE-DNS.COM.:443/other").argv()
+
     def test_invalid_edit_does_not_mutate_the_original_configuration(self):
         original = ResolverConfig()
         texts, displayed, checks = editor_values(original)

@@ -5,6 +5,9 @@ The interaction follows the MIT-licensed entropy-service desktop options editor
 """
 
 from dataclasses import replace
+import threading
+
+from launcher import endpoint_host, validate_policy
 
 from monitor import display_value
 
@@ -68,7 +71,7 @@ GROUPS = (
 )
 
 
-def edited_config(config, texts, displayed, checks):
+def edited_config(config, texts, displayed, checks, edited_pins=()):
     """Apply actual edits without replacing a saved URL with its redacted view."""
     values = {}
     for key, text in texts.items():
@@ -77,11 +80,21 @@ def edited_config(config, texts, displayed, checks):
             values[key] = getattr(config, key)
         else:
             values[key] = text
+    for endpoint, pin in (("upstream", "bootstrap"), ("backup", "backup_bootstrap")):
+        if (
+            pin not in edited_pins
+            and values[pin] == getattr(config, pin)
+            and endpoint_host(values[endpoint])
+            != endpoint_host(getattr(config, endpoint))
+        ):
+            values[pin] = ""
     values.update(checks)
     return replace(config, **values)
 
 
 def create_settings_window(parent, config, on_apply, Gtk):
+    from gi.repository import GLib
+
     class MultilineField(Gtk.TextView):
         """Retain the entry editing boundary used by native interface tests."""
 
@@ -112,6 +125,9 @@ def create_settings_window(parent, config, on_apply, Gtk):
             self.entries, self.checks, self.controls = {}, {}, {}
             self.displayed = {}
             self.chooser = None
+            self.policy_check = None
+            self.edited_pins = set()
+            self.connect("unmap", lambda *_: self.cancel_check())
             self.set_default_size(760, 720)
             self.set_size_request(480, 400)
             self.set_titlebar(Gtk.HeaderBar())
@@ -185,6 +201,14 @@ def create_settings_window(parent, config, on_apply, Gtk):
                         entry.set_tooltip_text(
                             "Saved credentials, query parameters and fragments are hidden. Leaving this field unchanged retains the original full URL; editing it replaces that URL."
                         )
+                    if key in ("bootstrap", "backup_bootstrap"):
+                        entry.set_tooltip_text(
+                            "Changing the provider hostname clears its previous IP unless you also edit this field."
+                        )
+                        entry.connect(
+                            "changed",
+                            lambda _entry, name=key: self.edited_pins.add(name),
+                        )
                     self.entries[key] = self.controls[key] = entry
                 group.append(grid)
                 for key, caption in switches:
@@ -195,7 +219,7 @@ def create_settings_window(parent, config, on_apply, Gtk):
             self.status_label = Gtk.Label(xalign=0, wrap=True, selectable=True)
             body.append(self.status_label)
             buttons = Gtk.Box(spacing=8)
-            reset = Gtk.Button(label="Reset changes")
+            reset = self.reset_button = Gtk.Button(label="Reset changes")
             reset.connect("clicked", lambda *_: self.reset())
             buttons.append(reset)
             buttons.append(Gtk.Box(hexpand=True))
@@ -218,6 +242,7 @@ def create_settings_window(parent, config, on_apply, Gtk):
                 entry.set_text(value)
             for key, check in self.checks.items():
                 check.set_active(getattr(self.config, key))
+            self.edited_pins.clear()
             self.status_label.set_text("")
 
         def draft(self):
@@ -226,15 +251,24 @@ def create_settings_window(parent, config, on_apply, Gtk):
                 {key: entry.get_text() for key, entry in self.entries.items()},
                 self.displayed,
                 {key: check.get_active() for key, check in self.checks.items()},
+                self.edited_pins,
             )
 
-        def apply(self, *_):
+        def cancel_check(self):
+            if self.policy_check is not None:
+                self.policy_check.set()
+                self.policy_check = None
+                self.form.set_sensitive(True)
+                self.apply_button.set_sensitive(True)
+                self.reset_button.set_sensitive(True)
+
+        def finish_apply(self, changed, error=""):
             try:
-                changed = self.draft()
-                changed.argv()
+                if error:
+                    raise ValueError(error)
                 on_apply(changed)
-            except (ValueError, OSError) as error:
-                self.status_label.set_text(str(error))
+            except (ValueError, OSError) as failure:
+                self.status_label.set_text(str(failure))
                 self.status_label.add_css_class("error")
                 return
             self.config = changed
@@ -242,7 +276,45 @@ def create_settings_window(parent, config, on_apply, Gtk):
             self.status_label.remove_css_class("error")
             self.hide()
 
+        def apply(self, *_):
+            if self.policy_check is not None:
+                return
+            try:
+                changed = self.draft()
+                command = changed.argv(check_blocklists=changed.filtering)
+            except (ValueError, OSError) as error:
+                self.status_label.set_text(str(error))
+                self.status_label.add_css_class("error")
+                return
+            if not changed.filtering:
+                self.finish_apply(changed)
+                return
+            cancel = self.policy_check = threading.Event()
+            self.form.set_sensitive(False)
+            self.apply_button.set_sensitive(False)
+            self.reset_button.set_sensitive(False)
+            self.status_label.remove_css_class("error")
+            self.status_label.set_text("Checking policy files with the resolver…")
+
+            def finished(error):
+                if self.policy_check is cancel:
+                    self.cancel_check()
+                    self.finish_apply(changed, error)
+                return False
+
+            def check():
+                error = ""
+                try:
+                    validate_policy(command, cancel)
+                except (ValueError, OSError) as failure:
+                    error = str(failure)
+                if not cancel.is_set():
+                    GLib.idle_add(finished, error)
+
+            threading.Thread(target=check, name="DNSProxy policy validation").start()
+
         def close_requested(self, *_):
+            self.cancel_check()
             self.reset()
             self.hide()
             if self.chooser:

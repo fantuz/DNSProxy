@@ -86,7 +86,7 @@ platform's explicit tools.
 Select **Resolver options…** to choose a native executable and edit grouped
 listener, upstream, cache and filtering settings. File pickers select blocklists,
 CA bundles and executables. **Validate and apply** rejects invalid values without
-changing the current configuration. Unchanged redacted endpoint values retain
+changing the current configuration. Changing a provider hostname clears its previous bootstrap IP unless you explicitly edit that IP. Numeric HTTPS endpoints use their own address. With filtering enabled, the editor checks the files using the selected resolver and displays its diagnostic before applying the settings. Unchanged redacted endpoint values retain
 their original URL rather than overwriting hidden credentials/query parameters.
 
 The editor also exposes the resolver's advanced startup parameters: multiple
