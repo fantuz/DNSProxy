@@ -126,9 +126,8 @@ model; both implementations depend on native libcurl for HTTP/TLS/QUIC.
 ## Supported executable
 
 `make` builds `dnsp-modern`, the executable shipped in DNSProxy releases.
-The legacy `dnsp` and `dnsp-h2` compilation recipes have been removed from the
-current build. Their old target names print a retirement message, and the
-historical sources and CLI instructions are archived for reference.
+The [legacy guide](docs/README-legacy.md) links to the retired `dnsp-h2`
+source and preserves the original CLI examples.
 
 `dnsp-modern` supports **persistent DNS-over-TCP client sessions**, ordered
 sequential/pipelined messages, and an adjustable `--tcp-idle-ms` timeout. See
