@@ -16,7 +16,7 @@ import tempfile
 import threading
 import time
 
-from bench_modern import (await_quiescent, await_ready, free_port, make_certificate,
+from bench_modern import (await_quiescent, await_ready, free_port, free_ports, make_certificate,
                           metric_snapshot, one_load, proxy_cpu_rss)
 from mock_doh import MockServer
 
@@ -29,7 +29,7 @@ def generate(path, count, *, first='sentinel.invalid'):
 
 
 def sample(binary, upstream, cert, rules, duration, *, blocked=False, reload=False):
-    dns, metrics = free_port(), free_port()
+    dns, metrics = free_ports(2, exclude=(upstream.port,))
     command = [str(binary), '-p', str(dns), '-m', str(metrics),
                '-s', f'https://localhost:{upstream.port}/dns-query', '--ca-file', str(cert),
                '--bootstrap-address', '127.0.0.1']

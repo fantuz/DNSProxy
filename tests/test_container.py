@@ -18,7 +18,7 @@ import uuid
 
 BASE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BASE/'bench'))
-from bench_modern import await_ready, free_port, make_certificate, one_load  # noqa: E402
+from bench_modern import await_ready, free_port, free_ports, make_certificate, one_load  # noqa: E402
 from mock_doh import MockServer  # noqa: E402
 from test_http3 import quic_upstream  # noqa: E402
 from test_policy import exchange, question  # noqa: E402
@@ -65,9 +65,7 @@ class ContainerTests(unittest.IsolatedAsyncioTestCase):
 
     @contextmanager
     def proxy(self, upstream, *extra, network='host', address='127.0.0.1', rules=None):
-        dns_port, metrics_port = free_port(), free_port()
-        while metrics_port == dns_port:
-            metrics_port = free_port()
+        dns_port, metrics_port = free_ports(2, exclude=(upstream, 5300))
         args = ['run', '-d', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
                 '--network', network, '--health-interval=1s', '--health-start-period=1s',
                 '-e', f'DNSP_HEALTH_PORT={metrics_port}',

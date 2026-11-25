@@ -39,7 +39,8 @@ COUNTERS = [
 PHASES = ('queue', 'tls', 'first_byte')
 
 
-def free_port():
+def free_ports(count, *, exclude=()):
+    """Probe distinct loopback ports for listeners that will start together."""
     # DNS and QUIC fixtures need UDP as well as TCP at the selected port.
     # Probe outside the usual outbound ephemeral range. On Windows the UDP
     # allocator can repeatedly choose a port excluded for TCP by Hyper-V.
@@ -47,7 +48,10 @@ def free_port():
     stop = int(os.environ.get('DNSP_TEST_PORT_STOP', '18000'))
     if not 1024 <= start < stop <= 49152 or stop - start < 100:
         raise ValueError('Fixture port range needs at least 100 ports below 49152')
+    ports = []
     for port in random.sample(range(start, stop), 100):
+        if port in exclude:
+            continue
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp, \
              socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp:
             try:
@@ -58,8 +62,14 @@ def free_port():
                 tcp.bind(('127.0.0.1', port))
             except OSError:
                 continue
-            return port
-    raise RuntimeError('Could not reserve a TCP/UDP benchmark fixture port')
+            ports.append(port)
+            if len(ports) == count:
+                return ports
+    raise RuntimeError(f'Could not find {count} distinct TCP/UDP fixture ports')
+
+
+def free_port(*, exclude=()):
+    return free_ports(1, exclude=exclude)[0]
 
 
 def make_certificate(directory):
@@ -281,8 +291,7 @@ def run_suite(args, protocol, tmpdir):
     f = None
     try:
         upstream_port = args.mock_upstream_port or free_port()
-        proxy_port = free_port()
-        metrics_port = free_port()
+        proxy_port, metrics_port = free_ports(2, exclude=(upstream_port,))
         if args.upstream_url:
             url = args.upstream_url
             cert = None

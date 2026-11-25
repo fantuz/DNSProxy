@@ -15,7 +15,7 @@ import unittest
 BASE = Path(__file__).resolve().parent.parent
 BINARY = Path(os.environ.get('DNSP_TEST_BINARY', BASE/'dnsp-modern'))
 sys.path.insert(0, str(BASE/'bench'))
-from bench_modern import await_ready, free_port, make_certificate, metric_snapshot, one_load  # noqa: E402
+from bench_modern import await_ready, free_port, free_ports, make_certificate, metric_snapshot, one_load  # noqa: E402
 from mock_doh import MockServer  # noqa: E402
 
 
@@ -50,7 +50,7 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
 
     @contextmanager
     def proxy(self, upstream_port, cert, mode='prefer-h3', hostname='localhost', env=None, backup_port=None, hedge_ms=0):
-        dns_port, metrics_port = free_port(), free_port()
+        dns_port, metrics_port = free_ports(2, exclude=(upstream_port, backup_port))
         command = [str(BINARY), '-p', str(dns_port), '-m', str(metrics_port),
                    '-s', f'https://{hostname}:{upstream_port}/dns-query', '--ca-file', str(cert)]
         if mode is not None:
@@ -123,7 +123,7 @@ class Http3Tests(unittest.IsolatedAsyncioTestCase):
 
     async def test_h3_delayed_backup_wins_and_cancels_primary(self):
         async with self.upstream(http2=False) as (primary, cert, key):
-            backup = MockServer(free_port(), cert, key, delay_ms=5)
+            backup = MockServer(free_port(exclude=(primary.port,)), cert, key, delay_ms=5)
             async with quic_upstream(primary, cert, key), quic_upstream(backup, cert, key):
                 with self.proxy(primary.port, cert, backup_port=backup.port, hedge_ms=60) as (dns, metrics):
                     warm = await asyncio.to_thread(one_load, dns, 1, 0)
