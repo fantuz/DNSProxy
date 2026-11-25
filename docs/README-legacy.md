@@ -2,6 +2,8 @@
 
 > Archived instructions for the retired `dnsp` and `dnsp-h2` editions. The
 > [current README](../README.md) covers building and running `dnsp-modern`.
+> Git history preserves the final [`dnsp-h2.c` source](https://github.com/fantuz/DNSProxy/blob/c44f3e23ef4c59c000202a0092a939f7f4a391c4/dnsp-h2.c)
+> and its [contemporary Makefile](https://github.com/fantuz/DNSProxy/blob/c44f3e23ef4c59c000202a0092a939f7f4a391c4/Makefile).
 > Development notes below record historical plans for those retired editions.
 
 ## Why DNSProxy ?
