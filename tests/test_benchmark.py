@@ -15,11 +15,17 @@ BASE = Path(__file__).resolve().parent.parent
 BINARY = Path(os.environ.get('DNSP_TEST_BINARY', BASE/'dnsp-modern'))
 sys.path.insert(0, str(BASE/'bench'))
 from bench_modern import (DNS_QUESTION, EDNS_OPT, await_quiescent, await_ready,  # noqa: E402
-                          free_port, make_certificate, metric_snapshot, percentile, proxy_cpu_rss)
+                          free_ports, make_certificate, metric_snapshot, percentile, proxy_cpu_rss)
 from mock_doh import MockServer, make_response  # noqa: E402
 
 
 class BenchmarkUnitTests(unittest.TestCase):
+    def test_listener_ports_are_distinct_even_with_the_same_candidate_order(self):
+        # Identical candidate orders reproduce the former two-call collision.
+        with patch('bench_modern.random.sample', return_value=[12001, 12002, 12003]), \
+             patch('bench_modern.socket.socket'):
+            self.assertEqual(free_ports(2, exclude=(12001,)), [12002, 12003])
+
     def test_port_probe_skips_tcp_reservations_and_closes_both_sockets(self):
         import bench_modern
 
@@ -96,13 +102,14 @@ class BenchmarkIntegrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix='dnsp-hedge-h2-') as td, ExitStack() as cleanup:
             cert, key = make_certificate(Path(td))
-            primary = MockServer(free_port(), cert, key, delay_ms=5)
-            backup = MockServer(free_port(), cert, key, delay_ms=5)
+            primary_port, backup_port = free_ports(2)
+            primary = MockServer(primary_port, cert, key, delay_ms=5)
+            backup = MockServer(backup_port, cert, key, delay_ms=5)
             for upstream in (primary, backup):
                 upstream.start()
                 cleanup.callback(upstream.close)
                 await_ready(upstream.port, None, 'DoH mock')
-            port, metrics = free_port(), free_port()
+            port, metrics = free_ports(2, exclude=(primary_port, backup_port))
             command = [str(BINARY), '-p', str(port), '-m', str(metrics),
                        '-s', f'https://localhost:{primary.port}/dns-query',
                        '--backup-upstream', f'https://localhost:{backup.port}/dns-query',
@@ -154,7 +161,7 @@ class BenchmarkIntegrationTests(unittest.TestCase):
     def test_cold_h2_burst_uses_one_connection_at_default_cap(self):
         with tempfile.TemporaryDirectory(prefix='dnsp-cold-h2-') as td:
             cert, key = make_certificate(Path(td))
-            upstream_port, proxy_port, metrics_port = (free_port() for _ in range(3))
+            upstream_port, proxy_port, metrics_port = free_ports(3)
             upstream = MockServer(upstream_port, cert, key, protocol='h2', delay_ms=100)
             upstream.start()
             try:
