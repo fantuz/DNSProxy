@@ -15,6 +15,8 @@ jobs:
     name: Analyze dnsp-modern (C)
     runs-on: ubuntu-24.04
     permissions:
+      actions: read
+      checks: read
       contents: read
       security-events: write
     steps:
@@ -29,4 +31,37 @@ jobs:
           build-mode: manual
       - name: Build dnsp-modern
         run: make -B -f modern.mk dnsp-modern
+      - name: Select the CodeQL results publisher
+        id: reporting
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          runs="repos/$GITHUB_REPOSITORY/actions/runs"
+          managed=$(gh api --method GET "$runs" -f event=dynamic -f head_sha="$REVISION" \
+            --jq 'first(.workflow_runs[] | select(.path == "dynamic/github-code-scanning/codeql") | .id) // empty')
+          upload=always
+          if [[ -n "$managed" ]]; then
+            # Default setup owns the alerts. Verify its C/C++ scan for this revision.
+            gh run watch "$managed" --interval 15 --exit-status
+            result=$(gh api "$runs/$managed/jobs?per_page=100" \
+              --jq '.jobs[] | select(.name == "Analyze (c-cpp)") | .conclusion')
+            if [[ "$result" != success ]]; then
+              echo "::error::Managed CodeQL run $managed has no successful C/C++ analysis for $REVISION"
+              exit 1
+            fi
+            upload=never
+          fi
+          echo "upload=$upload" >> "$GITHUB_OUTPUT"
       - uses: github/codeql-action/analyze@v4
+        with:
+          upload: ${{ steps.reporting.outputs.upload }}
+          output: ${{ runner.temp }}/dnsp-codeql
+      - name: Preserve the compiled resolver analysis
+        if: steps.reporting.outputs.upload == 'never'
+        uses: actions/upload-artifact@v6
+        with:
+          name: dnsp-codeql-cpp
+          path: ${{ runner.temp }}/dnsp-codeql/*.sarif
+          if-no-files-found: error

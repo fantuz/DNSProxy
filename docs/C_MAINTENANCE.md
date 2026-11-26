@@ -67,6 +67,11 @@ along with CodeQL, parser fuzzing, and HTTP/2 and HTTP/3 checks selected for the
 files that changed. Require PR branches to be up to date before merging so the
 check covers the current base.
 
+When GitHub runs CodeQL default setup for a revision, CI verifies that its
+C/C++ scan succeeds and saves the compiled resolver analysis as the
+`dnsp-codeql-cpp` SARIF artifact. On revisions without a managed CodeQL run,
+the compiled analysis publishes to code scanning directly.
+
 Review CI for the target architectures. Package changes should pass the DEB and
 RPM jobs, including the install and removal checks. Keep source removals,
 build changes, and behavior changes in separate PRs when they can be verified
