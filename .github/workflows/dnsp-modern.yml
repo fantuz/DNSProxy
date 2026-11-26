@@ -350,6 +350,8 @@ jobs:
       !cancelled() && needs.plan.result == 'success' &&
       github.event_name == 'pull_request' && needs.plan.outputs.codeql == 'true'
     permissions:
+      actions: read
+      checks: read
       contents: read
       security-events: write
     uses: ./.github/workflows/codeql.yml
