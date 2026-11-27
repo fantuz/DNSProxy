@@ -46,6 +46,37 @@ A timeout, incorrect DNS answer, fallback from HTTP/2 or mismatch between
 client replies and upstream requests fails the run. The CI smoke test checks
 these conditions on a short workload.
 
+### Warm answers and the operating system resolver
+
+Add `--workloads miss hit` to measure both workloads at every client level.
+The miss case uses unique names with the cache disabled. The hit case enables
+each forwarder's cache, primes 16 positive A records one at a time, then changes
+the DNS transaction ID on every query. Priming must produce 16 upstream replies.
+Every timed hot window must have zero upstream requests and correct client
+replies. The fixture TTL is 60 s. Keep the hot phase short enough to fit the
+TTL. The report lists the runs and working-set size in `environment.json`.
+
+Add `--direct-udp` to measure the upstream fixture directly. For a comparison
+with Linux’s `systemd-resolved`, run the following after fetching the peers.
+Use a Linux machine with the OS daemon installed, `iproute2`, and permission
+to create mount and network namespaces. No host DNS config edits are needed.
+
+```sh
+sudo bench/compare-system-resolver.sh "$PWD/.bench-venv/bin/python" bench/compare_resolvers.py \
+  --adguard "$PWD/dist/doh-peers/dnsproxy" --dnscrypt "$PWD/dist/doh-peers/dnscrypt-proxy" \
+  --systemd-resolved /usr/lib/systemd/systemd-resolved --workloads miss hit \
+  --clients 1 8 32 --runs 3 --warmup .5 --duration 3 --delay-ms 1 \
+  --output "$PWD/dist/system-resolver-comparison"
+```
+
+The wrapper starts an isolated copy of the OS daemon with a loopback-only
+network and private configuration and runtime directories. It sends plain UDP
+to a local responder with the same A record and artificial delay as the DoH
+fixture. `CacheFromLocalhost=yes` enables the OS cache for this upstream. The
+direct UDP row measures the same responder with no forwarding process. Its
+proxy CPU and RSS cells are empty. The three DoH paths still validate TLS and
+HTTP/2. Compare the UDP and HTTPS rows with their transport costs in mind.
+
 ## Baseline: HTTP/2 vs HTTP/1.1 under identical conditions
 
 ```bash

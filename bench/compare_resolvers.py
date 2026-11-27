@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare three local UDP-to-DoH forwarders against one HTTP/2 fixture on Linux."""
+"""Compare local DNS forwarding paths and warm answer caches on Linux."""
 import argparse
 import base64
 import csv
@@ -25,8 +25,10 @@ from urllib.parse import parse_qs
 
 from bench_modern import await_ready, free_ports, make_certificate, percentile, proxy_cpu_rss
 from mock_doh import DohApp, MockServer
+from plain_dns import udp_worker
 
 SEQUENCE = itertools.count()
+HOT_NAMES = 16
 SUFFIX = b'\x07example\x00\x00\x01\x00\x01'
 EDNS = bytes.fromhex('00002904d0000000000000')  # 1232-byte UDP payload
 ANSWER_ADDRESS = socket.inet_aton('192.0.2.1')
@@ -88,10 +90,10 @@ def fixture_worker(channel, port, cert, key, delay_ms):
 
 
 @contextmanager
-def fixture(port, cert, key, delay_ms):
+def fixture(worker, *worker_args):
     ctx = multiprocessing.get_context('spawn')
     parent, child = ctx.Pipe()
-    process = ctx.Process(target=fixture_worker, args=(child, port, cert, key, delay_ms))
+    process = ctx.Process(target=worker, args=(child, *worker_args))
     process.start()
     child.close()
     try:
@@ -155,14 +157,30 @@ def await_forwarding(port, process):
     raise RuntimeError('forwarder failed its readiness query')
 
 
-def load(port, clients, seconds):
+def question_for(number):
+    label = f'q{number:016x}'.encode()
+    return bytes([len(label)]) + label + SUFFIX
+
+
+def prime_cache(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(4)
+        sock.connect(('127.0.0.1', port))
+        for number in range(HOT_NAMES):
+            question = question_for(number)
+            txid = next(SEQUENCE) & 0xffff
+            sock.send(struct.pack('!6H', txid, 0x0100, 1, 0, 0, 1) + question + EDNS)
+            if not valid_reply(sock.recv(65535), txid, question):
+                raise RuntimeError('cache priming returned an invalid DNS answer')
+
+
+def load(port, clients, seconds, workload='miss'):
     pending = {}
     samples = []
 
     def submit(sock):
         number = next(SEQUENCE)
-        label = f'q{number:016x}'.encode()
-        question = bytes([len(label)]) + label + SUFFIX
+        question = question_for(number % HOT_NAMES if workload == 'hit' else number)
         query_id = number & 0xffff
         header = struct.pack('!6H', query_id, 0x0100, 1, 0, 0, 1)
         pending[sock] = (query_id, question, time.perf_counter())
@@ -206,14 +224,35 @@ def load(port, clients, seconds):
                 p99_ms=percentile(samples, 99))
 
 
-def proxy_command(name, binary, port, upstream, cert, directory):
+def proxy_command(name, binary, port, upstream, cert, directory, workload):
     endpoint = f'127.0.0.1:{upstream}'
     url = f'https://{endpoint}/dns-query'
+    if name == 'systemd-resolved':
+        # The wrapper mounts a private tmpfs at /etc/systemd and at /run.
+        private_ns = ' '.join(os.readlink(f'/proc/self/ns/{kind}') for kind in ('mnt', 'net'))
+        if os.environ.get('DNSP_RESOLVED_BENCH_NS') != private_ns or not Path('/etc/systemd').is_mount():
+            raise RuntimeError('systemd-resolved requires bench/compare-system-resolver.sh')
+        Path('/etc/systemd/resolved.conf').write_text(f"""[Resolve]
+DNS={endpoint}
+FallbackDNS=
+Domains=~.
+DNSSEC=no
+DNSOverTLS=no
+LLMNR=no
+MulticastDNS=no
+ReadEtcHosts=no
+DNSStubListener=no
+DNSStubListenerExtra=127.0.0.1:{port}
+Cache={'yes' if workload == 'hit' else 'no'}
+CacheFromLocalhost=yes
+""")
+        return [binary]
     if name == 'DNSProxy':
         return [binary, '-l', '127.0.0.1', '-p', str(port), '-s', url,
-                '--ca-file', str(cert), '--cache-entries', '0']
+                '--ca-file', str(cert), '--cache-entries', '256' if workload == 'hit' else '0']
     if name == 'AdGuard':
-        return [binary, '-l', '127.0.0.1', '-p', str(port), '-u', url, '--cache=false',
+        return [binary, '-l', '127.0.0.1', '-p', str(port), '-u', url,
+                '--cache=true' if workload == 'hit' else '--cache=false',
                 '--dnssec=false', '--hosts-file-enabled=false', '--timeout=3s']
     # DNS stamp fields: DoH, properties, address, empty hash list, TLS host, path.
     def field(value):
@@ -229,7 +268,9 @@ bootstrap_resolvers = ['{endpoint}']
 ignore_system_dns = true
 netprobe_timeout = 0
 netprobe_address = '{endpoint}'
-cache = false
+cache = {'true' if workload == 'hit' else 'false'}
+cache_size = 256
+cache_min_ttl = 0
 block_unqualified = false
 block_undelegated = false
 http3 = false
@@ -240,9 +281,35 @@ stamp = 'sdns://{encoded}'
     return [binary, '-config', str(config)]
 
 
-def scenario(name, binary, args, run, directory, cert, upstream, metrics):
+def check_upstream(observed, protocol, expected):
+    if (observed['upstream_completed'] != expected or observed['upstream_invalid']
+            or observed['upstream_inflight']):
+        raise RuntimeError(f'expected {expected} valid upstream completions: {observed}')
+    if protocol == 'h2':
+        versions = {'2': expected} if expected else {}
+        if observed['upstream_http_versions'] != versions or sum(observed['methods'].values()) != expected:
+            raise RuntimeError(f'HTTP/2 or method counts differ: {observed}')
+    return dict(upstream_h2=expected if protocol == 'h2' else 0,
+                upstream_udp=expected if protocol == 'udp' else 0,
+                upstream_get=observed.get('methods', {}).get('GET', 0),
+                upstream_post=observed.get('methods', {}).get('POST', 0),
+                tls_connections=observed.get('upstream_connections_used', 0))
+
+
+def direct_upstream(args, run, port, metrics):
+    for clients in args.clients:
+        load(port, clients, args.warmup)
+        metrics('reset')
+        row = load(port, clients, args.duration)
+        upstream = check_upstream(metrics('snapshot'), 'udp', row['queries'])
+        yield dict(resolver='Direct UDP', run=run, clients=clients, workload='miss', **row,
+                   proxy_cpu_s=None, rss_mib=None, **upstream)
+
+
+def scenario(name, binary, args, run, directory, cert, upstream, metrics, workload):
+    protocol = 'udp' if name == 'systemd-resolved' else 'h2'
     port, = free_ports(1, exclude=[upstream])
-    command = proxy_command(name, str(binary), port, upstream, cert, directory)
+    command = proxy_command(name, str(binary), port, upstream, cert, directory, workload)
     env = {k: v for k, v in os.environ.items()
            if k.lower() not in {'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy'}}
     env.update(SSL_CERT_FILE=str(cert), GOMAXPROCS='1')
@@ -254,24 +321,21 @@ def scenario(name, binary, args, run, directory, cert, upstream, metrics):
         try:
             await_ready(port, process, name)
             await_forwarding(port, process)
+            if workload == 'hit':
+                metrics('reset')
+                prime_cache(port)
+                check_upstream(metrics('snapshot'), protocol, HOT_NAMES)
             for clients in args.clients:
-                load(port, clients, args.warmup)
+                load(port, clients, args.warmup, workload)
                 metrics('reset')
                 cpu_before, _, _ = proxy_cpu_rss(process.pid)
-                row = load(port, clients, args.duration)
+                row = load(port, clients, args.duration, workload)
                 cpu_after, rss, _ = proxy_cpu_rss(process.pid)
                 observed = metrics('snapshot')
-                n = row['queries']
-                if (observed['upstream_http_versions'] != {'2': n}
-                        or observed['upstream_completed'] != n or observed['upstream_invalid']
-                        or observed['upstream_inflight'] or sum(observed['methods'].values()) != n):
-                    raise RuntimeError(f'upstream counts for {n} valid replies: {observed}')
-                cpu = cpu_after - cpu_before
-                row.update(proxy_cpu_s=round(cpu, 3), rss_mib=round(rss / 1048576, 2),
-                           upstream_h2=n, upstream_get=observed['methods'].get('GET', 0),
-                           upstream_post=observed['methods'].get('POST', 0),
-                           tls_connections=observed['upstream_connections_used'])
-                yield dict(resolver=name, run=run, clients=clients, **row)
+                n = row['queries'] if workload == 'miss' else 0
+                counts = check_upstream(observed, protocol, n)
+                row.update(proxy_cpu_s=round(cpu_after - cpu_before, 3), rss_mib=round(rss / 1048576, 2), **counts)
+                yield dict(resolver=name, run=run, clients=clients, workload=workload, **row)
         except Exception:
             print(log.read_text(errors='replace')[-3000:], flush=True)
             raise
@@ -289,17 +353,22 @@ def write_summary(directory, rows):
              'Medians across repetitions. The QPS range is the smallest and largest run.',
              'Latency columns are medians of the per-run percentiles. CPU time and RSS',
              'cover the proxy process only. RSS is sampled at the end of each window.', '',
-             '| Clients | Forwarder | QPS | QPS range | p50 ms | p95 ms | p99 ms | CPU µs/query | RSS MiB |',
-             '| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |']
-    for clients in sorted({r['clients'] for r in rows}):
-        for name in dict.fromkeys(r['resolver'] for r in rows):
-            group = [r for r in rows if r['clients'] == clients and r['resolver'] == name]
-            rates = [r['qps'] for r in group]
-            timings = [median(r[key] for r in group) for key in ('p50_ms', 'p95_ms', 'p99_ms')]
-            cpu = median(r['proxy_cpu_s'] * 1e6 / r['queries'] for r in group)
-            rss = median(r['rss_mib'] for r in group)
-            lines.append(f'| {clients} | {name} | {median(rates):,.0f} | {min(rates):,.0f}–{max(rates):,.0f} | '
-                         + ' | '.join(f'{ms:.2f}' for ms in timings) + f' | {cpu:.0f} | {rss:.1f} |')
+             '| Workload | Clients | Forwarder | QPS | QPS range | p50 ms | p95 ms | p99 ms | CPU µs/query | RSS MiB |',
+             '| --- | ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |']
+    for workload in dict.fromkeys(r['workload'] for r in rows):
+        for clients in sorted({r['clients'] for r in rows}):
+            for name in dict.fromkeys(r['resolver'] for r in rows):
+                group = [r for r in rows if r['clients'] == clients and r['resolver'] == name and r['workload'] == workload]
+                if not group:
+                    continue
+                rates = [r['qps'] for r in group]
+                timings = [median(r[key] for r in group) for key in ('p50_ms', 'p95_ms', 'p99_ms')]
+                cpu = rss = '—'
+                if group[0]['proxy_cpu_s'] is not None:
+                    cpu = f"{median(r['proxy_cpu_s'] * 1e6 / r['queries'] for r in group):.0f}"
+                    rss = f"{median(r['rss_mib'] for r in group):.1f}"
+                lines.append(f'| {workload} | {clients} | {name} | {median(rates):,.0f} | {min(rates):,.0f}–{max(rates):,.0f} | '
+                             + ' | '.join(f'{ms:.2f}' for ms in timings) + f' | {cpu} | {rss} |')
     temporary = directory / 'summary.partial.md'
     temporary.write_text('\n'.join(lines) + '\n')
     temporary.replace(directory / 'summary.md')
@@ -310,8 +379,11 @@ def main():
     parser.add_argument('--dnsp', type=Path, default=Path('./dnsp-modern'))
     parser.add_argument('--adguard', type=Path, required=True)
     parser.add_argument('--dnscrypt', type=Path, required=True)
+    parser.add_argument('--systemd-resolved', type=Path, help='also run the private OS stub and its direct UDP upstream')
+    parser.add_argument('--direct-udp', action='store_true', help='also measure the plain UDP upstream directly')
     parser.add_argument('--output', type=Path, required=True, help='new results directory')
     parser.add_argument('--clients', type=int, nargs='+', default=[1, 8, 32])
+    parser.add_argument('--workloads', nargs='+', choices=('miss', 'hit'), default=['miss'])
     parser.add_argument('--runs', type=int, default=3)
     parser.add_argument('--duration', type=float, default=3)
     parser.add_argument('--warmup', type=float, default=0.75)
@@ -319,12 +391,14 @@ def main():
     args = parser.parse_args()
     allowed = sorted(os.sched_getaffinity(0))
     if (len(allowed) < 2 or not all(1 <= n <= 128 for n in args.clients)
-            or len(set(args.clients)) != len(args.clients) or args.runs < 1
+            or len(set(args.clients)) != len(args.clients) or len(set(args.workloads)) != len(args.workloads) or args.runs < 1
             or min(args.duration, args.warmup) <= 0 or args.delay_ms < 0):
         parser.error('requires two CPUs, distinct client counts in 1..128 and positive run lengths')
     args.cpu = allowed[0]
     binaries = {name: path.resolve(strict=True) for name, path in
                 [('DNSProxy', args.dnsp), ('AdGuard', args.adguard), ('dnscrypt-proxy', args.dnscrypt)]}
+    if args.systemd_resolved:
+        binaries['systemd-resolved'] = args.systemd_resolved.resolve(strict=True)
     software = {}
     for name, binary in binaries.items():
         flag = '-version' if name == 'dnscrypt-proxy' else '--version'
@@ -336,7 +410,7 @@ def main():
                     distribution=platform.freedesktop_os_release()['PRETTY_NAME'],
                     dependencies={p: version(p) for p in ['hypercorn', 'h2']}, binaries=software,
                     proxy_cpu=args.cpu, fixture_client_cpus=allowed[1:], runs=args.runs,
-                    clients=args.clients, duration_s=args.duration, warmup_s=args.warmup,
+                    clients=args.clients, workloads=args.workloads, direct_udp=bool(args.direct_udp or args.systemd_resolved), hot_names=HOT_NAMES, duration_s=args.duration, warmup_s=args.warmup,
                     fixture_delay_ms=args.delay_ms, clock_ticks_per_second=os.sysconf('SC_CLK_TCK'))
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / 'environment.json').write_text(json.dumps(metadata, indent=2) + '\n')
@@ -348,18 +422,32 @@ def main():
         writer = None
         rows = []
         names = list(binaries)
+        if args.systemd_resolved:
+            names.remove('systemd-resolved')
+            names = ['systemd-resolved', 'Direct UDP', *names]
+        elif args.direct_udp:
+            names.append('Direct UDP')
         for i in range(args.runs):
             for name in names[i % len(names):] + names[:i % len(names)]:
-                upstream, = free_ports(1)
-                with fixture(upstream, cert, key, args.delay_ms) as metrics:
-                    for row in scenario(name, binaries[name], args, i+1, directory, cert, upstream, metrics):
-                        if writer is None:
-                            writer = csv.DictWriter(output, fieldnames=row, lineterminator='\n')
-                            writer.writeheader()
-                        writer.writerow(row)
-                        rows.append(row)
-                        output.flush()
-                        print(name, 'run', i+1, 'clients', row['clients'], 'QPS', row['qps'], flush=True)
+                for workload in (args.workloads if i % 2 == 0 else reversed(args.workloads)):
+                    if name == 'Direct UDP' and workload == 'hit':
+                        continue  # An authoritative fixture has no forwarding cache.
+                    upstream, = free_ports(1)
+                    plain = name in ('Direct UDP', 'systemd-resolved')
+                    worker = (udp_worker, upstream, args.delay_ms) if plain else (fixture_worker, upstream, cert, key, args.delay_ms)
+                    with fixture(*worker) as metrics:
+                        if name == 'Direct UDP':
+                            samples = direct_upstream(args, i+1, upstream, metrics)
+                        else:
+                            samples = scenario(name, binaries[name], args, i+1, directory, cert, upstream, metrics, workload)
+                        for row in samples:
+                            if writer is None:
+                                writer = csv.DictWriter(output, fieldnames=row, lineterminator='\n')
+                                writer.writeheader()
+                            writer.writerow(row)
+                            rows.append(row)
+                            output.flush()
+                            print(name, workload, 'run', i+1, 'clients', row['clients'], 'QPS', row['qps'], flush=True)
 
     partial.replace(args.output / 'measurements.csv')
     write_summary(args.output, rows)

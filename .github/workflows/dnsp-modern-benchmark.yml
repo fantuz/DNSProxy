@@ -49,7 +49,7 @@ jobs:
           bench/fetch-comparison-peers.sh "$peers"
           .bench-venv/bin/python bench/compare_resolvers.py \
             --adguard "$peers/dnsproxy" --dnscrypt "$peers/dnscrypt-proxy" \
-            --runs 1 --clients 1 8 --duration 0.5 --warmup 0.25 --output dist/bench-ci-comparison
+            --runs 1 --clients 1 8 --workloads miss hit --duration 0.5 --warmup 0.25 --output dist/bench-ci-comparison
       - name: Measure constrained streams over a lossy upstream link
         run: |
           sudo sh bench/netem.sh 5ms 1% .bench-venv/bin/python \
@@ -76,6 +76,37 @@ jobs:
             dist/bench-ci-comparison/
           if-no-files-found: warn
           retention-days: 7
+
+  system-resolver-comparison:
+    name: Compare cached DoH, the OS DNS stub and direct UDP
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Build the resolver and fetch checksum-pinned peers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev python3-venv openssl iproute2
+          test -x /usr/lib/systemd/systemd-resolved
+          python3 -m venv .bench-venv
+          .bench-venv/bin/python -m pip install -r ci/requirements-http2.txt
+          make -f modern.mk dnsp-modern
+          bench/fetch-comparison-peers.sh "$RUNNER_TEMP/comparison-peers"
+      - name: Run the five DNS paths on the same host with loopback networking
+        run: |
+          sudo bench/compare-system-resolver.sh "$PWD/.bench-venv/bin/python" bench/compare_resolvers.py \
+            --adguard "$RUNNER_TEMP/comparison-peers/dnsproxy" --dnscrypt "$RUNNER_TEMP/comparison-peers/dnscrypt-proxy" \
+            --systemd-resolved /usr/lib/systemd/systemd-resolved --workloads miss hit --clients 1 8 32 \
+            --runs 3 --warmup 0.5 --duration 3 --delay-ms 1 --output dist/system-resolver-comparison
+          cat dist/system-resolver-comparison/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: doh-system-resolver-comparison
+          path: dist/system-resolver-comparison/
+          if-no-files-found: warn
+          retention-days: 14
 
   synthetic-h3:
     runs-on: ubuntu-24.04
