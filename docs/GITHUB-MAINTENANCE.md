@@ -31,6 +31,10 @@ template and branch rules directly when assessing this project.
 | Several maintainers | Assign named owners for the resolver, packaging and release workflows. Once a second reviewer is available, add a PR review rule and require code-owner approval on sensitive paths. Test the release workflow against the ruleset. | [CODEOWNERS and review rules](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners) |
 | Wider binary and container distribution | The v4.11.1 release ships SHA-256 checksums. The release API reports it as mutable. The OCI build disables provenance and SBOM output. Add verifiable attestations for release files and the published image digest, then test immutable publication, retry and verification before enabling it for the next release. | [Release](https://github.com/fantuz/DNSProxy/releases/tag/v4.11.1-modern) · [OCI build](../.github/workflows/dnsp-modern-container.yml) · [Artifact attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations) · [Immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases) |
 
-The repository already has platform CI, release checksums and a security
-contact. A future score or coverage badge should link to the report for the
-revision it describes.
+After a release upload, the publishing job verifies GitHub’s recorded SHA-256
+for every package and for the published checksum manifest. For a new release
+it also matches those hashes against the tested build before promoting the
+container. On a retry of a published release it checks the existing assets
+against the published manifest and the expected package names. This permits
+non-reproducible rebuilds while preserving the identity of published files.
+[Release verifier](../scripts/verify-release-assets.py)

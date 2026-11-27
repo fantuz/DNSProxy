@@ -459,6 +459,8 @@ jobs:
 
   publish:
     name: Publish the tested package set
+    outputs:
+      verified: ${{ steps.verify.outcome }}
     if: >-
       !cancelled() && github.event_name != 'pull_request' &&
       needs.plan.result == 'success' && needs.deb.result == 'success' &&
@@ -484,6 +486,7 @@ jobs:
           merge-multiple: true
           path: release-assets
       - name: Publish Linux packages, Windows installers and ZIPs, macOS archives, and checksums
+        id: release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -492,11 +495,32 @@ jobs:
           RELEASE_TAG: ${{ needs.plan.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.plan.outputs.commit }}
         run: bash scripts/publish-modern.sh release-assets
+      - name: Verify the published package set before promoting the container
+        id: verify
+        if: steps.release.outputs.release_state != 'superseded'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          RELEASE_STATE: ${{ steps.release.outputs.release_state }}
+        shell: bash
+        run: |
+          remote="$RUNNER_TEMP/published-assets"
+          mkdir -p "$remote"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$remote/release.json"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir "$remote"
+          flags=()
+          case "$RELEASE_STATE" in
+            created) flags+=(--newly-published) ;;
+            existing) ;;
+            *) exit 1 ;;
+          esac
+          python3 scripts/verify-release-assets.py "$RELEASE_TAG" "$remote/release.json" \
+            "$remote/SHA256SUMS" release-assets/SHA256SUMS "${flags[@]}"
 
   publish-container:
     name: Publish the tested OCI image to GHCR
     needs: [plan, containers, publish]
-    if: ${{ !cancelled() && needs.publish.result == 'success' && needs.containers.result == 'success' }}
+    if: ${{ !cancelled() && needs.publish.result == 'success' && needs.publish.outputs.verified == 'success' && needs.containers.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
