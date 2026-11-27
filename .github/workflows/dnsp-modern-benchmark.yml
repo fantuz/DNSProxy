@@ -12,13 +12,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install compiler, curl and Python venv
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev curl python3-venv openssl iproute2
       - name: Cache Linux HTTP2 fixture downloads
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ~/.cache/pip
           key: dnsp-pip-v1-${{ runner.os }}-${{ runner.arch }}-system-http2-${{ hashFiles('ci/requirements-*.txt') }}
@@ -60,7 +60,7 @@ jobs:
           .bench-venv/bin/python bench/bench_policy.py --binary "$PWD/dnsp-modern" \
             --baseline-binary "$baseline/dnsp-modern" --baseline-commit "$POLICY_BASE_SHA" \
             --output dist/bench-ci-policy.json
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: dnsp-modern-benchmark-smoke
@@ -72,7 +72,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Select the dependency refresh window
         id: dependencies
         run: echo "epoch=$(( $(date -u +%s) / 604800 ))" >> "$GITHUB_OUTPUT"
@@ -111,7 +111,7 @@ jobs:
             dnsp-modern-h3-ci sh bench/netem.sh --isolated 5ms 0.5% /opt/bench/bin/python \
             --protocol h2-h3 --concurrency 16 --warmup 0.6 --duration 2 \
             --output /results/bench-ci-h2-h3-netem.json
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: dnsp-modern-h2-h3-netem

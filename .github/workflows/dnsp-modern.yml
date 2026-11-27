@@ -41,7 +41,7 @@ jobs:
     outputs:
       commit: ${{ steps.prepare.outputs.commit }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.sha }}
       - id: prepare
@@ -68,7 +68,7 @@ jobs:
       gui: ${{ steps.pr.outputs.gui }}
       containers: ${{ steps.pr.outputs.containers }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.prepare-release.outputs.commit || github.sha }}
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
@@ -149,7 +149,7 @@ jobs:
             distro: ubuntu24.04
             arch: arm64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.plan.outputs.commit }}
       - name: Install dependencies
@@ -174,7 +174,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends "./$GUI_PACKAGE"
           /usr/bin/python3 scripts/test-gui-package.py
           sudo apt-get purge -y dnsp-modern-gui
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: dnsp-modern-${{ matrix.distro }}-${{ matrix.arch }}
           path: |
@@ -202,7 +202,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends build-essential pkg-config libcurl4-openssl-dev dpkg-dev python3 git ca-certificates openssl
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.plan.outputs.commit }}
       - name: Build and inspect the package
@@ -227,7 +227,7 @@ jobs:
           apt-get install -y --no-install-recommends "./$GUI_PACKAGE"
           /usr/bin/python3 scripts/test-gui-package.py
           apt-get purge -y dnsp-modern-gui
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: dnsp-modern-debian13-${{ matrix.arch }}
           path: |
@@ -255,7 +255,7 @@ jobs:
         run: |
           # Allow a compatible package set while Rocky mirrors synchronize updates.
           dnf install -y --nobest gcc make git rpm-build redhat-rpm-config libcurl-devel openssl python3 systemd-rpm-macros
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.plan.outputs.commit }}
       - name: Build and inspect the package
@@ -277,7 +277,7 @@ jobs:
           python3 tests/test_modern.py Tests.test_udp Tests.test_tcp
           dnf remove -y dnsp-modern-gui dnsp-modern
           test ! -e /usr/bin/dnsp-modern
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: dnsp-modern-rocky9-${{ matrix.arch }}
           path: |
@@ -292,7 +292,7 @@ jobs:
     name: AddressSanitizer and UndefinedBehaviorSanitizer
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.plan.outputs.commit }}
       - name: Install dependencies
@@ -315,7 +315,7 @@ jobs:
     if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.plan.outputs.commit }}
       - name: Install dependencies
@@ -475,10 +475,10 @@ jobs:
       group: dnsp-modern-release-${{ needs.plan.outputs.tag }}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.plan.outputs.commit }}
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: dnsp-modern-*
           merge-multiple: true
@@ -506,10 +506,10 @@ jobs:
       group: dnsp-modern-container-publish-${{ github.repository }}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.plan.outputs.commit }}
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: dnsp-oci-image
           path: oci-release

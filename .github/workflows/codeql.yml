@@ -20,12 +20,12 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev
-      - uses: github/codeql-action/init@v4
+      - uses: github/codeql-action/init@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
         with:
           languages: c-cpp
           build-mode: manual
@@ -54,13 +54,13 @@ jobs:
             upload=never
           fi
           echo "upload=$upload" >> "$GITHUB_OUTPUT"
-      - uses: github/codeql-action/analyze@v4
+      - uses: github/codeql-action/analyze@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
         with:
           upload: ${{ steps.reporting.outputs.upload }}
           output: ${{ runner.temp }}/dnsp-codeql
       - name: Preserve the compiled resolver analysis
         if: steps.reporting.outputs.upload == 'never'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: dnsp-codeql-cpp
           path: ${{ runner.temp }}/dnsp-codeql/*.sarif

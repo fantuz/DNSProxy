@@ -33,10 +33,10 @@ jobs:
           - runner: macos-26
             arch: arm64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ inputs.ref || github.sha }}
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.13'
       - name: Build and bundle the shared C resolver
@@ -97,7 +97,7 @@ jobs:
           python3 -m unittest discover -s tests -p test_benchmark.py -v || failed=1
           python3 tests/test_macos.py -v || failed=1
           exit "$failed"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: dnsp-modern-macos-${{ matrix.arch }}
           path: |
@@ -107,7 +107,7 @@ jobs:
           retention-days: 14
       - name: Preserve native desktop evidence
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: dnsp-macos-gui-evidence-${{ matrix.arch }}
           path: |
