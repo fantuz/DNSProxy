@@ -59,7 +59,7 @@ jobs:
             ${{ runner.tool_cache }}/Python/${{ env.DNSP_PYTHON_VERSION }}/x64
             ${{ runner.tool_cache }}/Python/${{ env.DNSP_PYTHON_VERSION }}/x64.complete
           key: dnsp-python-v1-${{ matrix.runner }}-${{ steps.cache-epoch.outputs.image }}-x64-${{ env.DNSP_PYTHON_VERSION }}
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.DNSP_PYTHON_VERSION }}
           # QUIC fixture dependencies do not all publish Windows ARM64 wheels.
