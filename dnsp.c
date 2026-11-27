@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2018 Massimiliano Fantuzzi HB3YOE <superfantuz@gmail.com>
+ * Copyright (c) 2013-2018 Massimiliano Fantuzzi HB9GUS <superfantuz@gmail.com>
 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -202,7 +202,7 @@ struct dns_reponse
 /* usage */
 void usage(void)
 {
-    fprintf(stderr, "\n dnsp %s, copyright @ 2018 Massimiliano Fantuzzi, HB3YOE, MIT License\n\n"
+    fprintf(stderr, "\n dnsp %s, copyright @ 2018 Massimiliano Fantuzzi, HB9GUS, MIT License\n\n"
                        " usage: dnsp [-l [local_host]] [-p [local_port:53,5353,..]] [-H [proxy_host]] [-r [proxy_port:8118,8888,3128,9500..]] \n"
 		       "\t\t [-w [lookup_port:80,443,..]] [-s [lookup_script]]\n\n"
                        " OPTIONS:\n"
