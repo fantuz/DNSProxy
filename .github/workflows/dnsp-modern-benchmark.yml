@@ -43,6 +43,13 @@ jobs:
             --protocol both --concurrency 1,8,32 --warmup 0.3 --duration 1 \
             --max-host-connections 1 --assert-h2-multiplex \
             --output dist/bench-ci.json
+      - name: Verify DNS replies and upstream counts across three local forwarders
+        run: |
+          peers="$RUNNER_TEMP/doh-peers"
+          bench/fetch-comparison-peers.sh "$peers"
+          .bench-venv/bin/python bench/compare_resolvers.py \
+            --adguard "$peers/dnsproxy" --dnscrypt "$peers/dnscrypt-proxy" \
+            --runs 1 --clients 1 8 --duration 0.5 --warmup 0.25 --output dist/bench-ci-comparison
       - name: Measure constrained streams over a lossy upstream link
         run: |
           sudo sh bench/netem.sh 5ms 1% .bench-venv/bin/python \
@@ -64,7 +71,9 @@ jobs:
         if: always()
         with:
           name: dnsp-modern-benchmark-smoke
-          path: dist/bench-ci*.*
+          path: |
+            dist/bench-ci*.*
+            dist/bench-ci-comparison/
           if-no-files-found: warn
           retention-days: 7
 

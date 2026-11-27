@@ -10,7 +10,7 @@ or HTTP/1.1, and libcurl's certificate and hostname verification remain active.
 ```bash
 sudo apt install build-essential pkg-config libcurl4-openssl-dev python3 python3-venv openssl
 python3 -m venv .bench-venv
-.bench-venv/bin/python -m pip install 'hypercorn==0.18.0' 'h2==4.3.0'
+.bench-venv/bin/python -m pip install -r ci/requirements-http2.txt
 make -f modern.mk dnsp-modern
 make -f modern.mk modern-check    # existing DNS correctness tests
 .bench-venv/bin/python -m unittest discover -s tests -p test_benchmark.py -v
@@ -18,6 +18,28 @@ make -f modern.mk modern-check    # existing DNS correctness tests
 
 The two optional Python dependencies are used only by the synthetic server.
 `dnsp-modern` and its Debian package do **not** depend on Python, Hypercorn or h2.
+
+## Compare local DoH forwarders
+
+On Linux x86-64 with at least two available CPUs, follow the build steps above,
+then run the three resolvers against the same loopback TLS fixture. The download
+helper verifies both upstream release archives by SHA-256. Supply locally built
+peer binaries with the same options on other Linux architectures.
+
+```sh
+bench/fetch-comparison-peers.sh dist/doh-peers
+.bench-venv/bin/python bench/compare_resolvers.py \
+  --adguard dist/doh-peers/dnsproxy --dnscrypt dist/doh-peers/dnscrypt-proxy \
+  --runs 6 --clients 1 8 32 --warmup 0.75 --duration 4 --delay-ms 1 \
+  --output dist/doh-comparison
+```
+
+Use a new output directory for each run. Both peer downloads occur before the
+timed workload. The runner writes the binary identities and host details to
+`environment.json`, and one row per measured window to `measurements.csv`.
+A timeout, incorrect DNS answer, fallback from HTTP/2 or mismatch between
+client replies and upstream requests fails the run. The CI smoke test checks
+these conditions without imposing a throughput threshold.
 
 ## Baseline: HTTP/2 vs HTTP/1.1 under identical conditions
 

@@ -15,9 +15,10 @@ import threading
 
 
 class DohApp:
-    def __init__(self, delay_ms=5, answers=1):
+    def __init__(self, delay_ms=5, answers=1, question_suffix=None):
         self.delay = delay_ms / 1000.0
         self.answers = answers
+        self.question_suffix = question_suffix
         self.lock = threading.Lock()
         self._clear()
 
@@ -92,7 +93,7 @@ class DohApp:
         try:
             if self.delay:
                 await asyncio.sleep(self.delay)
-            response = make_response(bytes(body), self.answers)
+            response = make_response(bytes(body), self.answers, self.question_suffix)
             if response is None:
                 await send({'type': 'http.response.start', 'status': 400, 'headers': []})
                 await send({'type': 'http.response.body', 'body': b''})
@@ -106,7 +107,7 @@ class DohApp:
             self.finish(peer, valid)
 
 
-def make_response(data, answers):
+def make_response(data, answers, question_suffix=None):
     if len(data) < 17 or data[2] & 0x80 or data[4:6] != b'\x00\x01':
         return None
     i = 12
@@ -123,6 +124,8 @@ def make_response(data, answers):
     if i + 4 > len(data):
         return None
     question = data[12:i+4]
+    if question_suffix is not None and not question.endswith(question_suffix):
+        return data[:2] + b'\x81\x83\x00\x01' + bytes(6) + question
     rr = b'\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\xc0\x00\x02\x01'
     return (data[:2] + b'\x81\x80\x00\x01' + answers.to_bytes(2, 'big') +
             b'\x00\x00\x00\x00' + question + rr*answers)

@@ -20,6 +20,27 @@ from mock_doh import MockServer, make_response  # noqa: E402
 
 
 class BenchmarkUnitTests(unittest.TestCase):
+    def test_peer_comparison_rejects_wrong_answers_and_truncation(self):
+        from compare_resolvers import SUFFIX, valid_reply
+
+        question = b'\x01q' + SUFFIX
+        query = struct.pack('!6H', 42, 0x0100, 1, 0, 0, 0) + question
+        reply = make_response(query, 1, question_suffix=SUFFIX)
+        self.assertTrue(valid_reply(reply, 42, question))
+        self.assertFalse(valid_reply(reply, 43, question))
+        self.assertFalse(valid_reply(reply, 42, b'\x01r' + SUFFIX))
+        self.assertFalse(valid_reply(reply[:-1], 42, question))
+        self.assertFalse(valid_reply(reply[:-1] + b'\x02', 42, question))
+        self.assertFalse(valid_reply(reply[:2] + b'\x83' + reply[3:], 42, question))
+
+    def test_peer_fixture_returns_nxdomain_for_startup_probe(self):
+        from compare_resolvers import SUFFIX
+
+        question = b'\x05probe\x04test\x08dnscrypt\x00\x00\x02\x00\x01'
+        query = struct.pack('!6H', 9, 0x0100, 1, 0, 0, 0) + question
+        reply = make_response(query, 1, question_suffix=SUFFIX)
+        self.assertEqual(reply, struct.pack('!6H', 9, 0x8183, 1, 0, 0, 0) + question)
+
     def test_listener_ports_are_distinct_even_with_the_same_candidate_order(self):
         # Identical candidate orders reproduce the former two-call collision.
         with patch('bench_modern.random.sample', return_value=[12001, 12002, 12003]), \
