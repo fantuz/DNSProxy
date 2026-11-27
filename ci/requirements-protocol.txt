@@ -1,2 +1,2 @@
 -r requirements-http2.txt
-aioquic==1.3.0
+aioquic==1.9.2
