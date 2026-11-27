@@ -25,10 +25,10 @@ the complete archive. Keep `gui/`, `dnsp-modern` and
 `Start-DNSProxy-GUI.command` together. The archive's
 own checksum manifest covers every included source module and launcher.
 
-If the archive contains **DNSProxy.app**, move it to Applications or
+With v4.12.0 and later, move **DNSProxy.app** to Applications or
 `~/Applications` and double-click it. At the first unidentified-developer
 alert, use the [per-app approval steps](MACOS.md#download-and-start).
-With the v4.11.1 archive, double-click **Start-DNSProxy-GUI.command**, or run
+With earlier desktop archives, double-click **Start-DNSProxy-GUI.command**, or run
 it in Terminal:
 
 ```sh

@@ -202,7 +202,8 @@ esac
         notes = (self.root / "notes.md").read_text()
         self.assertTrue(notes.startswith("<!-- dnsp-downloads:start -->\n## Downloads\n"))
         self.assertIn("Privacy & Security → Open Anyway", notes)
-        self.assertIn("https://support.apple.com/102445", notes)
+        self.assertIn("[Apple’s Open Anyway steps](https://support.apple.com/en-us/102445#openanyway)", notes)
+        self.assertIn("[Full Apple guide](https://support.apple.com/en-us/102445)", notes)
         self.assertIn("## Release highlights\n\nDesktop monitoring and bounded latency reporting.", notes)
         self.assertNotIn("Windows (PoC)", notes)
         linked = [unquote(name) for name in re.findall(r"/releases/download/v0\.3\.8-modern/([^)]*)", notes)]

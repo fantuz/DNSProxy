@@ -58,7 +58,8 @@ def downloads(version, repository, *, macos=True, windows_arm64=True, gui=True, 
                       "then try opening the app or launcher once. If macOS cannot verify the developer "
                       "and you trust the copy, choose **System Settings → Privacy & Security → Open Anyway**, "
                       "then confirm **Open** for the named item. "
-                      "[Apple’s approval steps](https://support.apple.com/102445)."])
+                      "[Apple’s Open Anyway steps](https://support.apple.com/en-us/102445#openanyway)"
+                      " · [Full Apple guide](https://support.apple.com/en-us/102445)."])
     if gui:
         lines.extend(["", "Optional Linux desktop monitor (works on both processor architectures):", "",
                       "| Platform | GUI package |", "| --- | --- |"])

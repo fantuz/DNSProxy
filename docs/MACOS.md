@@ -24,7 +24,7 @@ filename you downloaded. This example verifies the released Apple Silicon copy.
 For Intel, use the filename ending in `-macos-x86_64.tar.gz`.
 
 ```sh
-archive=dnsp-modern-4.11.1-macos-arm64.tar.gz
+archive=dnsp-modern-4.12.0-macos-arm64.tar.gz
 expected=$(awk -v f="$archive" '$2 == f {print $1}' SHA256SUMS)
 actual=$(shasum -a 256 "$archive") && [ "${actual%% *}" = "$expected" ] && echo "Archive verified"
 ```
@@ -38,8 +38,9 @@ item, dismiss the alert. Open **System Settings → Privacy & Security**, scroll
 to **Security**, click **Open Anyway** for the named item and confirm **Open**.
 macOS can request authentication. A helper named in a separate alert has its own
 approval. A managed Mac may reserve this decision for its administrator.
+[Apple’s Open Anyway steps](https://support.apple.com/en-us/102445#openanyway) · [Full Apple guide to download alerts](https://support.apple.com/en-us/102445)
+
 For a damaged-file or malware alert, stop and verify a fresh official download.
-[Apple’s guide to download alerts and per-app approval](https://support.apple.com/102445)
 
 For the console resolver, double-click **Start-DNSProxy.command** in the extracted folder,
 or run it in Terminal. It listens on **127.0.0.1:5053** and **[::1]:5053**, using
@@ -164,8 +165,8 @@ DNSSEC behaviour, automatic reloads and the optional Python update helper.
 
 ## Download approval and signing
 
-The v4.11.1 archives provide `.command` launchers. New builds also include
-**DNSProxy.app** for Finder. The app contains the desktop code and a copy of the
+The v4.11.1 archives provide `.command` launchers. Starting with v4.12.0, the
+archives also include **DNSProxy.app** for Finder. The app contains the desktop code and a copy of the
 resolver, so it can be moved to `~/Applications` on its own. The desktop screen
 uses the Homebrew GTK runtime. The console launcher works with the system
 libraries already on the Mac. [Desktop setup](MACOS-GUI.md)

@@ -18,6 +18,10 @@ DNSProxy on macOS 15 or newer
    for the named item, then confirm Open. macOS may name a command or helper
    separately. A managed Mac can reserve approval for its administrator.
 
+   Apple’s Open Anyway steps
+   https://support.apple.com/en-us/102445#openanyway
+   Full Apple guide to download alerts
+   https://support.apple.com/en-us/102445
+
    For a damaged or malware warning, stop and recheck the official download and
    checksum. Report a persistent warning through the project's security policy.
-   Apple explains the different alerts at https://support.apple.com/102445.
