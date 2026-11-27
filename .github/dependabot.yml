@@ -11,6 +11,8 @@ updates:
 
   - package-ecosystem: pip
     directory: /ci
+    exclude-paths:
+      - windows-gui-runtime-packages.txt  # MSYS2 packages for the desktop installer
     schedule:
       interval: weekly
     groups:
