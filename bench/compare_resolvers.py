@@ -17,8 +17,10 @@ import tempfile
 import time
 from collections import Counter
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from importlib.metadata import version
 from pathlib import Path
+from statistics import median
 from urllib.parse import parse_qs
 
 from bench_modern import await_ready, free_ports, make_certificate, percentile, proxy_cpu_rss
@@ -282,6 +284,25 @@ def scenario(name, binary, args, run, directory, cert, upstream, metrics):
                 process.wait()
 
 
+def write_summary(directory, rows):
+    lines = ['# Local DoH forwarder comparison', '',
+             'Medians across repetitions. The QPS range is the smallest and largest run.',
+             'Latency columns are medians of the per-run percentiles. CPU time and RSS',
+             'cover the proxy process only. RSS is sampled at the end of each window.', '',
+             '| Clients | Forwarder | QPS | QPS range | p50 ms | p95 ms | p99 ms | CPU µs/query | RSS MiB |',
+             '| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |']
+    for clients in sorted({r['clients'] for r in rows}):
+        for name in dict.fromkeys(r['resolver'] for r in rows):
+            group = [r for r in rows if r['clients'] == clients and r['resolver'] == name]
+            rates = [r['qps'] for r in group]
+            timings = [median(r[key] for r in group) for key in ('p50_ms', 'p95_ms', 'p99_ms')]
+            cpu = median(r['proxy_cpu_s'] * 1e6 / r['queries'] for r in group)
+            rss = median(r['rss_mib'] for r in group)
+            lines.append(f'| {clients} | {name} | {median(rates):,.0f} | {min(rates):,.0f}–{max(rates):,.0f} | '
+                         + ' | '.join(f'{ms:.2f}' for ms in timings) + f' | {cpu:.0f} | {rss:.1f} |')
+    (directory / 'summary.md').write_text('\n'.join(lines) + '\n')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dnsp', type=Path, default=Path('./dnsp-modern'))
@@ -309,7 +330,7 @@ def main():
                           'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest()}
     model = next((line.partition(':')[2].strip() for line in Path('/proc/cpuinfo').read_text().splitlines()
                   if line.startswith('model name')), platform.machine())
-    metadata = dict(cpu_model=model, system=platform.platform(), python=platform.python_version(),
+    metadata = dict(started_utc=datetime.now(timezone.utc).isoformat(), cpu_model=model, system=platform.platform(), python=platform.python_version(),
                     distribution=platform.freedesktop_os_release()['PRETTY_NAME'],
                     dependencies={p: version(p) for p in ['hypercorn', 'h2']}, binaries=software,
                     proxy_cpu=args.cpu, fixture_client_cpus=allowed[1:], runs=args.runs,
@@ -322,6 +343,7 @@ def main():
         directory = Path(tmp)
         cert, key = make_certificate(directory, san='IP:127.0.0.1,DNS:localhost')
         writer = None
+        rows = []
         names = list(binaries)
         for i in range(args.runs):
             for name in names[i % len(names):] + names[:i % len(names)]:
@@ -332,8 +354,11 @@ def main():
                             writer = csv.DictWriter(output, fieldnames=row, lineterminator='\n')
                             writer.writeheader()
                         writer.writerow(row)
+                        rows.append(row)
                         output.flush()
                         print(name, 'run', i+1, 'clients', row['clients'], 'QPS', row['qps'], flush=True)
+
+        write_summary(args.output, rows)
 
 
 if __name__ == '__main__':

@@ -37,9 +37,10 @@ bench/fetch-comparison-peers.sh dist/doh-peers
 Use a new output directory for each run. Both peer downloads occur before the
 timed workload. The runner writes the binary identities and host details to
 `environment.json`, and one row per measured window to `measurements.csv`.
+A complete run also writes the median and range table to `summary.md`.
 A timeout, incorrect DNS answer, fallback from HTTP/2 or mismatch between
 client replies and upstream requests fails the run. The CI smoke test checks
-these conditions without imposing a throughput threshold.
+these conditions on a short workload.
 
 ## Baseline: HTTP/2 vs HTTP/1.1 under identical conditions
 

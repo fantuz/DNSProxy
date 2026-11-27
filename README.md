@@ -18,6 +18,7 @@
   <br>
   <a href="#optional-upstream-http3"><img src="https://img.shields.io/badge/Upstream%20DoH-HTTP%2F2%20%2B%20optional%20HTTP%2F3-0072b8" alt="Upstream DoH with HTTP/2 and optional HTTP/3" height="20"></a>
   <a href="https://www.rfc-editor.org/rfc/rfc8484"><img src="https://img.shields.io/badge/DoH-RFC%208484-blue" alt="RFC 8484" height="20"></a>
+  <a href="docs/benchmarks/linux-doh-2026-11-27/README.md"><img src="https://img.shields.io/badge/DoH_benchmark-results-326b4c" alt="DoH forwarder benchmark results" height="20"></a>
   <a href="SECURITY.md"><img src="https://img.shields.io/badge/security-private%20reporting-507269" alt="Security policy and private vulnerability reporting" height="20"></a>
 </p>
 
@@ -89,6 +90,15 @@ in [docs/README-legacy.md](docs/README-legacy.md).
 
 The upstream resolver handles recursion and DNSSEC validation. DNS privacy
 also depends on how clients route their DNS traffic and which upstream they use.
+
+## Performance against other DoH forwarders
+
+The [Linux HTTP/2 comparison](docs/benchmarks/linux-doh-2026-11-27/README.md)
+measures DNSProxy 4.11.1, AdGuard dnsproxy v0.86.0 and dnscrypt-proxy 2.1.21
+with 1, 8 and 32 concurrent UDP clients. It includes throughput, tail latency,
+CPU and resident memory, raw measurements and a command to repeat the test.
+At 32 clients, median throughput was 2,752, 3,049 and 2,772 queries/s
+respectively. DNSProxy used 10.9 MiB resident memory at that load.
 
 ## Rust feasibility port
 
