@@ -109,7 +109,9 @@ respectively. DNSProxy used 10.9 MiB resident memory at that load.
 With one uncached query outstanding, DNSProxy had the highest median throughput
 (520 queries/s) and a p95 of 2.39 ms. A single PC can issue several lookups at
 once. Choose the row that matches your outstanding queries, and account for cache
-hits and upstream network time when comparing with your desktop.
+hits and upstream network time when comparing with your desktop. With 16 names
+already cached and 32 clients, DNSProxy served 123,410 queries/s at 0.68 ms p99.
+No timed warm queries reached the upstream. [Warm-cache comparison](docs/benchmarks/linux-doh-2026-11-27/README.md#warm-cache-comparison)
 
 ## Rust feasibility port
 

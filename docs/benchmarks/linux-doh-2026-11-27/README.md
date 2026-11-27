@@ -32,6 +32,28 @@ give every repetition, the HTTP method counts and the number of TLS connections
 that carried measured traffic. The [environment](environment.json) identifies
 the hardware, kernel, proxy binaries, TLS library and fixture versions.
 
+## Warm-cache comparison
+
+A second session rotated all three forwarders through uncached and fully cached
+workloads on the same Linux host. All 381,934 measured misses reached the HTTP/2
+fixture. The proxies returned 11,461,805 validated cache hits with zero upstream
+requests in the timed hit windows. Each process primed 16 positive A records
+with a 60 s TTL before its warm measurements. Query IDs kept changing.
+
+| Concurrent UDP clients | DNSProxy hit QPS | AdGuard hit QPS | dnscrypt-proxy hit QPS |
+| ---: | ---: | ---: | ---: |
+| 1 | 26,396 | 15,202 | 15,695 |
+| 8 | 105,979 | 41,664 | 55,707 |
+| 32 | 123,410 | 41,233 | 66,433 |
+
+At 32 clients DNSProxy’s warm p99 was 0.68 ms. AdGuard measured 2.39 ms and
+dnscrypt-proxy 1.24 ms. These short runs on a shared virtual host use a small
+hot set. Real cache hit rates, TTL expiry, available CPU, working-set size and
+cache collisions affect production results. The uncached controls in this same
+session measured 2,731, 3,013 and 2,791 QPS respectively at 32 clients.
+[Full paired workload table](cache/summary.md) · [108 measurement windows](cache/measurements.csv) ·
+[Environment](cache/environment.json)
+
 ## Comparing a desktop or shared resolver
 
 One benchmark client sends its next query only after the previous reply.

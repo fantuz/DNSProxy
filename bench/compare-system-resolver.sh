@@ -18,5 +18,11 @@ if [ -d /var/lib/systemd ]; then mount -t tmpfs -o mode=755 tmpfs /var/lib/syste
 mkdir -p /run/systemd/resolve
 chown systemd-resolve:systemd-resolve /run/systemd/resolve
 ip link set lo up
+# resolved considers its global DNS scope offline with only a loopback link.
+# Both ends of this pair stay inside the namespace. There is no default route.
+ip link add dnsp-test0 type veth peer name dnsp-test1
+ip addr add 192.0.2.254/32 dev dnsp-test0
+ip link set dnsp-test1 up
+ip link set dnsp-test0 up
 export DNSP_RESOLVED_BENCH_NS="$(readlink /proc/self/ns/mnt) $(readlink /proc/self/ns/net)"
 exec "$@"

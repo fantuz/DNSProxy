@@ -46,6 +46,21 @@ A timeout, incorrect DNS answer, fallback from HTTP/2 or mismatch between
 client replies and upstream requests fails the run. The CI smoke test checks
 these conditions on a short workload.
 
+### Comparing a resolver patch
+
+To compare DNSProxy builds, supply the release binary and the candidate directly.
+The runner gives both the same options and alternates their order by repetition.
+
+```sh
+.bench-venv/bin/python bench/compare_resolvers.py \
+  --dnsp /path/to/release/dnsp-modern --candidate /path/to/patched/dnsp-modern \
+  --workloads miss hit --clients 1 32 --runs 8 --warmup .5 --duration 3 \
+  --output dist/resolver-patch-comparison
+```
+
+Compare paired runs, tail latency and CPU time per completed query. Run the
+normal UDP and TCP correctness tests before adopting an event-loop change.
+
 ### Warm answers and the operating system resolver
 
 Add `--workloads miss hit` to measure both workloads at every client level.
@@ -69,8 +84,10 @@ sudo bench/compare-system-resolver.sh "$PWD/.bench-venv/bin/python" bench/compar
   --output "$PWD/dist/system-resolver-comparison"
 ```
 
-The wrapper starts an isolated copy of the OS daemon with a loopback-only
-network and private configuration and runtime directories. It sends plain UDP
+The wrapper starts an isolated copy of the OS daemon with private configuration
+and runtime directories. A virtual Ethernet pair entirely inside the namespace
+gives systemd-resolved an active network link. There is no default route. All
+test traffic uses loopback. It sends plain UDP
 to a local responder with the same A record and artificial delay as the DoH
 fixture. `CacheFromLocalhost=yes` enables the OS cache for this upstream. The
 direct UDP row measures the same responder with no forwarding process. Its

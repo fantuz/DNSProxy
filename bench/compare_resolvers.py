@@ -142,6 +142,7 @@ def await_forwarding(port, process):
     # dnscrypt-proxy opens its listener before it finishes upstream discovery.
     question = b'\x05ready' + SUFFIX
     packet = struct.pack('!6H', 1, 0x0100, 1, 0, 0, 0) + question
+    last_reply = b''
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and process.poll() is None:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -149,12 +150,13 @@ def await_forwarding(port, process):
             sock.connect(('127.0.0.1', port))
             try:
                 sock.send(packet)
-                if valid_reply(sock.recv(65535), 1, question):
+                last_reply = sock.recv(65535)
+                if valid_reply(last_reply, 1, question):
                     return
             except (TimeoutError, ConnectionRefusedError):
                 pass
         time.sleep(0.05)
-    raise RuntimeError('forwarder failed its readiness query')
+    raise RuntimeError(f'forwarder failed its readiness query, last reply {last_reply.hex() or "timeout"}')
 
 
 def question_for(number):
@@ -247,7 +249,7 @@ Cache={'yes' if workload == 'hit' else 'no'}
 CacheFromLocalhost=yes
 """)
         return [binary]
-    if name == 'DNSProxy':
+    if name in ('DNSProxy', 'DNSProxy candidate'):
         return [binary, '-l', '127.0.0.1', '-p', str(port), '-s', url,
                 '--ca-file', str(cert), '--cache-entries', '256' if workload == 'hit' else '0']
     if name == 'AdGuard':
@@ -377,8 +379,9 @@ def write_summary(directory, rows):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dnsp', type=Path, default=Path('./dnsp-modern'))
-    parser.add_argument('--adguard', type=Path, required=True)
-    parser.add_argument('--dnscrypt', type=Path, required=True)
+    parser.add_argument('--adguard', type=Path)
+    parser.add_argument('--dnscrypt', type=Path)
+    parser.add_argument('--candidate', type=Path, help='test a second DNSProxy binary with identical settings')
     parser.add_argument('--systemd-resolved', type=Path, help='also run the private OS stub and its direct UDP upstream')
     parser.add_argument('--direct-udp', action='store_true', help='also measure the plain UDP upstream directly')
     parser.add_argument('--output', type=Path, required=True, help='new results directory')
@@ -396,7 +399,8 @@ def main():
         parser.error('requires two CPUs, distinct client counts in 1..128 and positive run lengths')
     args.cpu = allowed[0]
     binaries = {name: path.resolve(strict=True) for name, path in
-                [('DNSProxy', args.dnsp), ('AdGuard', args.adguard), ('dnscrypt-proxy', args.dnscrypt)]}
+                [('DNSProxy', args.dnsp), ('DNSProxy candidate', args.candidate),
+                 ('AdGuard', args.adguard), ('dnscrypt-proxy', args.dnscrypt)] if path is not None}
     if args.systemd_resolved:
         binaries['systemd-resolved'] = args.systemd_resolved.resolve(strict=True)
     software = {}
