@@ -1,3 +1,5 @@
+import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -10,6 +12,46 @@ from urllib.parse import unquote
 
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+
+
+class PublishedDigestTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location('release_assets', SCRIPTS / 'verify-release-assets.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        cls.verify = staticmethod(module.verify)
+
+    def setUp(self):
+        self.name = 'dnsp-modern-4.11.1-macos-arm64.tar.gz'
+        self.digest = hashlib.sha256(b'archive').hexdigest()
+        self.manifest = f'{self.digest}  {self.name}\n'.encode()
+        self.tag = 'v4.11.1-modern'
+        self.release = {'tag_name': self.tag, 'draft': False, 'prerelease': False, 'assets': [
+            {'name': self.name, 'state': 'uploaded', 'size': 7, 'digest': 'sha256:' + self.digest},
+            {'name': 'SHA256SUMS', 'state': 'uploaded', 'size': len(self.manifest),
+             'digest': 'sha256:' + hashlib.sha256(self.manifest).hexdigest()}]}
+
+    def test_new_upload_and_previously_published_retry(self):
+        self.assertEqual(self.verify(self.release, self.tag, self.manifest, self.manifest, True), 1)
+        rebuilt = self.manifest.replace(self.digest.encode(), b'1' * 64)
+        self.assertEqual(self.verify(self.release, self.tag, self.manifest, rebuilt, False), 1)
+        with self.assertRaisesRegex(ValueError, 'tested build'):
+            self.verify(self.release, self.tag, self.manifest, rebuilt, True)
+        with self.assertRaisesRegex(ValueError, 'package names'):
+            self.verify(self.release, self.tag, self.manifest, rebuilt.replace(b'arm64', b'x86_64'), False)
+
+    def test_substituted_missing_and_duplicate_assets_are_rejected(self):
+        import copy
+
+        for which in (0, 1):
+            modified = copy.deepcopy(self.release)
+            modified['assets'][which]['digest'] = 'sha256:' + '0' * 64
+            with self.assertRaisesRegex(ValueError, 'SHA-256'):
+                self.verify(modified, self.tag, self.manifest, self.manifest, False)
+        for assets in [self.release['assets'][:1], self.release['assets'] * 2]:
+            with self.assertRaises(ValueError):
+                self.verify({**self.release, 'assets': assets}, self.tag, self.manifest, self.manifest, False)
 
 
 class ReleaseTests(unittest.TestCase):
@@ -159,6 +201,9 @@ esac
         self.assertEqual(arguments.count("--notes-file"), 2)
         notes = (self.root / "notes.md").read_text()
         self.assertTrue(notes.startswith("<!-- dnsp-downloads:start -->\n## Downloads\n"))
+        self.assertIn("Privacy & Security → Open Anyway", notes)
+        self.assertIn("[Apple’s Open Anyway steps](https://support.apple.com/en-us/102445#openanyway)", notes)
+        self.assertIn("[Full Apple guide](https://support.apple.com/en-us/102445)", notes)
         self.assertIn("## Release highlights\n\nDesktop monitoring and bounded latency reporting.", notes)
         self.assertNotIn("Windows (PoC)", notes)
         linked = [unquote(name) for name in re.findall(r"/releases/download/v0\.3\.8-modern/([^)]*)", notes)]

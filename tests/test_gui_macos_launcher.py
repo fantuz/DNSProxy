@@ -88,6 +88,15 @@ class MacGuiLauncherTests(unittest.TestCase):
             )
             self.assertEqual(record["PATH"], environment["PATH"])
 
+    def test_finder_reports_the_compatible_python_with_its_full_path(self):
+        with self.fixture() as (root, launcher, prefix, environment):
+            selected = prefix / "bin/python3"
+            self.python(selected)
+            result = self.run_launcher(launcher, environment, "--print-python")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, str(selected) + "\n")
+            self.assertFalse((root / "argv.json").exists())
+
     def test_python_check_uses_the_selected_interpreter_without_inserting_gui(self):
         with self.fixture() as (root, launcher, prefix, environment):
             self.python(prefix / "bin/python3")

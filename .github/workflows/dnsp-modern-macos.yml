@@ -33,10 +33,10 @@ jobs:
           - runner: macos-26
             arch: arm64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ inputs.ref || github.sha }}
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.13'
       - name: Build and bundle the shared C resolver
@@ -51,10 +51,13 @@ jobs:
           mkdir -p "$portable"
           tar -xzf "dist/dnsp-modern-$(cat VERSION)-macos-${{ matrix.arch }}.tar.gz" -C "$portable"
           (cd "$portable" && shasum -a 256 -c SHA256SUMS)
+          codesign --verify --deep --strict "$portable/DNSProxy.app"
+          codesign --verify --strict "$portable/dnsp-modern"
+          codesign --verify --strict "$portable/dnsp-macos"
           "$portable/dnsp-modern" --version
       - name: Install protocol fixtures and configure loopback test addresses
         run: |
-          python3 -m pip install 'hypercorn==0.18.0' 'h2==4.3.0'
+          python3 -m pip install -r ci/requirements-http2.txt
           for n in 2 3 4 5 6; do sudo ifconfig lo0 alias "127.0.0.$n" up; done
       - name: Install optional Homebrew desktop dependencies
         env:
@@ -75,8 +78,12 @@ jobs:
           "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_process.py -v
           "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_settings.py -v
           "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_telemetry.py -v
+          # Exercise GTK and resolver process controls from inside the sealed Finder bundle.
+          export DNSP_TEST_BINARY="$portable/DNSProxy.app/Contents/Helpers/dnsp-modern"
+          export DNSP_GUI_SOURCE="$portable/DNSProxy.app/Contents/Resources/gui"
+          export PYTHONDONTWRITEBYTECODE=1
           "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_native.py \
-            --binary "$portable/dnsp-modern" --artifacts "$PWD/dist/gui-native-macos-${{ matrix.arch }}"
+            --binary "$DNSP_TEST_BINARY" --artifacts "$PWD/dist/gui-native-macos-${{ matrix.arch }}"
       - name: Test the extracted CLI, launchd service and protocols
         env:
           DNSP_REQUIRE_IPV6: '1'
@@ -97,7 +104,7 @@ jobs:
           python3 -m unittest discover -s tests -p test_benchmark.py -v || failed=1
           python3 tests/test_macos.py -v || failed=1
           exit "$failed"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: dnsp-modern-macos-${{ matrix.arch }}
           path: |
@@ -107,7 +114,7 @@ jobs:
           retention-days: 14
       - name: Preserve native desktop evidence
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: dnsp-macos-gui-evidence-${{ matrix.arch }}
           path: |

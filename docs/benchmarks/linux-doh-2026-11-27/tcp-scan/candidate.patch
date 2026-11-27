@@ -1,0 +1,45 @@
+diff --git a/dnsp-modern.c b/dnsp-modern.c
+index 56de719..dd08d7c 100644
+--- a/dnsp-modern.c
++++ b/dnsp-modern.c
+@@ -1970,9 +1970,9 @@ static uint64_t tcp_deadline(const Client *c,uint64_t idle_ms) {
+     if(c->busy) return 0; /* libcurl owns the in-flight deadline */
+     return c->idle_since_ms+idle_ms;
+ }
+-static void expire_clients(uint64_t now,uint64_t idle_ms) {
+-    for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) {
+-        Client *c=&clients[i];
++static void expire_clients(uint64_t now,uint64_t idle_ms,const PollItem *tcp_items,size_t tcp_count) {
++    for(size_t i=0;i<tcp_count;i++) {
++        Client *c=&clients[tcp_items[i].idx];
+         if(!tcp_events(c) && dnsp_paused_tcp_reset(c->fd)) {close_client(c);continue;}
+         uint64_t deadline=tcp_deadline(c,idle_ms);
+         if(!deadline || now<deadline) continue;
+@@ -2322,6 +2322,7 @@ static int dnsp_run(int argc,char **argv) {
+             ADD(P_TCP_LISTEN,tcp[i],POLLIN,i,0);
+         }
+         if(mfd!=DNSP_BAD_SOCKET) ADD(P_METRIC_LISTEN,mfd,POLLIN,0,0);
++        size_t tcp_start=n;
+         for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) {
+             /* Even events=0 reports resets/errors while reads are paused. */
+             ADD(P_TCP_CLIENT,clients[i].fd,tcp_events(&clients[i]),i,clients[i].generation);
+@@ -2356,8 +2357,8 @@ static int dnsp_run(int argc,char **argv) {
+         }
+         uint64_t idle_ms=tcp_idle_ms;
+         if(tcp_count>=TCP_PRESSURE_CLIENTS && idle_ms>TCP_PRESSURE_IDLE_MS) idle_ms=TCP_PRESSURE_IDLE_MS;
+-        for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) {
+-            uint64_t deadline=tcp_deadline(&clients[i],idle_ms);
++        for(size_t i=0;i<tcp_count;i++) {
++            uint64_t deadline=tcp_deadline(&clients[items[tcp_start+i].idx],idle_ms);
+             if(!deadline) continue;
+             uint64_t left=now>=deadline?0:deadline-now;
+             if(left<(uint64_t)timeout) timeout=(int)left;
+@@ -2367,7 +2368,7 @@ static int dnsp_run(int argc,char **argv) {
+             fprintf(stderr,"level=error event=poll message=%s\n",dnsp_socket_message(dnsp_socket_error()));
+             exitcode=1;break;
+         }
+-        expire_clients(clock_ms(),idle_ms);
++        expire_clients(clock_ms(),idle_ms,&items[tcp_start],tcp_count);
+         for(size_t i=0;i<n && result>0;i++) {
+             short re=pfds[i].revents;
+             if(!re) continue;

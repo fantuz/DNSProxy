@@ -1,0 +1,48 @@
+diff --git a/dnsp-modern.c b/dnsp-modern.c
+index 56de719..239a115 100644
+--- a/dnsp-modern.c
++++ b/dnsp-modern.c
+@@ -272,11 +272,15 @@ struct Query {
+     Client *client;uint64_t generation;dnsp_socket_t udp_fd;
+     bool shareable_udp,added_padding,retried_stale;
+     size_t udp_waiter_count;
+-    UdpWaiter udp_waiters[MAX_UDP_WAITERS];
+     CacheEntry *cache_slot;
+     CacheHeaders cache_headers;
+     Query *next;
++    /* Only active queries need storage for coalesced UDP clients. */
++    UdpWaiter udp_waiters[];
+ };
++static Query *alloc_active_query(void) {
++    return malloc(sizeof(Query)+MAX_UDP_WAITERS*sizeof(UdpWaiter));
++}
+ typedef struct { curl_socket_t fd;int action;uint64_t generation; } CurlSocket;
+ typedef enum { PHASE_QUEUE, PHASE_TLS, PHASE_FIRST_BYTE, PHASE_COUNT } TimingPhase;
+ typedef struct {uint64_t usec,count;} PhaseTiming;
+@@ -1133,7 +1137,7 @@ static void move_query_owner(Query *to,const Query *from) {
+     to->peer=from->peer;to->peer_len=from->peer_len;to->udp_fd=from->udp_fd;
+     to->udp_local=from->udp_local;to->started_ms=from->started_ms;
+     to->udp_waiter_count=from->udp_waiter_count;
+-    memcpy(to->udp_waiters,from->udp_waiters,sizeof(to->udp_waiters));
++    memcpy(to->udp_waiters,from->udp_waiters,from->udp_waiter_count*sizeof(UdpWaiter));
+     to->cache_slot=from->cache_slot;to->hedge_secondary=false;
+ }
+ static void finish_hedge(Query *q,bool validated) {
+@@ -1177,7 +1181,7 @@ static void hedge_tick(uint64_t now) {
+         if(active_count>=MAX_ACTIVE || parallel_backups()>=MAX_PARALLEL_BACKUPS) {
+             metrics.hedges_suppressed++;continue;
+         }
+-        Query *other=malloc(sizeof(*other));
++        Query *other=alloc_active_query();
+         if(!other) {metrics.hedges_suppressed++;continue;}
+         *other=*q;
+         other->request=NULL;other->response=NULL;other->easy=NULL;
+@@ -1418,7 +1422,7 @@ static bool submit_until(const unsigned char *data,size_t len,Client *client,dns
+         if(upstream_hedge_ms) pending.hedge_at_ms=clock_ms()+(uint64_t)upstream_hedge_ms;
+         if(!upstream_hedge_ms || !endpoint->loopback_http) timeout_ms/=2;
+     }
+-    Query *q=malloc(sizeof(*q));
++    Query *q=alloc_active_query();
+     if(!q) goto setup_failure;
+     *q=pending;
+     bool https=!endpoint->loopback_http || (q->failover_deadline_ms && !backup.loopback_http);

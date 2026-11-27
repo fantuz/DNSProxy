@@ -12,13 +12,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install compiler, curl and Python venv
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev curl python3-venv openssl iproute2
+          sudo sh scripts/ci-install-ubuntu.sh build-essential pkg-config libcurl4-openssl-dev curl python3-venv openssl iproute2
       - name: Cache Linux HTTP2 fixture downloads
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ~/.cache/pip
           key: dnsp-pip-v1-${{ runner.os }}-${{ runner.arch }}-system-http2-${{ hashFiles('ci/requirements-*.txt') }}
@@ -43,6 +42,13 @@ jobs:
             --protocol both --concurrency 1,8,32 --warmup 0.3 --duration 1 \
             --max-host-connections 1 --assert-h2-multiplex \
             --output dist/bench-ci.json
+      - name: Verify DNS replies and upstream counts across three local forwarders
+        run: |
+          peers="$RUNNER_TEMP/doh-peers"
+          bench/fetch-comparison-peers.sh "$peers"
+          .bench-venv/bin/python bench/compare_resolvers.py \
+            --adguard "$peers/dnsproxy" --dnscrypt "$peers/dnscrypt-proxy" \
+            --runs 1 --clients 1 8 --workloads miss hit --duration 0.5 --warmup 0.25 --output dist/bench-ci-comparison
       - name: Measure constrained streams over a lossy upstream link
         run: |
           sudo sh bench/netem.sh 5ms 1% .bench-venv/bin/python \
@@ -60,19 +66,51 @@ jobs:
           .bench-venv/bin/python bench/bench_policy.py --binary "$PWD/dnsp-modern" \
             --baseline-binary "$baseline/dnsp-modern" --baseline-commit "$POLICY_BASE_SHA" \
             --output dist/bench-ci-policy.json
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: dnsp-modern-benchmark-smoke
-          path: dist/bench-ci*.*
+          path: |
+            dist/bench-ci*.*
+            dist/bench-ci-comparison/
           if-no-files-found: warn
           retention-days: 7
+
+  system-resolver-comparison:
+    name: Compare cached DoH, the OS DNS stub and direct UDP
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Build the resolver and fetch checksum-pinned peers
+        run: |
+          sudo sh scripts/ci-install-ubuntu.sh build-essential pkg-config libcurl4-openssl-dev python3-venv openssl iproute2
+          test -x /usr/lib/systemd/systemd-resolved
+          python3 -m venv .bench-venv
+          .bench-venv/bin/python -m pip install -r ci/requirements-http2.txt
+          make -f modern.mk dnsp-modern
+          bench/fetch-comparison-peers.sh "$RUNNER_TEMP/comparison-peers"
+      - name: Run the five DNS paths on the same host with loopback networking
+        run: |
+          sudo bench/compare-system-resolver.sh "$PWD/.bench-venv/bin/python" bench/compare_resolvers.py \
+            --adguard "$RUNNER_TEMP/comparison-peers/dnsproxy" --dnscrypt "$RUNNER_TEMP/comparison-peers/dnscrypt-proxy" \
+            --systemd-resolved /usr/lib/systemd/systemd-resolved --workloads miss hit --clients 1 8 32 \
+            --runs 3 --warmup 0.5 --duration 3 --delay-ms 1 --output dist/system-resolver-comparison
+          cat dist/system-resolver-comparison/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: doh-system-resolver-comparison
+          path: dist/system-resolver-comparison/
+          if-no-files-found: warn
+          retention-days: 14
 
   synthetic-h3:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Select the dependency refresh window
         id: dependencies
         run: echo "epoch=$(( $(date -u +%s) / 604800 ))" >> "$GITHUB_OUTPUT"
@@ -111,7 +149,7 @@ jobs:
             dnsp-modern-h3-ci sh bench/netem.sh --isolated 5ms 0.5% /opt/bench/bin/python \
             --protocol h2-h3 --concurrency 16 --warmup 0.6 --duration 2 \
             --output /results/bench-ci-h2-h3-netem.json
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: dnsp-modern-h2-h3-netem

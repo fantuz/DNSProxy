@@ -1,0 +1,21 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /ci
+    exclude-paths:
+      - windows-gui-runtime-packages.txt  # MSYS2 packages for the desktop installer
+    schedule:
+      interval: weekly
+    groups:
+      protocol-fixtures:
+        patterns: ["*"]
+        update-types: [minor, patch]

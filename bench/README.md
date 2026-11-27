@@ -10,7 +10,7 @@ or HTTP/1.1, and libcurl's certificate and hostname verification remain active.
 ```bash
 sudo apt install build-essential pkg-config libcurl4-openssl-dev python3 python3-venv openssl
 python3 -m venv .bench-venv
-.bench-venv/bin/python -m pip install 'hypercorn==0.18.0' 'h2==4.3.0'
+.bench-venv/bin/python -m pip install -r ci/requirements-http2.txt
 make -f modern.mk dnsp-modern
 make -f modern.mk modern-check    # existing DNS correctness tests
 .bench-venv/bin/python -m unittest discover -s tests -p test_benchmark.py -v
@@ -18,6 +18,82 @@ make -f modern.mk modern-check    # existing DNS correctness tests
 
 The two optional Python dependencies are used only by the synthetic server.
 `dnsp-modern` and its Debian package do **not** depend on Python, Hypercorn or h2.
+
+## Compare local DoH forwarders
+
+On Linux x86-64 with at least two available CPUs, follow the build steps above,
+then run the three resolvers against the same loopback TLS fixture. The download
+helper verifies both upstream release archives by SHA-256. Supply locally built
+peer binaries with the same options on other Linux architectures.
+
+```sh
+bench/fetch-comparison-peers.sh dist/doh-peers
+.bench-venv/bin/python bench/compare_resolvers.py \
+  --adguard dist/doh-peers/dnsproxy --dnscrypt dist/doh-peers/dnscrypt-proxy \
+  --runs 6 --clients 1 8 32 --warmup 0.75 --duration 4 --delay-ms 1 \
+  --output dist/doh-comparison
+```
+
+Use a new output directory for each run. Both peer downloads occur before the
+timed workload. The runner writes the binary identities and host details to
+`environment.json`, and one row per measured window to `measurements.csv`.
+During collection, rows are kept in `measurements.partial.csv`. After every
+requested workload passes, the runner publishes `measurements.csv` and
+`summary.md`. Use these final two files when comparing results. If a run stops
+early, use the partial CSV to diagnose the last completed workload, then
+repeat in a new directory.
+A timeout, incorrect DNS answer, fallback from HTTP/2 or mismatch between
+client replies and upstream requests fails the run. The CI smoke test checks
+these conditions on a short workload.
+
+### Comparing a resolver patch
+
+To compare DNSProxy builds, supply the release binary and the candidate directly.
+The runner gives both the same options and alternates their order by repetition.
+
+```sh
+.bench-venv/bin/python bench/compare_resolvers.py \
+  --dnsp /path/to/release/dnsp-modern --candidate /path/to/patched/dnsp-modern \
+  --workloads miss hit --clients 1 32 --runs 8 --warmup .5 --duration 3 \
+  --output dist/resolver-patch-comparison
+```
+
+Compare paired runs, tail latency and CPU time per completed query. Run the
+normal UDP and TCP correctness tests before adopting an event-loop change.
+
+### Warm answers and the operating system resolver
+
+Add `--workloads miss hit` to measure both workloads at every client level.
+The miss case uses unique names with the cache disabled. The hit case enables
+each forwarder's cache, primes 16 positive A records one at a time, then changes
+the DNS transaction ID on every query. Priming must produce 16 upstream replies.
+Every timed hot window must have zero upstream requests and correct client
+replies. The fixture TTL is 60 s. Keep the hot phase short enough to fit the
+TTL. The report lists the runs and working-set size in `environment.json`.
+
+Add `--direct-udp` to measure the upstream fixture directly. For a comparison
+with Linux’s `systemd-resolved`, run the following after fetching the peers.
+Use a Linux machine with the OS daemon installed, `iproute2`, and permission
+to create mount and network namespaces. No host DNS config edits are needed.
+
+```sh
+sudo bench/compare-system-resolver.sh "$PWD/.bench-venv/bin/python" bench/compare_resolvers.py \
+  --adguard "$PWD/dist/doh-peers/dnsproxy" --dnscrypt "$PWD/dist/doh-peers/dnscrypt-proxy" \
+  --systemd-resolved /usr/lib/systemd/systemd-resolved --workloads miss hit \
+  --clients 1 8 32 --runs 3 --warmup .5 --duration 3 --delay-ms 1 \
+  --output "$PWD/dist/system-resolver-comparison"
+```
+
+The wrapper starts an isolated copy of the OS daemon with private configuration
+and runtime directories. A virtual Ethernet pair entirely inside the namespace
+gives systemd-resolved an active network link. There is no default route. All
+test traffic uses loopback. The three DoH programs run as the invoking user,
+or as `nobody` when started directly by root. Keep their binaries accessible
+to that account. The system stub sends plain UDP to a local responder with the same A record and artificial delay as the DoH
+fixture. `CacheFromLocalhost=yes` enables the OS cache for this upstream. The
+direct UDP row measures the same responder with no forwarding process. Its
+proxy CPU and RSS cells are empty. The three DoH paths still validate TLS and
+HTTP/2. Compare the UDP and HTTPS rows with their transport costs in mind.
 
 ## Baseline: HTTP/2 vs HTTP/1.1 under identical conditions
 

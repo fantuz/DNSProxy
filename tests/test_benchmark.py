@@ -20,6 +20,41 @@ from mock_doh import MockServer, make_response  # noqa: E402
 
 
 class BenchmarkUnitTests(unittest.TestCase):
+    def test_peer_comparison_rejects_wrong_answers_and_truncation(self):
+        from compare_resolvers import SUFFIX, valid_reply
+
+        question = b'\x01q' + SUFFIX
+        query = struct.pack('!6H', 42, 0x0100, 1, 0, 0, 0) + question
+        reply = make_response(query, 1, question_suffix=SUFFIX)
+        self.assertTrue(valid_reply(reply, 42, question))
+        self.assertFalse(valid_reply(reply, 43, question))
+        self.assertFalse(valid_reply(reply, 42, b'\x01r' + SUFFIX))
+        self.assertFalse(valid_reply(reply[:-1], 42, question))
+        self.assertFalse(valid_reply(reply[:-1] + b'\x02', 42, question))
+        self.assertFalse(valid_reply(reply[:2] + b'\x83' + reply[3:], 42, question))
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux benchmark credentials')
+    def test_privileged_runner_uses_the_callers_identity_for_doh(self):
+        import pwd
+        from compare_resolvers import forwarder_credentials
+
+        nobody = pwd.getpwnam('nobody')
+        with patch('os.geteuid', return_value=0):
+            for source in ('0', str(nobody.pw_uid)):
+                with self.subTest(sudo_uid=source), patch.dict(os.environ, SUDO_UID=source):
+                    self.assertEqual(forwarder_credentials(),
+                                     dict(user=nobody.pw_uid, group=nobody.pw_gid, extra_groups=[]))
+        with patch('os.geteuid', return_value=nobody.pw_uid):
+            self.assertEqual(forwarder_credentials(), {})
+
+    def test_peer_fixture_returns_nxdomain_for_startup_probe(self):
+        from compare_resolvers import SUFFIX
+
+        question = b'\x05probe\x04test\x08dnscrypt\x00\x00\x02\x00\x01'
+        query = struct.pack('!6H', 9, 0x0100, 1, 0, 0, 0) + question
+        reply = make_response(query, 1, question_suffix=SUFFIX)
+        self.assertEqual(reply, struct.pack('!6H', 9, 0x8183, 1, 0, 0, 0) + question)
+
     def test_listener_ports_are_distinct_even_with_the_same_candidate_order(self):
         # Identical candidate orders reproduce the former two-call collision.
         with patch('bench_modern.random.sample', return_value=[12001, 12002, 12003]), \
@@ -39,6 +74,26 @@ class BenchmarkUnitTests(unittest.TestCase):
         for index, sock in enumerate(sockets):
             sock.bind.assert_called_once_with(('127.0.0.1', 12001 if index < 2 else 12002))
             sock.__exit__.assert_called_once()
+
+    @unittest.skipUnless(sys.platform.startswith('linux') and hasattr(os, 'sched_getaffinity')
+                         and len(os.sched_getaffinity(0)) >= 2 and BINARY.is_file(),
+                         'requires the built Linux resolver and two CPUs')
+    def test_failed_comparison_retains_only_partial_results(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            broken = root / 'broken-peer'
+            broken.write_text('#!/bin/sh\ncase "$1" in --version|-version) echo fixture ;; *) exit 1 ;; esac\n')
+            broken.chmod(0o755)
+            dest = root / 'results'
+            run = subprocess.run([sys.executable, str(BASE/'bench/compare_resolvers.py'),
+                                  '--dnsp', str(BINARY), '--adguard', str(broken), '--dnscrypt', str(broken),
+                                  '--clients', '1', '--runs', '1', '--warmup', '.05', '--duration', '.1',
+                                  '--output', str(dest)], text=True, capture_output=True, timeout=35)
+            self.assertNotEqual(run.returncode, 0)
+            self.assertIn('AdGuard exited prematurely', run.stderr)
+            self.assertIn('DNSProxy,1,1,', (dest/'measurements.partial.csv').read_text())
+            self.assertFalse((dest/'measurements.csv').exists())
+            self.assertFalse((dest/'summary.md').exists())
 
     def test_h2_initial_stream_limit_waits_for_settings_ack(self):
         from h2.config import H2Configuration

@@ -28,7 +28,7 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ inputs.ref }}
       - name: Read source metadata
@@ -58,14 +58,13 @@ jobs:
             IMAGE_CREATED=${{ steps.source.outputs.created }}
             SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}
       - name: Cache Linux protocol fixture downloads
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ~/.cache/pip
           key: dnsp-pip-v1-${{ runner.os }}-${{ runner.arch }}-system-protocol-${{ hashFiles('ci/requirements-*.txt') }}
       - name: Install image inspection and fixture tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends skopeo python3-venv openssl
+          sudo sh scripts/ci-install-ubuntu.sh --no-install-recommends skopeo python3-venv openssl
           python3 -m venv .container-venv
           .container-venv/bin/python -m pip install -r ci/requirements-protocol.txt
       - name: Validate and import exactly the built image
@@ -91,7 +90,7 @@ jobs:
       - name: Checksum the tested native archive
         working-directory: out
         run: sha256sum image-${{ matrix.arch }}.tar > image-${{ matrix.arch }}.tar.sha256
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: dnsp-oci-platform-${{ matrix.arch }}
           path: out/
@@ -107,10 +106,10 @@ jobs:
     outputs:
       digest: ${{ steps.bundle.outputs.digest }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ inputs.ref }}
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: dnsp-oci-platform-*
           merge-multiple: true
@@ -132,8 +131,7 @@ jobs:
         env:
           OCI_DIGEST: ${{ steps.bundle.outputs.digest }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends skopeo
+          sudo sh scripts/ci-install-ubuntu.sh --no-install-recommends skopeo
           docker run -d --name dnsp-oci-registry -p 127.0.0.1:5000:5000 registry:3
           trap 'docker rm -f dnsp-oci-registry' EXIT
           for attempt in $(seq 1 30); do
@@ -158,7 +156,7 @@ jobs:
             echo 'Download the dnsp-oci-image artifact to try the combined OCI archive.'
             echo 'PRs and snapshot builds do not publish registry tags.'
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: dnsp-oci-image
           path: dist/

@@ -15,6 +15,7 @@ case "$RELEASE_MODE" in
     master)
         master=$(git ls-remote --exit-code origin refs/heads/master)
         if [[ "${master%%$'\t'*}" != "$RELEASE_COMMIT" ]]; then
+            if [[ -n ${GITHUB_OUTPUT:-} ]]; then echo 'release_state=superseded' >> "$GITHUB_OUTPUT"; fi
             echo "A newer master build will handle publication"
             exit 0
         fi
@@ -120,6 +121,7 @@ if [[ "$target" != "$RELEASE_COMMIT" ]]; then
 fi
 
 if [[ "$draft" = false ]]; then
+    release_state=existing
     echo "$tag is already published"
 else
     notes=$(mktemp)
@@ -136,6 +138,11 @@ else
             --title "DNSProxy Modern $version" --prerelease=false "${notes_args[@]}" \
             --notes-file "$notes"
     )
+    release_state=created
+fi
+
+if [[ -n ${GITHUB_OUTPUT:-} ]]; then
+    printf 'release_state=%s\n' "$release_state" >> "$GITHUB_OUTPUT"
 fi
 
 if [[ "$RELEASE_MODE" == manual ]]; then

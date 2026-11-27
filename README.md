@@ -12,11 +12,13 @@
   <a href="https://github.com/fantuz/DNSProxy/commits/master"><img src="https://img.shields.io/github/last-commit/fantuz/DNSProxy/master" alt="Last commit on master" height="20"></a>
   <br>
   <a href="packaging/README-packaging.md#packages-and-architectures"><img src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-507269" alt="Platforms: Linux, macOS and Windows" height="20"></a>
+  <a href="https://github.com/fantuz/DNSProxy/pkgs/container/dnsproxy"><img src="https://img.shields.io/badge/container-GHCR-286090" alt="Container image on GitHub Container Registry" height="20"></a>
   <a href="dnsp-modern.c"><img src="https://img.shields.io/badge/core-C11-00599c" alt="Shared resolver core: C11" height="20"></a>
   <a href="packaging/README-packaging.md#packages-and-architectures"><img src="https://img.shields.io/badge/Install-DEB%2FRPM%20%C2%B7%20amd64%2Farm64-2e7d32" alt="Install DEB or RPM packages for amd64 and arm64" height="20"></a>
   <br>
   <a href="#optional-upstream-http3"><img src="https://img.shields.io/badge/Upstream%20DoH-HTTP%2F2%20%2B%20optional%20HTTP%2F3-0072b8" alt="Upstream DoH with HTTP/2 and optional HTTP/3" height="20"></a>
   <a href="https://www.rfc-editor.org/rfc/rfc8484"><img src="https://img.shields.io/badge/DoH-RFC%208484-blue" alt="RFC 8484" height="20"></a>
+  <a href="docs/benchmarks/linux-doh-2026-11-27/README.md"><img src="https://img.shields.io/badge/DoH_benchmark-results-326b4c" alt="DoH forwarder benchmark results" height="20"></a>
   <a href="SECURITY.md"><img src="https://img.shields.io/badge/security-private%20reporting-507269" alt="Security policy and private vulnerability reporting" height="20"></a>
 </p>
 
@@ -38,6 +40,12 @@ multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
 </p>
 
 <p align="center">
+  <a href="docs/MACOS.md#download-and-start">Verify the Mac download</a> ·
+  <a href="https://support.apple.com/en-us/102445#openanyway">Apple’s Open Anyway steps</a> ·
+  <a href="https://support.apple.com/en-us/102445">Full Apple guide</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/fantuz/DNSProxy/releases/latest#downloads"><img src="https://img.shields.io/badge/Download%20for%20Linux-DEB%20%2F%20RPM-2e7d32?style=for-the-badge" alt="Download for Linux — DEB and RPM packages" height="28"></a>
 </p>
 
@@ -48,11 +56,11 @@ by the interface. Monitoring an existing service is read-only. Linux packages,
 bundled Windows desktop installers and a Homebrew-based Mac launcher provide
 the platform-specific distribution formats.
 
-Release **v4.11.1-modern** contains 22 deliverables plus `SHA256SUMS`. These include Linux
+Release **v4.12.0-modern** contains 22 deliverables plus `SHA256SUMS`. These include Linux
 daemon/GUI packages, Windows portable ZIPs, resolver/service and bundled desktop
 setup EXEs, matching desktop-runtime source ZIPs, and native macOS archives with
-the Homebrew GUI launcher. Each build records its source revision in addition
-to the version number. See the [4.11.1 release notes](docs/releases/4.11.1.md).
+the Finder app for the Homebrew-based GUI. Each build records its source revision in
+addition to the version number. See the [4.12.0 release notes](docs/releases/4.12.0.md).
 
 [Windows setup guide](docs/WINDOWS.md)
 · [macOS setup guide](docs/MACOS.md)
@@ -79,7 +87,11 @@ table, extract it into its own folder and run **Start-DNSProxy.command**. Both
 architectures run natively using Apple's system libcurl; no Homebrew or Rosetta
 is required. The launcher uses local port **5053**. See the macOS guide for port
 53, launchd service installation, reversible DNS setup and download approval.
-The distributed executables are not Developer ID signed or notarized.
+The downloads have no Apple Developer ID or notarization. After you verify the
+archive and try opening it once, an unidentified-developer alert can be
+approved for that item in **System Settings → Privacy & Security → Open Anyway
+→ Open**. Managed Macs may require administrator approval.
+[Verify a Mac download and open it](docs/MACOS.md#download-and-start)
 
 This project grew out of DNS transport and privacy experiments dating to roughly
 2009–2010 and work surrounding [RFC 8484](https://www.rfc-editor.org/rfc/rfc8484).
@@ -88,6 +100,28 @@ in [docs/README-legacy.md](docs/README-legacy.md).
 
 The upstream resolver handles recursion and DNSSEC validation. DNS privacy
 also depends on how clients route their DNS traffic and which upstream they use.
+
+## Performance against other DoH forwarders
+
+The [Linux HTTP/2 comparison](docs/benchmarks/linux-doh-2026-11-27/README.md)
+measures DNSProxy 4.11.1, AdGuard dnsproxy v0.86.0 and dnscrypt-proxy 2.1.21
+with 1, 8 and 32 concurrent UDP clients. It includes throughput, tail latency,
+CPU and resident memory, raw measurements and a command to repeat the test.
+At 32 clients, median throughput was 2,752, 3,049 and 2,772 queries/s
+respectively. DNSProxy used 10.9 MiB resident memory at that load.
+
+With one uncached query outstanding, DNSProxy had the highest median throughput
+(520 queries/s) and a p95 of 2.39 ms. A single PC can issue several lookups at
+once. Choose the row that matches your outstanding queries, and account for cache
+hits and upstream network time when comparing with your desktop. With 16 names
+already cached and 32 clients, DNSProxy served 123,410 queries/s at 0.68 ms p99.
+No timed warm queries reached the upstream. [Warm-cache comparison](docs/benchmarks/linux-doh-2026-11-27/README.md#warm-cache-comparison)
+
+A separate Ubuntu run includes the built-in `systemd-resolved` stub and its
+plain UDP upstream. At 32 clients DNSProxy and the OS stub served 107,748 and
+31,296 cached queries/s. On misses the same paths reached 2,681 over DoH and
+10,439 over UDP. Direct UDP reached 19,362 queries/s.
+[Five-path comparison and raw data](docs/benchmarks/linux-doh-2026-11-27/README.md#linux-system-resolver-and-direct-upstream)
 
 ## Rust feasibility port
 
@@ -598,6 +632,8 @@ before supplying a replacement. See
 
 ## Packages and releases
 
+The [4.12.0 release notes](docs/releases/4.12.0.md) cover the macOS Finder app,
+warm-cache and OS resolver comparisons, and release asset verification.
 The [4.11.1 release notes](docs/releases/4.11.1.md) cover the retirement of
 `dnsp-h2.c` and the port allocation fix for loopback tests and benchmarks.
 The [4.11.0 release notes](docs/releases/4.11.0.md) cover DNS outcome metrics,
@@ -663,7 +699,9 @@ they do not establish a general GUI-overhead bound for every workload.
 
 ## Contributing
 
-See the [C maintenance guide](docs/C_MAINTENANCE.md) for repository layout
-criteria, C review checks, and commands to run before opening a PR.
-See the [security policy](SECURITY.md) for private vulnerability reporting.
+The [contributor guide](CONTRIBUTING.md) covers reporting issues, testing
+changes and opening a PR. See the [C maintenance guide](docs/C_MAINTENANCE.md)
+for resolver review checks, the [GitHub maintenance guide](docs/GITHUB-MAINTENANCE.md)
+for repository and release controls, and the [security policy](SECURITY.md)
+for private vulnerability reporting.
 

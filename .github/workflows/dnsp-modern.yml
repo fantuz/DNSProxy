@@ -41,7 +41,7 @@ jobs:
     outputs:
       commit: ${{ steps.prepare.outputs.commit }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.sha }}
       - id: prepare
@@ -68,7 +68,7 @@ jobs:
       gui: ${{ steps.pr.outputs.gui }}
       containers: ${{ steps.pr.outputs.containers }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.prepare-release.outputs.commit || github.sha }}
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
@@ -111,19 +111,20 @@ jobs:
           }
 
           common=(dnsp-modern.c dnsp-platform.h dnsp-service.h dnsp-policy.h modern.mk VERSION .github/workflows/dnsp-modern.yml)
-          check_paths codeql "${common[@]}" .github/workflows/codeql.yml
-          check_paths fuzz "${common[@]}" tests/fuzz_dns.c tests/make_fuzz_corpus.py \
+          ubuntu_common=("${common[@]}" scripts/ci-install-ubuntu.sh)
+          check_paths codeql "${ubuntu_common[@]}" .github/workflows/codeql.yml
+          check_paths fuzz "${ubuntu_common[@]}" tests/fuzz_dns.c tests/make_fuzz_corpus.py \
             tests/test_modern.py .github/workflows/dnsp-modern-fuzz.yml
-          check_paths protocols "${common[@]}" ci/ bench/ tests/test_benchmark.py tests/test_http3.py \
+          check_paths protocols "${ubuntu_common[@]}" ci/ bench/ tests/test_benchmark.py tests/test_http3.py \
             tests/test_modern.py .dockerignore .github/workflows/dnsp-modern-benchmark.yml
           check_paths windows "${common[@]}" bench/ tests/ packaging/windows/ docs/WINDOWS.md \
             scripts/build-windows.sh scripts/build-windows-installer.ps1 scripts/bundle-windows.py scripts/build-windows-gui-bundle.py packaging/windows/gui-bootstrap.py tools/desktop-gui/ scripts/run-windows-tests.py ci/ scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-windows.yml .github/workflows/dnsp-windows-gui.yml
           check_paths macos "${common[@]}" bench/ tests/ packaging/macos/ docs/MACOS.md \
             scripts/build-macos.sh scripts/measure-macos-build.py tools/desktop-gui/ scripts/update-blocklist.py docs/BLOCKLISTS.md docs/MACOS-GUI.md docs/DESKTOP-GUI.md .github/workflows/dnsp-modern-macos.yml
           check_paths measure_macos scripts/build-macos.sh scripts/measure-macos-build.py .github/workflows/dnsp-modern-macos.yml
-          check_paths gui "${common[@]}" packaging/gui/ scripts/build-gui-deb.sh scripts/test-gui-package.py tools/desktop-gui/ tools/linux-gui/ 'tests/test_gui_*.py' \
+          check_paths gui "${ubuntu_common[@]}" packaging/gui/ scripts/build-gui-deb.sh scripts/test-gui-package.py tools/desktop-gui/ tools/linux-gui/ 'tests/test_gui_*.py' \
             docs/LINUX-GUI.md docs/DESKTOP-GUI.md docs/MACOS-GUI.md docs/images/ scripts/build-windows-gui-bundle.py packaging/windows/ .github/workflows/dnsp-linux-gui-poc.yml .github/workflows/dnsp-windows-gui.yml
-          check_paths containers "${common[@]}" ci/ Dockerfile .dockerignore compose.yaml packaging/container/ \
+          check_paths containers "${ubuntu_common[@]}" ci/ Dockerfile .dockerignore compose.yaml packaging/container/ \
             tests/test_container.py tests/test_oci_bundle.py tests/test_oci_publish.py tests/test_modern.py tests/test_policy.py tests/test_http3.py \
             bench/ docs/CONTAINERS.md .github/workflows/dnsp-modern-container.yml
 
@@ -149,13 +150,12 @@ jobs:
             distro: ubuntu24.04
             arch: arm64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.plan.outputs.commit }}
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev dpkg-dev python3
+          sudo sh scripts/ci-install-ubuntu.sh build-essential pkg-config libcurl4-openssl-dev dpkg-dev python3
       - name: Build and inspect the package
         id: build
         env:
@@ -174,7 +174,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends "./$GUI_PACKAGE"
           /usr/bin/python3 scripts/test-gui-package.py
           sudo apt-get purge -y dnsp-modern-gui
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: dnsp-modern-${{ matrix.distro }}-${{ matrix.arch }}
           path: |
@@ -202,7 +202,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends build-essential pkg-config libcurl4-openssl-dev dpkg-dev python3 git ca-certificates openssl
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.plan.outputs.commit }}
       - name: Build and inspect the package
@@ -227,7 +227,7 @@ jobs:
           apt-get install -y --no-install-recommends "./$GUI_PACKAGE"
           /usr/bin/python3 scripts/test-gui-package.py
           apt-get purge -y dnsp-modern-gui
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: dnsp-modern-debian13-${{ matrix.arch }}
           path: |
@@ -255,7 +255,7 @@ jobs:
         run: |
           # Allow a compatible package set while Rocky mirrors synchronize updates.
           dnf install -y --nobest gcc make git rpm-build redhat-rpm-config libcurl-devel openssl python3 systemd-rpm-macros
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.plan.outputs.commit }}
       - name: Build and inspect the package
@@ -277,7 +277,7 @@ jobs:
           python3 tests/test_modern.py Tests.test_udp Tests.test_tcp
           dnf remove -y dnsp-modern-gui dnsp-modern
           test ! -e /usr/bin/dnsp-modern
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: dnsp-modern-rocky9-${{ matrix.arch }}
           path: |
@@ -292,13 +292,12 @@ jobs:
     name: AddressSanitizer and UndefinedBehaviorSanitizer
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.plan.outputs.commit }}
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev python3
+          sudo sh scripts/ci-install-ubuntu.sh build-essential pkg-config libcurl4-openssl-dev python3
       - name: Sanitizer integration test suite
         env:
           # Keep sanitizer findings fatal, with useful UBSan stack traces.
@@ -315,13 +314,12 @@ jobs:
     if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.plan.outputs.commit }}
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev python3 iproute2 util-linux
+          sudo sh scripts/ci-install-ubuntu.sh build-essential pkg-config libcurl4-openssl-dev python3 iproute2 util-linux
       - name: Build the portable resolver
         run: make -f modern.mk dnsp-modern
       - name: Exercise an IPv4-only host and strict IPv6 rejection
@@ -459,6 +457,8 @@ jobs:
 
   publish:
     name: Publish the tested package set
+    outputs:
+      verified: ${{ steps.verify.outcome }}
     if: >-
       !cancelled() && github.event_name != 'pull_request' &&
       needs.plan.result == 'success' && needs.deb.result == 'success' &&
@@ -475,15 +475,16 @@ jobs:
       group: dnsp-modern-release-${{ needs.plan.outputs.tag }}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.plan.outputs.commit }}
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: dnsp-modern-*
           merge-multiple: true
           path: release-assets
       - name: Publish Linux packages, Windows installers and ZIPs, macOS archives, and checksums
+        id: release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -492,11 +493,32 @@ jobs:
           RELEASE_TAG: ${{ needs.plan.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.plan.outputs.commit }}
         run: bash scripts/publish-modern.sh release-assets
+      - name: Verify the published package set before promoting the container
+        id: verify
+        if: steps.release.outputs.release_state != 'superseded'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          RELEASE_STATE: ${{ steps.release.outputs.release_state }}
+        shell: bash
+        run: |
+          remote="$RUNNER_TEMP/published-assets"
+          mkdir -p "$remote"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$remote/release.json"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir "$remote"
+          flags=()
+          case "$RELEASE_STATE" in
+            created) flags+=(--newly-published) ;;
+            existing) ;;
+            *) exit 1 ;;
+          esac
+          python3 scripts/verify-release-assets.py "$RELEASE_TAG" "$remote/release.json" \
+            "$remote/SHA256SUMS" release-assets/SHA256SUMS "${flags[@]}"
 
   publish-container:
     name: Publish the tested OCI image to GHCR
     needs: [plan, containers, publish]
-    if: ${{ !cancelled() && needs.publish.result == 'success' && needs.containers.result == 'success' }}
+    if: ${{ !cancelled() && needs.publish.result == 'success' && needs.publish.outputs.verified == 'success' && needs.containers.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -506,10 +528,10 @@ jobs:
       group: dnsp-modern-container-publish-${{ github.repository }}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ needs.plan.outputs.commit }}
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: dnsp-oci-image
           path: oci-release
@@ -527,8 +549,7 @@ jobs:
           gh release view "$RELEASE_TAG" --json isDraft,isPrerelease \
             --jq 'if (.isDraft or .isPrerelease) then error("A stable published release is required") else . end'
           (cd oci-release && sha256sum -c dnsp-modern-linux.oci.tar.sha256)
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends skopeo
+          sudo sh scripts/ci-install-ubuntu.sh --no-install-recommends skopeo
           authfile="$RUNNER_TEMP/ghcr-auth.json"
           trap 'rm -f "$authfile"' EXIT
           printf '%s' "$GH_TOKEN" | skopeo login --authfile "$authfile" --username "$GITHUB_ACTOR" --password-stdin ghcr.io

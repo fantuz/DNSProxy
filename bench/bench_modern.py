@@ -72,12 +72,12 @@ def free_port(*, exclude=()):
     return free_ports(1, exclude=exclude)[0]
 
 
-def make_certificate(directory):
+def make_certificate(directory, *, san='DNS:localhost'):
     cert = directory/'localhost.pem'
     key = directory/'localhost.key'
     subprocess.run([os.environ.get('DNSP_TEST_OPENSSL', 'openssl'), 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
                     '-days', '1', '-keyout', str(key), '-out', str(cert),
-                    '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost'],
+                    '-subj', '/CN=localhost', '-addext', f'subjectAltName={san}'],
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return cert, key
 

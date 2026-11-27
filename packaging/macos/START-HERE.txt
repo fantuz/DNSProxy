@@ -1,0 +1,27 @@
+DNSProxy on macOS 15 or newer
+
+1. Choose the Intel or Apple Silicon archive for your Mac and verify its SHA-256
+   against SHA256SUMS from the same official GitHub release. See MACOS.md for
+   the exact command. In the extracted folder, verify the contents with
+   shasum -a 256 -c SHA256SUMS
+
+2. To run the resolver without installing anything, open Start-DNSProxy.command.
+   It listens on loopback port 5053. Control-C stops it. To use the desktop
+   monitor, install its runtime with "brew install gtk4 pygobject3", then move
+   DNSProxy.app to Applications (or ~/Applications) and open it. The app
+   includes its own resolver. System DNS configuration is a separate choice.
+
+3. These builds use ad-hoc integrity signatures. Apple has not identified the
+   publisher or notarized the download. If macOS reports an unidentified
+   developer or cannot check the item, first try opening it. If you trust
+   this verified copy, open System Settings > Privacy & Security > Open Anyway
+   for the named item, then confirm Open. macOS may name a command or helper
+   separately. A managed Mac can reserve approval for its administrator.
+
+   Apple’s Open Anyway steps
+   https://support.apple.com/en-us/102445#openanyway
+   Full Apple guide to download alerts
+   https://support.apple.com/en-us/102445
+
+   For a damaged or malware warning, stop and recheck the official download and
+   checksum. Report a persistent warning through the project's security policy.
