@@ -61,6 +61,26 @@ class BenchmarkUnitTests(unittest.TestCase):
             sock.bind.assert_called_once_with(('127.0.0.1', 12001 if index < 2 else 12002))
             sock.__exit__.assert_called_once()
 
+    @unittest.skipUnless(sys.platform.startswith('linux') and hasattr(os, 'sched_getaffinity')
+                         and len(os.sched_getaffinity(0)) >= 2 and BINARY.is_file(),
+                         'requires the built Linux resolver and two CPUs')
+    def test_failed_comparison_retains_only_partial_results(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            broken = root / 'broken-peer'
+            broken.write_text('#!/bin/sh\ncase "$1" in --version|-version) echo fixture ;; *) exit 1 ;; esac\n')
+            broken.chmod(0o755)
+            dest = root / 'results'
+            run = subprocess.run([sys.executable, str(BASE/'bench/compare_resolvers.py'),
+                                  '--dnsp', str(BINARY), '--adguard', str(broken), '--dnscrypt', str(broken),
+                                  '--clients', '1', '--runs', '1', '--warmup', '.05', '--duration', '.1',
+                                  '--output', str(dest)], text=True, capture_output=True, timeout=35)
+            self.assertNotEqual(run.returncode, 0)
+            self.assertIn('AdGuard exited prematurely', run.stderr)
+            self.assertIn('DNSProxy,1,1,', (dest/'measurements.partial.csv').read_text())
+            self.assertFalse((dest/'measurements.csv').exists())
+            self.assertFalse((dest/'summary.md').exists())
+
     def test_h2_initial_stream_limit_waits_for_settings_ack(self):
         from h2.config import H2Configuration
         from h2.connection import H2Connection

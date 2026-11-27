@@ -106,6 +106,11 @@ CPU and resident memory, raw measurements and a command to repeat the test.
 At 32 clients, median throughput was 2,752, 3,049 and 2,772 queries/s
 respectively. DNSProxy used 10.9 MiB resident memory at that load.
 
+With one uncached query outstanding, DNSProxy had the highest median throughput
+(520 queries/s) and a p95 of 2.39 ms. A single PC can issue several lookups at
+once. Choose the row that matches your outstanding queries, and account for cache
+hits and upstream network time when comparing with your desktop.
+
 ## Rust feasibility port
 
 A separate Rust implementation evaluates feasibility, protocol compatibility

@@ -300,7 +300,9 @@ def write_summary(directory, rows):
             rss = median(r['rss_mib'] for r in group)
             lines.append(f'| {clients} | {name} | {median(rates):,.0f} | {min(rates):,.0f}–{max(rates):,.0f} | '
                          + ' | '.join(f'{ms:.2f}' for ms in timings) + f' | {cpu:.0f} | {rss:.1f} |')
-    (directory / 'summary.md').write_text('\n'.join(lines) + '\n')
+    temporary = directory / 'summary.partial.md'
+    temporary.write_text('\n'.join(lines) + '\n')
+    temporary.replace(directory / 'summary.md')
 
 
 def main():
@@ -339,7 +341,8 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / 'environment.json').write_text(json.dumps(metadata, indent=2) + '\n')
     os.sched_setaffinity(0, allowed[1:])
-    with tempfile.TemporaryDirectory() as tmp, (args.output / 'measurements.csv').open('w', newline='') as output:
+    partial = args.output / 'measurements.partial.csv'
+    with tempfile.TemporaryDirectory() as tmp, partial.open('w', newline='') as output:
         directory = Path(tmp)
         cert, key = make_certificate(directory, san='IP:127.0.0.1,DNS:localhost')
         writer = None
@@ -358,7 +361,8 @@ def main():
                         output.flush()
                         print(name, 'run', i+1, 'clients', row['clients'], 'QPS', row['qps'], flush=True)
 
-        write_summary(args.output, rows)
+    partial.replace(args.output / 'measurements.csv')
+    write_summary(args.output, rows)
 
 
 if __name__ == '__main__':

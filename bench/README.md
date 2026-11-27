@@ -37,7 +37,11 @@ bench/fetch-comparison-peers.sh dist/doh-peers
 Use a new output directory for each run. Both peer downloads occur before the
 timed workload. The runner writes the binary identities and host details to
 `environment.json`, and one row per measured window to `measurements.csv`.
-A complete run also writes the median and range table to `summary.md`.
+During collection, rows are kept in `measurements.partial.csv`. After every
+requested workload passes, the runner publishes `measurements.csv` and
+`summary.md`. Use these final two files when comparing results. If a run stops
+early, use the partial CSV to diagnose the last completed workload, then
+repeat in a new directory.
 A timeout, incorrect DNS answer, fallback from HTTP/2 or mismatch between
 client replies and upstream requests fails the run. The CI smoke test checks
 these conditions on a short workload.

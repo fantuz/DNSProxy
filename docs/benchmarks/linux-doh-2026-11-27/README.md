@@ -32,6 +32,25 @@ give every repetition, the HTTP method counts and the number of TLS connections
 that carried measured traffic. The [environment](environment.json) identifies
 the hardware, kernel, proxy binaries, TLS library and fixture versions.
 
+## Comparing a desktop or shared resolver
+
+One benchmark client sends its next query only after the previous reply.
+A desktop doing serial lookups fits that case. A browser loading several hostnames
+or multiple applications can have queries outstanding at the same time on one PC.
+For a shared resolver, compare both throughput and p95/p99 at the observed load.
+
+If the loopback metrics endpoint is enabled on port 9090, sample it during
+normal use. Compare changes in cache hits and misses over the same interval.
+The in-flight gauge is an instantaneous sample and can miss short bursts.
+
+```sh
+curl -fsS http://127.0.0.1:9090/metrics |
+  grep -E '^dnsp_(queries_inflight|cache_(hits|misses)_total) '
+```
+
+Keep the cache configured as you normally use it. The benchmark disabled it
+to measure forwarding cost. [Metrics and observability](../../../README.md#metrics-and-observability)
+
 ## Workload
 
 - The Linux x86-64 client kept one UDP query outstanding per socket, with 1, 8
