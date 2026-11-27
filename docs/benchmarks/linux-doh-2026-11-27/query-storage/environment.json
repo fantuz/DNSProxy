@@ -1,0 +1,48 @@
+{
+  "started_utc": "2026-11-27T17:33:45.183702+00:00",
+  "cpu_model": "INTEL(R) XEON(R) PLATINUM 8573C",
+  "system": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "python": "3.12.14",
+  "distribution": "Debian GNU/Linux 13 (trixie)",
+  "dependencies": {
+    "hypercorn": "0.18.0",
+    "h2": "4.4.1"
+  },
+  "binaries": {
+    "DNSProxy": {
+      "version": "dnsp-modern 4.11.1\nlibcurl_build=8.14.1\nlibcurl_runtime=8.14.1\ntls_backend=OpenSSL/3.5.9\nhttp2=yes\nhttp3=yes\nprefer_h3=yes",
+      "binary_sha256": "73a4dd25367e2aa39d803650ee490e39be85d5fb31510e381ff73e18e05a0236"
+    },
+    "DNSProxy candidate": {
+      "version": "dnsp-modern 4.11.1\nlibcurl_build=8.14.1\nlibcurl_runtime=8.14.1\ntls_backend=OpenSSL/3.5.9\nhttp2=yes\nhttp3=yes\nprefer_h3=yes",
+      "binary_sha256": "006fa3ee70856dffed223c78d7189bb4ab40909eaf1b8d5180bc66975e5e5f26"
+    }
+  },
+  "doh_forwarder_privileges": "unprivileged",
+  "proxy_cpu": 0,
+  "fixture_client_cpus": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "runs": 8,
+  "clients": [
+    1,
+    32
+  ],
+  "workloads": [
+    "miss",
+    "hit"
+  ],
+  "direct_udp": false,
+  "hot_names": 16,
+  "duration_s": 3.0,
+  "warmup_s": 0.5,
+  "fixture_delay_ms": 1.0,
+  "clock_ticks_per_second": 100
+}

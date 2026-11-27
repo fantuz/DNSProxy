@@ -54,6 +54,39 @@ session measured 2,731, 3,013 and 2,791 QPS respectively at 32 clients.
 [Full paired workload table](cache/summary.md) · [108 measurement windows](cache/measurements.csv) ·
 [Environment](cache/environment.json)
 
+## Linux system resolver and direct upstream
+
+A separate Ubuntu 24.04.5 run compared five paths on one four-vCPU AMD EPYC
+runner. A UDP client queried each local forwarder directly. The three DoH
+forwarders used HTTP/2 with validated TLS. Ubuntu’s `systemd-resolved` 255
+used a plain UDP upstream, and the direct row sent the same questions straight
+to that upstream. Both fixtures served the same A answer after a 1 ms delay.
+All traffic stayed on loopback in an isolated network namespace.
+
+| Resolver or path | Miss QPS, 1 client | Miss QPS, 8 | Miss QPS, 32 | Hit QPS, 1 client | Hit QPS, 8 | Hit QPS, 32 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| DNSProxy | 586 | 1,918 | 2,681 | 25,571 | 101,413 | 107,748 |
+| AdGuard dnsproxy | 562 | 2,194 | 2,772 | 11,564 | 36,239 | 22,343 |
+| dnscrypt-proxy | 550 | 2,055 | 2,424 | 12,718 | 41,382 | 41,896 |
+| systemd-resolved | 776 | 4,239 | 10,439 | 13,715 | 32,588 | 31,296 |
+| Direct UDP upstream | 853 | 5,692 | 19,362 | — | — | — |
+
+All 483,156 measured misses produced exactly one upstream answer each, and all
+4,357,212 measured warm answers produced zero upstream requests. Direct UDP
+has no forwarding cache. At 32 clients DNSProxy’s cached p99 was 0.34 ms and
+the OS stub’s was 1.81 ms. On misses their p99s were 16.19 and 4.08 ms,
+respectively. These paths include different transports and fixture software.
+The OS row measures UDP to the Linux stub socket. Application caches and
+libc/NSS lookups are outside this measurement.
+
+The table gives medians across three rotated repetitions of 3 s per window,
+after a 0.5 s warm-up. This host and its libcurl differ from the Debian run
+above. Compare rows within the same session.
+[Full table with latency, CPU and RSS](system-resolver/summary.md) ·
+[81 measurement windows](system-resolver/measurements.csv) · [Environment](system-resolver/environment.json) ·
+[GitHub Actions run](https://github.com/fantuz/DNSProxy/actions/runs/46042370733/job/140653420291) ·
+[Reproduction](../../../bench/README.md#warm-answers-and-the-operating-system-resolver)
+
 ## Comparing a desktop or shared resolver
 
 One benchmark client sends its next query only after the previous reply.
@@ -90,6 +123,20 @@ TCP slot handling. To repeat the test, apply the candidate patch to
 [Candidate patch](tcp-scan/candidate.patch) · [Per-build medians](tcp-scan/summary.md) ·
 [64 measurement windows](tcp-scan/measurements.csv) · [Environment](tcp-scan/environment.json) ·
 [Build comparison command](../../../bench/README.md#comparing-a-resolver-patch)
+
+## Per-query storage experiment
+
+A second candidate reserved the eight coalesced UDP client slots only in active
+heap queries. An immediate cache hit could skip initializing those slots.
+The same eight-pair experiment completed 64 windows and 7,209,210 verified
+replies. With one cached client, process CPU time per query fell in all eight
+pairs (median −2.5%) and throughput rose in six (median +2.0%). At 32 cached
+clients throughput improved in five of eight pairs (median +1.3%). With one
+uncached client the median paired p99 increased 13.7%. The production resolver
+keeps its current allocation. A longer run on dedicated hardware would help
+establish whether the single-client CPU saving holds without a latency cost.
+[Candidate patch](query-storage/candidate.patch) · [Per-build medians](query-storage/summary.md) ·
+[64 measurement windows](query-storage/measurements.csv) · [Environment](query-storage/environment.json)
 
 ## Uncached workload
 

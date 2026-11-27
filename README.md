@@ -113,6 +113,12 @@ hits and upstream network time when comparing with your desktop. With 16 names
 already cached and 32 clients, DNSProxy served 123,410 queries/s at 0.68 ms p99.
 No timed warm queries reached the upstream. [Warm-cache comparison](docs/benchmarks/linux-doh-2026-11-27/README.md#warm-cache-comparison)
 
+A separate Ubuntu run includes the built-in `systemd-resolved` stub and its
+plain UDP upstream. At 32 clients DNSProxy and the OS stub served 107,748 and
+31,296 cached queries/s. On misses the same paths reached 2,681 over DoH and
+10,439 over UDP. Direct UDP reached 19,362 queries/s.
+[Five-path comparison and raw data](docs/benchmarks/linux-doh-2026-11-27/README.md#linux-system-resolver-and-direct-upstream)
+
 ## Rust feasibility port
 
 A separate Rust implementation evaluates feasibility, protocol compatibility
