@@ -15,8 +15,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install compiler, curl and Python venv
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev curl python3-venv openssl iproute2
+          sudo sh scripts/ci-install-ubuntu.sh build-essential pkg-config libcurl4-openssl-dev curl python3-venv openssl iproute2
       - name: Cache Linux HTTP2 fixture downloads
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
@@ -86,8 +85,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Build the resolver and fetch checksum-pinned peers
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev python3-venv openssl iproute2
+          sudo sh scripts/ci-install-ubuntu.sh build-essential pkg-config libcurl4-openssl-dev python3-venv openssl iproute2
           test -x /usr/lib/systemd/systemd-resolved
           python3 -m venv .bench-venv
           .bench-venv/bin/python -m pip install -r ci/requirements-http2.txt

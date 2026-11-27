@@ -19,8 +19,7 @@ jobs:
           if [ -f /etc/apt/apt-mirrors.txt ]; then
             printf '%s\n' 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
           fi
-          sudo apt-get update
-          sudo apt-get install -y clang libclang-rt-dev libcurl4-openssl-dev pkg-config
+          sudo sh scripts/ci-install-ubuntu.sh clang libclang-rt-dev libcurl4-openssl-dev pkg-config
       - name: Fuzz DNS wire and HTTP cache parsers
         run: make -f modern.mk modern-fuzz FUZZ_CC=/usr/bin/clang
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

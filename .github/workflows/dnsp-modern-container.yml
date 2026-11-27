@@ -64,8 +64,7 @@ jobs:
           key: dnsp-pip-v1-${{ runner.os }}-${{ runner.arch }}-system-protocol-${{ hashFiles('ci/requirements-*.txt') }}
       - name: Install image inspection and fixture tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends skopeo python3-venv openssl
+          sudo sh scripts/ci-install-ubuntu.sh --no-install-recommends skopeo python3-venv openssl
           python3 -m venv .container-venv
           .container-venv/bin/python -m pip install -r ci/requirements-protocol.txt
       - name: Validate and import exactly the built image
@@ -132,8 +131,7 @@ jobs:
         env:
           OCI_DIGEST: ${{ steps.bundle.outputs.digest }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends skopeo
+          sudo sh scripts/ci-install-ubuntu.sh --no-install-recommends skopeo
           docker run -d --name dnsp-oci-registry -p 127.0.0.1:5000:5000 registry:3
           trap 'docker rm -f dnsp-oci-registry' EXIT
           for attempt in $(seq 1 30); do

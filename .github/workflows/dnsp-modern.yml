@@ -111,19 +111,20 @@ jobs:
           }
 
           common=(dnsp-modern.c dnsp-platform.h dnsp-service.h dnsp-policy.h modern.mk VERSION .github/workflows/dnsp-modern.yml)
-          check_paths codeql "${common[@]}" .github/workflows/codeql.yml
-          check_paths fuzz "${common[@]}" tests/fuzz_dns.c tests/make_fuzz_corpus.py \
+          ubuntu_common=("${common[@]}" scripts/ci-install-ubuntu.sh)
+          check_paths codeql "${ubuntu_common[@]}" .github/workflows/codeql.yml
+          check_paths fuzz "${ubuntu_common[@]}" tests/fuzz_dns.c tests/make_fuzz_corpus.py \
             tests/test_modern.py .github/workflows/dnsp-modern-fuzz.yml
-          check_paths protocols "${common[@]}" ci/ bench/ tests/test_benchmark.py tests/test_http3.py \
+          check_paths protocols "${ubuntu_common[@]}" ci/ bench/ tests/test_benchmark.py tests/test_http3.py \
             tests/test_modern.py .dockerignore .github/workflows/dnsp-modern-benchmark.yml
           check_paths windows "${common[@]}" bench/ tests/ packaging/windows/ docs/WINDOWS.md \
             scripts/build-windows.sh scripts/build-windows-installer.ps1 scripts/bundle-windows.py scripts/build-windows-gui-bundle.py packaging/windows/gui-bootstrap.py tools/desktop-gui/ scripts/run-windows-tests.py ci/ scripts/update-blocklist.py docs/BLOCKLISTS.md .github/workflows/dnsp-modern-windows.yml .github/workflows/dnsp-windows-gui.yml
           check_paths macos "${common[@]}" bench/ tests/ packaging/macos/ docs/MACOS.md \
             scripts/build-macos.sh scripts/measure-macos-build.py tools/desktop-gui/ scripts/update-blocklist.py docs/BLOCKLISTS.md docs/MACOS-GUI.md docs/DESKTOP-GUI.md .github/workflows/dnsp-modern-macos.yml
           check_paths measure_macos scripts/build-macos.sh scripts/measure-macos-build.py .github/workflows/dnsp-modern-macos.yml
-          check_paths gui "${common[@]}" packaging/gui/ scripts/build-gui-deb.sh scripts/test-gui-package.py tools/desktop-gui/ tools/linux-gui/ 'tests/test_gui_*.py' \
+          check_paths gui "${ubuntu_common[@]}" packaging/gui/ scripts/build-gui-deb.sh scripts/test-gui-package.py tools/desktop-gui/ tools/linux-gui/ 'tests/test_gui_*.py' \
             docs/LINUX-GUI.md docs/DESKTOP-GUI.md docs/MACOS-GUI.md docs/images/ scripts/build-windows-gui-bundle.py packaging/windows/ .github/workflows/dnsp-linux-gui-poc.yml .github/workflows/dnsp-windows-gui.yml
-          check_paths containers "${common[@]}" ci/ Dockerfile .dockerignore compose.yaml packaging/container/ \
+          check_paths containers "${ubuntu_common[@]}" ci/ Dockerfile .dockerignore compose.yaml packaging/container/ \
             tests/test_container.py tests/test_oci_bundle.py tests/test_oci_publish.py tests/test_modern.py tests/test_policy.py tests/test_http3.py \
             bench/ docs/CONTAINERS.md .github/workflows/dnsp-modern-container.yml
 
@@ -154,8 +155,7 @@ jobs:
           ref: ${{ needs.plan.outputs.commit }}
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev dpkg-dev python3
+          sudo sh scripts/ci-install-ubuntu.sh build-essential pkg-config libcurl4-openssl-dev dpkg-dev python3
       - name: Build and inspect the package
         id: build
         env:
@@ -297,12 +297,7 @@ jobs:
           ref: ${{ needs.plan.outputs.commit }}
       - name: Install dependencies
         run: |
-          # This job needs only Ubuntu packages. Runner-added vendor feeds can fail independently.
-          sources=/etc/apt/sources.list.d/ubuntu.sources
-          if [ ! -s "$sources" ]; then sources=/etc/apt/sources.list; fi
-          test -s "$sources"
-          sudo apt-get -o "Dir::Etc::sourcelist=$sources" -o Dir::Etc::sourceparts=- update
-          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev python3
+          sudo sh scripts/ci-install-ubuntu.sh build-essential pkg-config libcurl4-openssl-dev python3
       - name: Sanitizer integration test suite
         env:
           # Keep sanitizer findings fatal, with useful UBSan stack traces.
@@ -324,8 +319,7 @@ jobs:
           ref: ${{ needs.plan.outputs.commit }}
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev python3 iproute2 util-linux
+          sudo sh scripts/ci-install-ubuntu.sh build-essential pkg-config libcurl4-openssl-dev python3 iproute2 util-linux
       - name: Build the portable resolver
         run: make -f modern.mk dnsp-modern
       - name: Exercise an IPv4-only host and strict IPv6 rejection
@@ -555,8 +549,7 @@ jobs:
           gh release view "$RELEASE_TAG" --json isDraft,isPrerelease \
             --jq 'if (.isDraft or .isPrerelease) then error("A stable published release is required") else . end'
           (cd oci-release && sha256sum -c dnsp-modern-linux.oci.tar.sha256)
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends skopeo
+          sudo sh scripts/ci-install-ubuntu.sh --no-install-recommends skopeo
           authfile="$RUNNER_TEMP/ghcr-auth.json"
           trap 'rm -f "$authfile"' EXIT
           printf '%s' "$GH_TOKEN" | skopeo login --authfile "$authfile" --username "$GITHUB_ACTOR" --password-stdin ghcr.io

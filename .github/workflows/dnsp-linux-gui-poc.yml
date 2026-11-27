@@ -42,8 +42,7 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
       - name: Install native Linux dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo sh scripts/ci-install-ubuntu.sh --no-install-recommends \
             build-essential pkg-config libcurl4-openssl-dev \
             python3-gi python3-gi-cairo gir1.2-gtk-4.0 python3-venv \
             xvfb xauth dbus-x11 imagemagick desktop-file-utils
