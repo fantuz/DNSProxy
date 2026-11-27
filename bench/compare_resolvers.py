@@ -280,6 +280,7 @@ timeout = 3000
 [static.fixture]
 stamp = 'sdns://{encoded}'
 """)
+    config.chmod(0o644)  # Readable by the unprivileged forwarder inside the private directory.
     return [binary, '-config', str(config)]
 
 
@@ -308,6 +309,16 @@ def direct_upstream(args, run, port, metrics):
                    proxy_cpu_s=None, rss_mib=None, **upstream)
 
 
+def forwarder_credentials():
+    # The namespace wrapper needs root, but ordinary desktop forwarders do not.
+    if os.geteuid() != 0:
+        return {}
+    import pwd
+    uid = int(os.environ.get('SUDO_UID', '0'))
+    account = pwd.getpwuid(uid) if uid else pwd.getpwnam('nobody')
+    return dict(user=account.pw_uid, group=account.pw_gid, extra_groups=[])
+
+
 def scenario(name, binary, args, run, directory, cert, upstream, metrics, workload):
     protocol = 'udp' if name == 'systemd-resolved' else 'h2'
     port, = free_ports(1, exclude=[upstream])
@@ -317,9 +328,10 @@ def scenario(name, binary, args, run, directory, cert, upstream, metrics, worklo
     env.update(SSL_CERT_FILE=str(cert), GOMAXPROCS='1')
     # Give the forwarder exclusive use of one allowed CPU among benchmark processes.
     log = directory / 'proxy.log'
+    credentials = {} if name == 'systemd-resolved' else args.peer_credentials
     with log.open('wb') as stream:
         process = subprocess.Popen(['taskset', '-c', str(args.cpu), *command], env=env,
-                                   stdout=stream, stderr=subprocess.STDOUT, cwd=directory)
+                                   stdout=stream, stderr=subprocess.STDOUT, cwd=directory, **credentials)
         try:
             await_ready(port, process, name)
             await_forwarding(port, process)
@@ -339,6 +351,8 @@ def scenario(name, binary, args, run, directory, cert, upstream, metrics, worklo
                 row.update(proxy_cpu_s=round(cpu_after - cpu_before, 3), rss_mib=round(rss / 1048576, 2), **counts)
                 yield dict(resolver=name, run=run, clients=clients, workload=workload, **row)
         except Exception:
+            print(f'{name}, {workload}, repetition {run}. UDP counters from /proc/net/snmp:', flush=True)
+            print('\n'.join(s for s in Path('/proc/net/snmp').read_text().splitlines() if s.startswith('Udp:')), flush=True)
             print(log.read_text(errors='replace')[-3000:], flush=True)
             raise
         finally:
@@ -398,6 +412,7 @@ def main():
             or min(args.duration, args.warmup) <= 0 or args.delay_ms < 0):
         parser.error('requires two CPUs, distinct client counts in 1..128 and positive run lengths')
     args.cpu = allowed[0]
+    args.peer_credentials = forwarder_credentials()
     binaries = {name: path.resolve(strict=True) for name, path in
                 [('DNSProxy', args.dnsp), ('DNSProxy candidate', args.candidate),
                  ('AdGuard', args.adguard), ('dnscrypt-proxy', args.dnscrypt)] if path is not None}
@@ -413,7 +428,7 @@ def main():
     metadata = dict(started_utc=datetime.now(timezone.utc).isoformat(), cpu_model=model, system=platform.platform(), python=platform.python_version(),
                     distribution=platform.freedesktop_os_release()['PRETTY_NAME'],
                     dependencies={p: version(p) for p in ['hypercorn', 'h2']}, binaries=software,
-                    proxy_cpu=args.cpu, fixture_client_cpus=allowed[1:], runs=args.runs,
+                    doh_forwarder_privileges='unprivileged', proxy_cpu=args.cpu, fixture_client_cpus=allowed[1:], runs=args.runs,
                     clients=args.clients, workloads=args.workloads, direct_udp=bool(args.direct_udp or args.systemd_resolved), hot_names=HOT_NAMES, duration_s=args.duration, warmup_s=args.warmup,
                     fixture_delay_ms=args.delay_ms, clock_ticks_per_second=os.sysconf('SC_CLK_TCK'))
     args.output.mkdir(parents=True, exist_ok=False)
@@ -422,7 +437,12 @@ def main():
     partial = args.output / 'measurements.partial.csv'
     with tempfile.TemporaryDirectory() as tmp, partial.open('w', newline='') as output:
         directory = Path(tmp)
+        if args.peer_credentials:
+            # Permit directory traversal by the forwarder. The TLS private key stays root-only.
+            os.chown(directory, -1, args.peer_credentials['group'])
+            directory.chmod(0o710)
         cert, key = make_certificate(directory, san='IP:127.0.0.1,DNS:localhost')
+        cert.chmod(0o644)
         writer = None
         rows = []
         names = list(binaries)

@@ -33,6 +33,20 @@ class BenchmarkUnitTests(unittest.TestCase):
         self.assertFalse(valid_reply(reply[:-1] + b'\x02', 42, question))
         self.assertFalse(valid_reply(reply[:2] + b'\x83' + reply[3:], 42, question))
 
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux benchmark credentials')
+    def test_privileged_runner_uses_the_callers_identity_for_doh(self):
+        import pwd
+        from compare_resolvers import forwarder_credentials
+
+        nobody = pwd.getpwnam('nobody')
+        with patch('os.geteuid', return_value=0):
+            for source in ('0', str(nobody.pw_uid)):
+                with self.subTest(sudo_uid=source), patch.dict(os.environ, SUDO_UID=source):
+                    self.assertEqual(forwarder_credentials(),
+                                     dict(user=nobody.pw_uid, group=nobody.pw_gid, extra_groups=[]))
+        with patch('os.geteuid', return_value=nobody.pw_uid):
+            self.assertEqual(forwarder_credentials(), {})
+
     def test_peer_fixture_returns_nxdomain_for_startup_probe(self):
         from compare_resolvers import SUFFIX
 

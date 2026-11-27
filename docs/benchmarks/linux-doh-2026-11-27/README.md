@@ -70,10 +70,28 @@ curl -fsS http://127.0.0.1:9090/metrics |
   grep -E '^dnsp_(queries_inflight|cache_(hits|misses)_total) '
 ```
 
-Keep the cache configured as you normally use it. The benchmark disabled it
-to measure forwarding cost. [Metrics and observability](../../../README.md#metrics-and-observability)
+Keep the cache configured as you normally use it. The miss workload disables
+the answer cache to measure forwarding cost. [Metrics and observability](../../../README.md#metrics-and-observability)
 
-## Workload
+## Event-loop experiment
+
+The release scans its TCP client slots when it computes the next poll deadline
+and when it expires idle clients. A candidate reused the active TCP entries
+already in the poll list for those two operations. Both builds used the same
+compiler flags and ran with 1 and 32 UDP clients, alternating the order over
+eight paired repetitions. All 64 windows completed with verified DNS answers.
+
+At 32 clients with warm answers, the candidate delivered less throughput in
+seven of eight pairs. Its median paired change was −6.5% in queries/s, +10.5%
+in CPU time per query and +17.5% in p99 latency. On misses at the same load,
+the median paired throughput change was +0.4%. The release keeps its current
+TCP slot handling. To repeat the test, apply the candidate patch to
+`v4.11.1-modern` in a separate checkout and pass both binaries to the runner.
+[Candidate patch](tcp-scan/candidate.patch) · [Per-build medians](tcp-scan/summary.md) ·
+[64 measurement windows](tcp-scan/measurements.csv) · [Environment](tcp-scan/environment.json) ·
+[Build comparison command](../../../bench/README.md#comparing-a-resolver-patch)
+
+## Uncached workload
 
 - The Linux x86-64 client kept one UDP query outstanding per socket, with 1, 8
   or 32 sockets. Each query used a distinct name under `.example.`, requested a
@@ -97,7 +115,7 @@ to measure forwarding cost. [Metrics and observability](../../../README.md#metri
 
 The shared virtual host, Python fixture and closed-loop client can all affect
 throughput. These measurements cover warm HTTP/2 connections and small cache
-misses. Internet RTT and loss, cache hits, persistent DNS-over-TCP clients,
+misses. Internet RTT and loss, mixed hit rates, persistent DNS-over-TCP clients,
 HTTP/3, larger responses and multicore scaling need separate measurements.
 An earlier comparison includes persistent TCP, HTTP/3 and larger responses
 for older revisions. [November 12 baseline](../linux-c-rust-go-2026-11-12/README.md)

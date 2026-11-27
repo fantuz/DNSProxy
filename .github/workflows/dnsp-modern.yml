@@ -297,7 +297,11 @@ jobs:
           ref: ${{ needs.plan.outputs.commit }}
       - name: Install dependencies
         run: |
-          sudo apt-get update
+          # This job needs only Ubuntu packages. Runner-added vendor feeds can fail independently.
+          sources=/etc/apt/sources.list.d/ubuntu.sources
+          if [ ! -s "$sources" ]; then sources=/etc/apt/sources.list; fi
+          test -s "$sources"
+          sudo apt-get -o "Dir::Etc::sourcelist=$sources" -o Dir::Etc::sourceparts=- update
           sudo apt-get install -y build-essential pkg-config libcurl4-openssl-dev python3
       - name: Sanitizer integration test suite
         env:

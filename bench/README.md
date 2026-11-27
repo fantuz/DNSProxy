@@ -87,8 +87,9 @@ sudo bench/compare-system-resolver.sh "$PWD/.bench-venv/bin/python" bench/compar
 The wrapper starts an isolated copy of the OS daemon with private configuration
 and runtime directories. A virtual Ethernet pair entirely inside the namespace
 gives systemd-resolved an active network link. There is no default route. All
-test traffic uses loopback. It sends plain UDP
-to a local responder with the same A record and artificial delay as the DoH
+test traffic uses loopback. The three DoH programs run as the invoking user,
+or as `nobody` when started directly by root. Keep their binaries accessible
+to that account. The system stub sends plain UDP to a local responder with the same A record and artificial delay as the DoH
 fixture. `CacheFromLocalhost=yes` enables the OS cache for this upstream. The
 direct UDP row measures the same responder with no forwarding process. Its
 proxy CPU and RSS cells are empty. The three DoH paths still validate TLS and
