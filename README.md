@@ -39,6 +39,8 @@ multi interface, TLS verification, and opportunistic HTTP/2 multiplexing.
   <a href="https://github.com/fantuz/DNSProxy/releases/latest#downloads"><img src="https://img.shields.io/badge/Download%20for%20macOS-Intel%20x86--64-555555?style=for-the-badge" alt="Download for macOS — Intel x86-64" height="28"></a>
 </p>
 
+<p align="center"><a href="docs/MACOS.md#download-and-start">Verify the Mac download and approve its first launch</a></p>
+
 <p align="center">
   <a href="https://github.com/fantuz/DNSProxy/releases/latest#downloads"><img src="https://img.shields.io/badge/Download%20for%20Linux-DEB%20%2F%20RPM-2e7d32?style=for-the-badge" alt="Download for Linux — DEB and RPM packages" height="28"></a>
 </p>
@@ -81,7 +83,11 @@ table, extract it into its own folder and run **Start-DNSProxy.command**. Both
 architectures run natively using Apple's system libcurl; no Homebrew or Rosetta
 is required. The launcher uses local port **5053**. See the macOS guide for port
 53, launchd service installation, reversible DNS setup and download approval.
-The distributed executables are not Developer ID signed or notarized.
+The downloads have no Apple Developer ID or notarization. After you verify the
+archive and try opening it once, an unidentified-developer alert can be
+approved for that item in **System Settings → Privacy & Security → Open Anyway
+→ Open**. Managed Macs may require administrator approval.
+[Verify a Mac download and open it](docs/MACOS.md#download-and-start)
 
 This project grew out of DNS transport and privacy experiments dating to roughly
 2009–2010 and work surrounding [RFC 8484](https://www.rfc-editor.org/rfc/rfc8484).

@@ -53,6 +53,12 @@ def downloads(version, repository, *, macos=True, windows_arm64=True, gui=True, 
     links = [asset("RPM", f"dnsp-modern-{version}-1.el9.{arch}.rpm")
              for arch in ("x86_64", "aarch64")]
     lines.append(f"| Rocky Linux 9 | {' | '.join(links)} |")
+    if macos:
+        lines.extend(["", "**Mac first launch:** Verify the archive against this release’s `SHA256SUMS`, "
+                      "then try opening the app or launcher once. If macOS cannot verify the developer "
+                      "and you trust the copy, choose **System Settings → Privacy & Security → Open Anyway**, "
+                      "then confirm **Open** for the named item. "
+                      "[Apple’s approval steps](https://support.apple.com/102445)."])
     if gui:
         lines.extend(["", "Optional Linux desktop monitor (works on both processor architectures):", "",
                       "| Platform | GUI package |", "| --- | --- |"])
@@ -73,7 +79,7 @@ def downloads(version, repository, *, macos=True, windows_arm64=True, gui=True, 
     if windows_gui:
         lines.extend(["", "**Desktop interface:** Windows desktop setup bundles its private GTK/Python runtime; "
                       "the matching source ZIP is provided for runtime redistribution and is not needed to run it. "
-                      "On macOS, install `gtk4 pygobject3` with Homebrew, then use **Start-DNSProxy-GUI.command**. "
+                      "On macOS, install `gtk4 pygobject3` with Homebrew, then open **DNSProxy.app** if included, or **Start-DNSProxy-GUI.command**. "
                       f"See the [desktop guide]({root}/blob/{tag}/docs/DESKTOP-GUI.md)."])
     lines.extend(["",
                   f"[Windows setup guide]({root}/blob/{tag}/docs/WINDOWS.md) · "

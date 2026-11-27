@@ -51,10 +51,13 @@ jobs:
           mkdir -p "$portable"
           tar -xzf "dist/dnsp-modern-$(cat VERSION)-macos-${{ matrix.arch }}.tar.gz" -C "$portable"
           (cd "$portable" && shasum -a 256 -c SHA256SUMS)
+          codesign --verify --deep --strict "$portable/DNSProxy.app"
+          codesign --verify --strict "$portable/dnsp-modern"
+          codesign --verify --strict "$portable/dnsp-macos"
           "$portable/dnsp-modern" --version
       - name: Install protocol fixtures and configure loopback test addresses
         run: |
-          python3 -m pip install 'hypercorn==0.18.0' 'h2==4.3.0'
+          python3 -m pip install -r ci/requirements-http2.txt
           for n in 2 3 4 5 6; do sudo ifconfig lo0 alias "127.0.0.$n" up; done
       - name: Install optional Homebrew desktop dependencies
         env:
@@ -75,8 +78,12 @@ jobs:
           "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_process.py -v
           "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_settings.py -v
           "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_telemetry.py -v
+          # Exercise GTK and resolver process controls from inside the sealed Finder bundle.
+          export DNSP_TEST_BINARY="$portable/DNSProxy.app/Contents/Helpers/dnsp-modern"
+          export DNSP_GUI_SOURCE="$portable/DNSProxy.app/Contents/Resources/gui"
+          export PYTHONDONTWRITEBYTECODE=1
           "$portable/gui/dnsp-gui-macos" --python-check tests/test_gui_native.py \
-            --binary "$portable/dnsp-modern" --artifacts "$PWD/dist/gui-native-macos-${{ matrix.arch }}"
+            --binary "$DNSP_TEST_BINARY" --artifacts "$PWD/dist/gui-native-macos-${{ matrix.arch }}"
       - name: Test the extracted CLI, launchd service and protocols
         env:
           DNSP_REQUIRE_IPV6: '1'

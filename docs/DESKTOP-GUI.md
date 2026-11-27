@@ -38,8 +38,8 @@ and is not required to run the application. Verify downloads with the release's
 
 On macOS, install `gtk4 pygobject3` with Homebrew before opening the launcher.
 The launcher chooses a compatible Homebrew Python without replacing system
-Python or changing the user's global environment. Its runtime dependencies are
-external; a self-contained `.app` is not included. The native CLI requires no
+Python or changing the user's global environment. New archives include a Finder app with its own resolver and GUI source.
+GTK and PyGObject come from Homebrew. The native CLI requires no
 Homebrew packages. See the [Mac desktop guide](MACOS-GUI.md).
 
 ## Monitor an existing resolver

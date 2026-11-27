@@ -19,13 +19,29 @@ and choose your Mac's architecture. **About This Mac** shows either an Intel
 processor or an Apple chip. Download the corresponding
 `dnsp-modern-VERSION-macos-x86_64.tar.gz` or
 `dnsp-modern-VERSION-macos-arm64.tar.gz` and `SHA256SUMS` from the same release.
-Before extracting, verify the archive against its entry in `SHA256SUMS`:
+In Terminal, open the download directory and set `archive` to the exact
+filename you downloaded. This example verifies the released Apple Silicon copy.
+For Intel, use the filename ending in `-macos-x86_64.tar.gz`.
 
 ```sh
-shasum -a 256 dnsp-modern-*-macos-*.tar.gz
+archive=dnsp-modern-4.11.1-macos-arm64.tar.gz
+expected=$(awk -v f="$archive" '$2 == f {print $1}' SHA256SUMS)
+actual=$(shasum -a 256 "$archive") && [ "${actual%% *}" = "$expected" ] && echo "Archive verified"
 ```
 
-Extract the archive into its own folder. Double-click **Start-DNSProxy.command**,
+Proceed when you see **Archive verified**. In the extracted folder, run
+`shasum -a 256 -c SHA256SUMS` to check the individual files.
+
+**First launch on a personal Mac.** Open the verified app, command or binary
+once. If macOS says the developer cannot be verified or Apple cannot check the
+item, dismiss the alert. Open **System Settings → Privacy & Security**, scroll
+to **Security**, click **Open Anyway** for the named item and confirm **Open**.
+macOS can request authentication. A helper named in a separate alert has its own
+approval. A managed Mac may reserve this decision for its administrator.
+For a damaged-file or malware alert, stop and verify a fresh official download.
+[Apple’s guide to download alerts and per-app approval](https://support.apple.com/102445)
+
+For the console resolver, double-click **Start-DNSProxy.command** in the extracted folder,
 or run it in Terminal. It listens on **127.0.0.1:5053** and **[::1]:5053**, using
 UDP and TCP, and forwards to Cloudflare over HTTPS. It enables 256 cache slots
 and loopback metrics on port 9090. Ctrl+C stops the foreground process.
@@ -148,12 +164,25 @@ DNSSEC behaviour, automatic reloads and the optional Python update helper.
 
 ## Download approval and signing
 
-These packages are not Developer ID signed or notarized. macOS may request
-approval before running a downloaded executable or command file. Follow
-[Apple's guidance for opening downloaded apps](https://support.apple.com/102445)
-after verifying the release and checksum. Distribution uses archive files and
-command-line installation; a graphical installer is not included. Global
-Gatekeeper changes are not required.
+The v4.11.1 archives provide `.command` launchers. New builds also include
+**DNSProxy.app** for Finder. The app contains the desktop code and a copy of the
+resolver, so it can be moved to `~/Applications` on its own. The desktop screen
+uses the Homebrew GTK runtime. The console launcher works with the system
+libraries already on the Mac. [Desktop setup](MACOS-GUI.md)
+
+New builds ad-hoc sign the app, the resolver and the service helper before
+producing the checksum manifest. An ad-hoc signature detects changes to the
+sealed code. The publisher has no Apple Developer ID signature or notarization
+ticket. Use the first-launch steps under [Download and start](#download-and-start).
+
+Maintainers can verify the extracted app with
+`codesign --verify --deep --strict --verbose=2 DNSProxy.app`. For a release
+acceptance test, download the candidate archive in Safari on a clean personal
+Mac, verify the checksum, extract it in Finder and follow the approval steps.
+With the desktop dependencies installed, open the app, start and stop its bundled
+resolver, then reopen the app. Record the macOS version, architecture and alert
+wording. CI separately verifies LaunchServices startup and the app signature on
+Intel and Apple Silicon. The interactive approval requires a human using the Mac.
 
 ## Build and validation
 

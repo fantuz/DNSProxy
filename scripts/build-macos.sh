@@ -26,7 +26,9 @@ if [[ $profile == release ]]; then release_flags+=(-Wl,-dead_strip); fi
 flags=("${release_flags[@]}" -std=c11 -Wall -Wextra -Wpedantic -Werror)
 bundle="dist/macos-$arch"
 rm -rf -- "$bundle"
-mkdir -p "$bundle"
+app="$bundle/DNSProxy.app"
+contents="$app/Contents"
+mkdir -p "$contents/MacOS" "$contents/Helpers" "$contents/Resources"
 build_pids=()
 wait_builds() {
     local failed=0 pid
@@ -46,6 +48,8 @@ compile() {
 compile resolver "${flags[@]}" -DDNSP_VERSION="\"$version\"" -o "$bundle/dnsp-modern" dnsp-modern.c -L"$sdk/usr/lib" -lcurl
 compile helper "${release_flags[@]}" -fobjc-arc -fblocks -Wall -Wextra -Werror \
     -o "$bundle/dnsp-macos" packaging/macos/dnsp-macos.m -framework Foundation -framework SystemConfiguration
+compile desktop "${release_flags[@]}" -fobjc-arc -Wall -Wextra -Werror \
+    -o "$contents/MacOS/DNSProxy" packaging/macos/desktop-main.m -framework AppKit
 compile dns-tests "${release_flags[@]}" -fobjc-arc -fblocks -Wall -Wextra -Werror -Wno-unused-function \
     -o dist/macos-dns-tests tests/test_macos_dns.m -framework Foundation -framework SystemConfiguration
 for probe in platform curl_callbacks; do
@@ -53,7 +57,7 @@ for probe in platform curl_callbacks; do
 done
 wait_builds
 # Reject accidental dependencies on the builder's Homebrew or workspace paths.
-for executable in dnsp-modern dnsp-macos; do
+for executable in dnsp-modern dnsp-macos DNSProxy.app/Contents/MacOS/DNSProxy; do
     [[ $(lipo -archs "$bundle/$executable") == "$arch" ]] || {
         echo "Unexpected executable architecture: $executable" >&2; exit 1;
     }
@@ -62,7 +66,12 @@ for executable in dnsp-modern dnsp-macos; do
         case "$dependency" in /usr/lib/*|/System/Library/*) ;; *) echo "Non-system dependency: $dependency" >&2; exit 1 ;; esac
     done
 done
-cp LICENSE "$bundle/"
+# Ad-hoc signatures provide integrity without a developer identity or Apple ticket.
+for executable in dnsp-modern dnsp-macos; do
+    codesign --force --sign - --identifier "io.github.fantuz.DNSProxy.$executable" "$bundle/$executable"
+    codesign --verify --strict "$bundle/$executable"
+done
+cp LICENSE packaging/macos/START-HERE.txt "$bundle/"
 cp docs/MACOS.md "$bundle/"
 cp docs/MACOS-GUI.md "$bundle/"
 cp docs/BLOCKLISTS.md scripts/update-blocklist.py "$bundle/"
@@ -74,12 +83,20 @@ mkdir -p "$bundle/gui"
 for module in tools/desktop-gui/*.py tools/desktop-gui/dnsp-gui-macos; do
     cp "$module" "$bundle/gui/"
 done
+cp "$bundle/dnsp-modern" "$contents/Helpers/"
+cp -R "$bundle/gui" "$contents/Resources/"
+cp packaging/macos/Desktop-Info.plist "$contents/Info.plist"
+/usr/bin/plutil -insert CFBundleShortVersionString -string "$version" "$contents/Info.plist"
+/usr/bin/plutil -insert CFBundleVersion -string "$version" "$contents/Info.plist"
+codesign --force --sign - "$app"
+codesign --verify --deep --strict "$app"
 chmod 755 "$bundle/Start-DNSProxy.command" "$bundle/Start-DNSProxy-GUI.command" "$bundle/gui/dnsp-gui-macos"
 {
     printf 'DNSProxy %s\nSource commit: %s\nArchitecture: %s\nMinimum macOS: 15.0\n' "$version" "$(git rev-parse HEAD)" "$arch"
     printf 'Release compiler flags:'; printf ' %q' "${release_flags[@]}"; printf '\n'
     printf 'CPU target: compiler portable baseline; no builder-specific CPU features\n'
     printf 'Compilation profile: %s\nCompilation workers: %s\n' "$profile" "$workers"
+    printf 'Signing: ad-hoc integrity signatures; no Developer ID or Apple notarization\n'
     printf 'Optional GUI: GTK 4/PyGObject/Cairo from Homebrew; source included under gui/\n'
     "$bundle/dnsp-modern" --version
     sw_vers

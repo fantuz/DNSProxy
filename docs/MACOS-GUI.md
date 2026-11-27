@@ -6,10 +6,9 @@ and an optional `Start-DNSProxy-GUI.command` launcher. The C resolver and its se
 still link only to macOS system libraries; the console launcher and launchd
 service do not require Homebrew, Python or GTK.
 
-The GUI uses a Homebrew-based launcher with external runtime dependencies;
-a self-contained `.app` is not included. The source and launcher are included
-in both native archive architectures. See the
-[4.10.0 release notes](releases/4.10.0.md).
+New native builds also include **DNSProxy.app**, a Finder entry point for the
+same monitor. Both the Python modules and the native resolver are inside the
+app. GTK and PyGObject come from the Mac’s Homebrew installation.
 
 ## Install the desktop dependencies
 
@@ -26,7 +25,11 @@ the complete archive. Keep `gui/`, `dnsp-modern` and
 `Start-DNSProxy-GUI.command` together. The archive's
 own checksum manifest covers every included source module and launcher.
 
-Double-click **Start-DNSProxy-GUI.command**, or run it in Terminal:
+If the archive contains **DNSProxy.app**, move it to Applications or
+`~/Applications` and double-click it. At the first unidentified-developer
+alert, use the [per-app approval steps](MACOS.md#download-and-start).
+With the v4.11.1 archive, double-click **Start-DNSProxy-GUI.command**, or run
+it in Terminal:
 
 ```sh
 ./Start-DNSProxy-GUI.command
@@ -42,8 +45,8 @@ translated by Rosetta on Apple Silicon, CPU time and process uptime are shown
 as unavailable because the native clock conversion cannot be verified. Traffic,
 resident memory and process controls remain available.
 
-The native downloads remain unsigned and unnotarized. Follow the normal
-macOS download-approval process described in the [Mac guide](MACOS.md).
+The app uses an ad-hoc integrity signature. Developer identification and
+notarization are explained in the [Mac guide](MACOS.md#download-approval-and-signing).
 
 ## Use the local resolver or connect to a service
 
