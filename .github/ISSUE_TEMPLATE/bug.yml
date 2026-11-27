@@ -1,0 +1,28 @@
+name: Bug report
+description: Report a reproducible problem with the resolver, desktop tools or packages.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a suspected vulnerability, [open a private report](https://github.com/fantuz/DNSProxy/security/advisories/new).
+        Remove credentials, private domains and client addresses from examples.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Version and environment
+      description: Include dnsp-modern --version, OS, architecture and installation method.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include the relevant configuration and DNS transport when applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Expected and observed behavior
+    validations:
+      required: true

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a vulnerability privately
+    url: https://github.com/fantuz/DNSProxy/security/advisories/new
+    about: Send security-sensitive details directly to the maintainers.
+  - name: Questions and design proposals
+    url: https://github.com/fantuz/DNSProxy/discussions
+    about: Discuss usage, packaging or a proposed change.

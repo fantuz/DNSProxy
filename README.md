@@ -12,6 +12,7 @@
   <a href="https://github.com/fantuz/DNSProxy/commits/master"><img src="https://img.shields.io/github/last-commit/fantuz/DNSProxy/master" alt="Last commit on master" height="20"></a>
   <br>
   <a href="packaging/README-packaging.md#packages-and-architectures"><img src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-507269" alt="Platforms: Linux, macOS and Windows" height="20"></a>
+  <a href="https://github.com/fantuz/DNSProxy/pkgs/container/dnsproxy"><img src="https://img.shields.io/badge/container-GHCR-286090" alt="Container image on GitHub Container Registry" height="20"></a>
   <a href="dnsp-modern.c"><img src="https://img.shields.io/badge/core-C11-00599c" alt="Shared resolver core: C11" height="20"></a>
   <a href="packaging/README-packaging.md#packages-and-architectures"><img src="https://img.shields.io/badge/Install-DEB%2FRPM%20%C2%B7%20amd64%2Farm64-2e7d32" alt="Install DEB or RPM packages for amd64 and arm64" height="20"></a>
   <br>
@@ -663,7 +664,9 @@ they do not establish a general GUI-overhead bound for every workload.
 
 ## Contributing
 
-See the [C maintenance guide](docs/C_MAINTENANCE.md) for repository layout
-criteria, C review checks, and commands to run before opening a PR.
-See the [security policy](SECURITY.md) for private vulnerability reporting.
+The [contributor guide](CONTRIBUTING.md) covers reporting issues, testing
+changes and opening a PR. See the [C maintenance guide](docs/C_MAINTENANCE.md)
+for resolver review checks, the [GitHub maintenance guide](docs/GITHUB-MAINTENANCE.md)
+for repository and release controls, and the [security policy](SECURITY.md)
+for private vulnerability reporting.
 
