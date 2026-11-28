@@ -138,7 +138,9 @@ over UDP. The mock does no recursion or caching.
   resolver’s kernel and user time with `GetProcessTimes`. The fixture, load
   generator and desktop monitor run in separate processes. For CPU cost per
   successful query, divide `proxy_cpu_seconds` by `successful_queries` in a
-  run with zero failures, truncations and timeouts.
+  run with zero failures, truncations and timeouts. Short, lightly loaded
+  Windows sampling windows can show zero elapsed process CPU ticks. Use longer windows
+  or more queries to measure those cases.
 * `proxy_rss_*` = Linux `/proc/PID` resident bytes; `proxy_rss_peak_bytes` is
   the **process lifetime** high-water mark, not a window-specific maximum.
 * `curl_metric_delta` = before/after differences from `127.0.0.1:<port>/metrics`,
@@ -283,3 +285,20 @@ remains 8 in `dnsp-modern` and in packaged services. The CLI options preserve
 backward compatibility. The benchmark uses ephemeral loopback ports and
 terminates its child proxy and mock server after completion; Ctrl-C should
 also stop the child when the harness exits.
+
+### Desktop monitor log cost
+
+The GUI checks its child process every 50 ms. To compare CPU time for taking
+an unchanged, full 64 KiB diagnostic snapshot, run the benchmark against two
+checkouts. It first checks redaction and output equality, then sizes each
+timing window for the local process clock and alternates build order.
+
+```sh
+python bench/bench_gui_log.py tools/desktop-gui/owned_process.py \
+  --baseline ../baseline/tools/desktop-gui/owned_process.py
+```
+
+The timer covers the Python snapshot method. GTK rendering, live DNS traffic
+and the resolver process are outside this measurement. Windows desktop CI
+runs the comparison with the packaged, native Python when this module changes
+and saves the timings alongside the installer evidence.

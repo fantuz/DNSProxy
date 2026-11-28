@@ -315,8 +315,6 @@ static long upstream_http_version=CURL_HTTP_VERSION_1_1;
 static struct curl_slist *doh_headers;
 static const char *ca_file; /* custom CA bundle for upstream TLS verification */
 static Client clients[MAX_CLIENTS];
-/* Slots below this bound can have holes. Higher slots are always free. */
-static size_t tcp_slot_limit;
 static CurlSocket curl_sockets[MAX_CURL_SOCKETS];
 static size_t curl_socket_count;
 static uint64_t curl_socket_generation;
@@ -612,7 +610,6 @@ static void close_client(Client *c) {
     c->busy=c->read_eof=c->out_satisfies_query=false;c->generation++;c->queries_started=0;
     c->frame_deadline=c->write_deadline=0;
     c->query_started_ms=c->out_started_ms=0;
-    while(tcp_slot_limit && clients[tcp_slot_limit-1].fd==DNSP_BAD_SOCKET) tcp_slot_limit--;
 }
 static void reply_dns(Query *q,const unsigned char *p,size_t n,unsigned ext_rcode,bool satisfies_query) {
     unsigned rcode=(ext_rcode<<4)|(p[3]&15);
@@ -1646,7 +1643,7 @@ static void close_metric(MetricClient *c) {
     c->fd=DNSP_BAD_SOCKET;c->have=c->reply_len=c->sent=0;c->generation++;
 }
 static size_t tcp_open_count(void) {
-    size_t n=0;for(size_t i=0;i<tcp_slot_limit;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) n++;
+    size_t n=0;for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) n++;
     return n;
 }
 static size_t cache_live_count(uint64_t now) {
@@ -1944,10 +1941,10 @@ static void accept_tcp(dnsp_socket_t server,bool is_metrics) {
             else {uint64_t g=metric_clients[j].generation+1;
                   metric_clients[j]=(MetricClient){.fd=fd,.generation=g,.last_ms=clock_ms()};}
         } else {
-            size_t slot=tcp_slot_limit,from_source=0;
-            for(size_t j=0;j<tcp_slot_limit;j++) {
+            size_t slot=MAX_CLIENTS,from_source=0;
+            for(size_t j=0;j<MAX_CLIENTS;j++) {
                 if(clients[j].fd==DNSP_BAD_SOCKET) {
-                    if(slot==tcp_slot_limit) slot=j;
+                    if(slot==MAX_CLIENTS) slot=j;
                 } else if(dnsp_same_ip(&clients[j].source,&peer)) from_source++;
             }
             if(from_source>=tcp_max_per_source) {
@@ -1959,7 +1956,6 @@ static void accept_tcp(dnsp_socket_t server,bool is_metrics) {
             } else {
                 uint64_t g=clients[slot].generation+1;
                 clients[slot]=(Client){.fd=fd,.source=peer,.generation=g,.idle_since_ms=clock_ms()};
-                if(slot==tcp_slot_limit) tcp_slot_limit++;
                 metrics.tcp_accepted++;
             }
         }
@@ -1975,7 +1971,7 @@ static uint64_t tcp_deadline(const Client *c,uint64_t idle_ms) {
     return c->idle_since_ms+idle_ms;
 }
 static void expire_clients(uint64_t now,uint64_t idle_ms) {
-    for(size_t i=0;i<tcp_slot_limit;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) {
+    for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) {
         Client *c=&clients[i];
         if(!tcp_events(c) && dnsp_paused_tcp_reset(c->fd)) {close_client(c);continue;}
         uint64_t deadline=tcp_deadline(c,idle_ms);
@@ -2326,7 +2322,7 @@ static int dnsp_run(int argc,char **argv) {
             ADD(P_TCP_LISTEN,tcp[i],POLLIN,i,0);
         }
         if(mfd!=DNSP_BAD_SOCKET) ADD(P_METRIC_LISTEN,mfd,POLLIN,0,0);
-        for(size_t i=0;i<tcp_slot_limit;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) {
+        for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) {
             /* Even events=0 reports resets/errors while reads are paused. */
             ADD(P_TCP_CLIENT,clients[i].fd,tcp_events(&clients[i]),i,clients[i].generation);
             tcp_count++;
@@ -2360,7 +2356,7 @@ static int dnsp_run(int argc,char **argv) {
         }
         uint64_t idle_ms=tcp_idle_ms;
         if(tcp_count>=TCP_PRESSURE_CLIENTS && idle_ms>TCP_PRESSURE_IDLE_MS) idle_ms=TCP_PRESSURE_IDLE_MS;
-        for(size_t i=0;i<tcp_slot_limit;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) {
+        for(size_t i=0;i<MAX_CLIENTS;i++) if(clients[i].fd!=DNSP_BAD_SOCKET) {
             uint64_t deadline=tcp_deadline(&clients[i],idle_ms);
             if(!deadline) continue;
             uint64_t left=now>=deadline?0:deadline-now;

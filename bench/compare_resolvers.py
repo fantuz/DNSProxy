@@ -387,7 +387,8 @@ def write_summary(directory, rows):
                 timings = [median(r[key] for r in group) for key in ('p50_ms', 'p95_ms', 'p99_ms')]
                 cpu = rss = '—'
                 if group[0]['proxy_cpu_s'] is not None:
-                    cpu = f"{median(r['proxy_cpu_s'] * 1e6 / r['queries'] for r in group):.0f}"
+                    cost = median(r['proxy_cpu_s'] * 1e6 / r['queries'] for r in group)
+                    cpu = f"{cost:.1f}" if cost else 'below resolution'
                 if group[0]['rss_mib'] is not None:
                     rss = f"{median(r['rss_mib'] for r in group):.1f}"
                 lines.append(f'| {workload} | {clients} | {name} | {median(rates):,.0f} | {min(rates):,.0f}–{max(rates):,.0f} | '

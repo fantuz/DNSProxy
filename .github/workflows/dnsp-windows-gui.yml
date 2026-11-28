@@ -125,6 +125,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.13.17'
@@ -143,6 +144,22 @@ jobs:
           $version = (Get-Content VERSION -Raw).Trim()
           Expand-Archive "dist/dnsp-modern-$version-windows-${{ matrix.arch }}-poc.zip" dist/windows
           Expand-Archive "dist/gtk-runtime-${{ matrix.arch }}.zip" "dist/windows-gui-${{ matrix.arch }}"
+      - name: Compare unchanged desktop log CPU with the PR base
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        run: |
+          $module = 'tools/desktop-gui/owned_process.py'
+          $changed = git diff --name-only HEAD^1 HEAD -- $module
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (-not $changed) { exit 0 }
+          $baseline = Join-Path $env:RUNNER_TEMP 'owned_process_base.py'
+          git show "HEAD^1:$module" | Set-Content -Encoding utf8NoBOM $baseline
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $desktop = "dist/windows-gui-${{ matrix.arch }}"
+          $evidence = (New-Item -Force -ItemType Directory dist/windows-gui-installer-evidence).FullName
+          & "$desktop/runtime/bin/python.exe" -I -B bench/bench_gui_log.py "$desktop/app/owned_process.py" --baseline $baseline | Tee-Object -FilePath "$evidence/desktop-log-cpu.md"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-Content "$evidence/desktop-log-cpu.md" >> $env:GITHUB_STEP_SUMMARY
       - name: Test native desktop models and packaging rules
         id: desktop-models
         continue-on-error: true

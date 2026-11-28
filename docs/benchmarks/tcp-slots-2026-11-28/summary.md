@@ -1,4 +1,8 @@
-# Local DoH forwarder comparison
+# TCP slot scan experiment
+
+The production resolver keeps its existing TCP loop. The patch saved a small
+amount of CPU on Linux, but consistently reduced warm-cache throughput on
+Windows AMD64 at 32 clients. The first table reports the initial Linux run.
 
 Medians across repetitions. The QPS range is the smallest and largest run.
 Latency columns are medians of the per-run percentiles. CPU time and RSS
@@ -34,10 +38,43 @@ A negative CPU or latency change means less CPU time or lower latency.
 | Uncached HTTP/2 | 1 | −4.2% | −0.2% | −6.0% |
 | Uncached HTTP/2 | 32 | −3.6% | +1.7% | +7.7% |
 
-The 32-client warm case used less CPU in all eight pairs. The uncached
-32-client case had higher p99 latency in five pairs. These shared-host
-measurements do not establish a latency improvement under upstream load.
-Native Windows runs are recorded separately in the PR’s Actions artifacts.
+The 32-client warm case used less CPU in all eight Linux pairs. For the
+32-client uncached case, the first run had higher p99 latency in five
+pairs. Eight additional pairs with 10-second windows validated another
+517,122 replies. Their median paired CPU cost changed by −2.6%, throughput
+by +1.7% and p99 by −1.3%.
 
-[Raw windows](measurements.csv) · [Build and host details](environment.json) ·
-[Reproduction command](../../../bench/README.md#comparing-a-resolver-patch)
+## Native Windows results
+
+Both executables on each architecture used the same toolchain, bundled libcurl
+8.23.0 and default Windows process scheduling. Four alternating pairs per
+workload validated 1,617,494 replies on AMD64 and 478,500 on ARM64. Each
+measurement window was two seconds. The table uses within-pair changes.
+The ARM64 resolver ran natively. Its Python load driver ran under x64 emulation.
+
+| Architecture | Workload | UDP clients | CPU time per query | Throughput | p99 latency |
+| --- | --- | ---: | ---: | ---: | ---: |
+| AMD64 | Warm cache | 1 | −6.1% | +0.9% | +3.8% |
+| AMD64 | Warm cache | 32 | +2.0% | −9.5% | +15.4% |
+| AMD64 | Uncached HTTP/2 | 1 | Below timer resolution | <0.1% | <0.1% |
+| AMD64 | Uncached HTTP/2 | 32 | +14.7% | +1.6% | +0.9% |
+| ARM64 | Warm cache | 1 | −2.4% | −0.8% | +8.7% |
+| ARM64 | Warm cache | 32 | −0.1% | −0.6% | −0.9% |
+| ARM64 | Uncached HTTP/2 | 1 | Coarse timer | −0.3% | <0.1% |
+| ARM64 | Uncached HTTP/2 | 32 | +9.6% | +1.7% | −0.2% |
+
+On AMD64 with 32 warm-cache clients the candidate was slower and had higher
+p99 in every pair. Median throughput fell from 84,885 to 76,824 queries/s.
+CPU estimates for lightly loaded, single-client misses have too few Windows
+process timer ticks for a reliable percentage. The native tests use isolated
+loopback fixtures and do not predict CPU usage on a particular desktop.
+
+| Raw measurements | Build and host details |
+| --- | --- |
+| [Initial Linux run](measurements.csv) | [Linux environment](environment.json) |
+| [Linux repeat](linux-repeat/measurements.csv) | [Repeat environment](linux-repeat/environment.json) |
+| [Windows AMD64](windows-amd64/measurements.csv) | [AMD64 environment](windows-amd64/environment.json) |
+| [Windows ARM64](windows-arm64/measurements.csv) | [ARM64 environment](windows-arm64/environment.json) |
+
+[Candidate patch](candidate.patch) · [Reproduction command](../../../bench/README.md#comparing-a-resolver-patch) ·
+[Native workflow run](https://github.com/fantuz/DNSProxy/actions/runs/46095651536)

@@ -83,6 +83,22 @@ class OwnedProcessTests(unittest.TestCase):
         for secret in ("secret", "user:", "token=private", "fragment", "a" * 100):
             self.assertNotIn(secret, snapshot["logs"])
 
+    def test_unchanged_log_is_redacted_once_and_cleared_on_restart(self):
+        resolver = OwnedResolver(["missing-resolver"])
+        resolver._append(b"first https://example.org/path?token=secret\n")
+        with patch("owned_process.safe_text", wraps=safe_text) as redact:
+            first = resolver.snapshot()["logs"]
+            self.assertNotIn("secret", first)
+            self.assertEqual(resolver.snapshot()["logs"], first)
+            self.assertEqual(redact.call_count, 1)
+            resolver._append(b"second\n")
+            self.assertEqual(resolver.snapshot()["logs"], first + "second\n")
+            self.assertEqual(redact.call_count, 2)
+        with patch("owned_process._spawn", side_effect=OSError("fixture")):
+            with self.assertRaises(RuntimeError):
+                resolver.start()
+        self.assertEqual(resolver.snapshot()["logs"], "")
+
     def test_forced_stop_is_reported_and_is_bounded(self):
         code = (
             "import signal,sys,time; signal.signal(getattr(signal,'SIGBREAK',signal.SIGTERM),signal.SIG_IGN); "

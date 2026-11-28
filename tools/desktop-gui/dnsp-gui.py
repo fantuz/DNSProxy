@@ -1102,7 +1102,7 @@ def build_application(options):
                 status = f"Resolver exited with status {state.get('returncode')}"
             if error:
                 status += " · " + error
-            self.log_status.set_text(status)
+            self.set_label(self.log_status, status)
             if not state.get("running") and not state.get("stopping"):
                 self.last_owned_snapshot = state
                 self.launch_status.set_text(status + "; see Diagnostics")

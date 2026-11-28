@@ -148,6 +148,7 @@ class OwnedResolver:
         self._reader = None
         self._stopper = None
         self._logs = bytearray()
+        self._log_text = ""
         self._leading_partial = False
         self._error = ""
         self._revision = 0
@@ -174,6 +175,7 @@ class OwnedResolver:
                     "The owned resolver is already running or still stopping"
                 )
             self._logs.clear()
+            self._log_text = ""
             self._leading_partial = False
             self._error = ""
             self._forced = False
@@ -204,6 +206,7 @@ class OwnedResolver:
     def _append(self, data):
         with self._lock:
             self._logs.extend(data)
+            self._log_text = None
             excess = len(self._logs) - MAX_LOG_BYTES
             if excess > 0:
                 self._leading_partial = self._logs[excess - 1] != 10
@@ -338,17 +341,20 @@ class OwnedResolver:
     def snapshot(self):
         with self._lock:
             child = self._child
-            data = bytes(self._logs)
-            if self._leading_partial:
-                newline = data.find(b"\n")
-                data = data[newline + 1 :] if newline >= 0 else b""
+            returncode = child.poll() if child else None
+            if self._log_text is None:
+                data = bytes(self._logs)
+                if self._leading_partial:
+                    newline = data.find(b"\n")
+                    data = data[newline + 1 :] if newline >= 0 else b""
+                self._log_text = safe_text(data.decode("utf-8", "replace"))
             return {
                 "pid": child.pid if child else None,
-                "running": child is not None and child.poll() is None,
+                "running": child is not None and returncode is None,
                 "stopping": self._stopping,
-                "returncode": child.poll() if child else None,
+                "returncode": returncode,
                 "forced_stop": self._forced,
-                "logs": safe_text(data.decode("utf-8", "replace")),
+                "logs": self._log_text,
                 "error": self._error,
                 "revision": self._revision,
             }
