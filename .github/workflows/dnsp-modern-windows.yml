@@ -53,7 +53,7 @@ jobs:
       - name: Restore the x64 test Python on ARM64 runners
         if: matrix.arch == 'arm64'
         id: python-cache
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ runner.tool_cache }}/Python/${{ env.DNSP_PYTHON_VERSION }}/x64
@@ -80,7 +80,7 @@ jobs:
           key: ${{ steps.python-cache.outputs.cache-primary-key }}
       - name: Restore the prepared MSYS2 toolchain
         id: msys-cache
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/msys64
           key: dnsp-msys-v1-${{ matrix.runner }}-${{ matrix.msystem }}-${{ steps.cache-epoch.outputs.image }}-${{ steps.cache-epoch.outputs.week }}-${{ hashFiles('.github/workflows/dnsp-modern-windows.yml') }}

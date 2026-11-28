@@ -54,7 +54,7 @@ jobs:
           "packages=git $($nativePackages -join ' ')" >> $env:GITHUB_OUTPUT
       - name: Restore the native GTK tool environment
         id: runtime-cache
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/msys64
           key: dnsp-gtk-v2-${{ matrix.runner }}-${{ matrix.msystem }}-${{ steps.epoch.outputs.image }}-${{ steps.epoch.outputs.week }}-${{ hashFiles('ci/windows-gui-runtime-packages.txt') }}
