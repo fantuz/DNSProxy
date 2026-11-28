@@ -24,7 +24,7 @@ filename you downloaded. This example verifies the released Apple Silicon copy.
 For Intel, use the filename ending in `-macos-x86_64.tar.gz`.
 
 ```sh
-archive=dnsp-modern-4.12.0-macos-arm64.tar.gz
+archive=dnsp-modern-4.12.1-macos-arm64.tar.gz
 expected=$(awk -v f="$archive" '$2 == f {print $1}' SHA256SUMS)
 actual=$(shasum -a 256 "$archive") && [ "${actual%% *}" = "$expected" ] && echo "Archive verified"
 ```

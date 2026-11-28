@@ -400,7 +400,7 @@ The publishing workflow requires both Windows portable ZIPs, both resolver/servi
 setup EXEs, both desktop setup EXEs and both matching runtime-source ZIPs,
 alongside eight Linux daemon packages, four Linux GUI packages and two macOS
 archives. Native Windows/macOS, desktop, packaging and sanitizer checks gate
-publication. Release v4.12.0-modern contains this set of twenty-two deliverables,
+publication. Release v4.12.1-modern contains this set of twenty-two deliverables,
 all covered by `SHA256SUMS`.
 
 ## Build from source
