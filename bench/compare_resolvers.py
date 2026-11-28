@@ -399,7 +399,7 @@ def write_summary(directory, rows):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--dnsp', type=Path, default=Path('./dnsp-modern'))
+    parser.add_argument('--dnsp', type=Path, default=Path('dnsp-modern.exe' if os.name == 'nt' else 'dnsp-modern'))
     parser.add_argument('--adguard', type=Path)
     parser.add_argument('--dnscrypt', type=Path)
     parser.add_argument('--candidate', type=Path, help='test a second DNSProxy binary with identical settings')
@@ -414,8 +414,10 @@ def main():
     parser.add_argument('--delay-ms', type=float, default=1)
     args = parser.parse_args()
     windows = os.name == 'nt'
-    if windows and (args.systemd_resolved or args.dnscrypt or args.adguard):
-        parser.error('Windows comparisons support DNSProxy builds and the direct UDP fixture')
+    if not windows and not hasattr(os, 'sched_getaffinity'):
+        parser.error('the comparison runner supports native Windows and Linux')
+    if windows and (args.systemd_resolved or args.dnscrypt or args.adguard or args.direct_udp):
+        parser.error('on Windows supply DNSProxy builds with --dnsp and optionally --candidate')
     allowed = None if windows else sorted(os.sched_getaffinity(0))
     if ((allowed is not None and len(allowed) < 2) or not all(1 <= n <= 128 for n in args.clients)
             or len(set(args.clients)) != len(args.clients) or len(set(args.workloads)) != len(args.workloads) or args.runs < 1
