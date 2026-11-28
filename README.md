@@ -56,11 +56,11 @@ by the interface. Monitoring an existing service is read-only. Linux packages,
 bundled Windows desktop installers and a Homebrew-based Mac launcher provide
 the platform-specific distribution formats.
 
-Release **v4.12.0-modern** contains 22 deliverables plus `SHA256SUMS`. These include Linux
+Release **v4.12.1-modern** contains 22 deliverables plus `SHA256SUMS`. These include Linux
 daemon/GUI packages, Windows portable ZIPs, resolver/service and bundled desktop
 setup EXEs, matching desktop-runtime source ZIPs, and native macOS archives with
 the Finder app for the Homebrew-based GUI. Each build records its source revision in
-addition to the version number. See the [4.12.0 release notes](docs/releases/4.12.0.md).
+addition to the version number. See the [4.12.1 release notes](docs/releases/4.12.1.md).
 
 [Windows setup guide](docs/WINDOWS.md)
 · [macOS setup guide](docs/MACOS.md)
@@ -632,6 +632,8 @@ before supplying a replacement. See
 
 ## Packages and releases
 
+The [4.12.1 release notes](docs/releases/4.12.1.md) cover lower desktop CPU
+use when polling resolver logs and how Windows builds refresh bundled libcurl.
 The [4.12.0 release notes](docs/releases/4.12.0.md) cover the macOS Finder app,
 warm-cache and OS resolver comparisons, and release asset verification.
 The [4.11.1 release notes](docs/releases/4.11.1.md) cover the retirement of
