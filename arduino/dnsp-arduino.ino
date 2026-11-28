@@ -1,6 +1,6 @@
 
 /*
-  Copyright: (c) SAEKI Yoshiyasu, Massimiliano Fantuzzi HB3YOE
+  Copyright: (c) SAEKI Yoshiyasu, Massimiliano Fantuzzi HB9GUS
   Analog inputs attached to pins A0 through A5 (optional)
 */
 

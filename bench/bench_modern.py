@@ -122,8 +122,32 @@ def phase_timings(before, after):
     return phases
 
 
+def windows_cpu_seconds(pid):
+    """Read user and kernel CPU time for the resolver, excluding the fixture and client."""
+    import ctypes
+    from ctypes import wintypes as w
+
+    kernel = ctypes.WinDLL('kernel32')
+    kernel.OpenProcess.argtypes = (w.DWORD, w.BOOL, w.DWORD)
+    kernel.OpenProcess.restype = w.HANDLE
+    kernel.CloseHandle.argtypes = (w.HANDLE,)
+    kernel.GetProcessTimes.argtypes = (w.HANDLE,) + (ctypes.POINTER(w.FILETIME),) * 4
+    handle = kernel.OpenProcess(0x1000, False, pid) if pid > 0 else None  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        created, exited, system, user = (w.FILETIME() for _ in range(4))
+        if kernel.GetProcessTimes(handle, *(ctypes.byref(t) for t in (created, exited, system, user))):
+            return sum((t.dwHighDateTime << 32) + t.dwLowDateTime for t in (system, user)) / 10_000_000
+        return None
+    finally:
+        kernel.CloseHandle(handle)
+
+
 def proxy_cpu_rss(pid):
-    """Process CPU seconds and resident memory bytes, Linux /proc only."""
+    """Process CPU seconds on Windows/Linux and resident memory bytes on Linux."""
+    if os.name == 'nt':
+        return windows_cpu_seconds(pid), None, None
     try:
         raw = Path(f'/proc/{pid}/stat').read_text()
         fields = raw[raw.rfind(')')+2:].split()  # starts at field 3

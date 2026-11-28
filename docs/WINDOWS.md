@@ -353,6 +353,26 @@ discovery with both valid and invalid TLS hostnames. The required
 **DNSProxy PR checks** status includes Windows when applicable.
 The Linux packages and tests also validate changes to the shared core.
 
+### libcurl and bundled DLL updates
+
+The standard installer, desktop installer and portable ZIP ship the native
+libcurl DLL and its dependency DLLs together. Install a newer DNSProxy package
+to update a Windows client. Run `dnsp-modern.exe --version` to see its build
+and runtime libcurl versions and TLS backend. The ZIP's `BUILD-INFO.txt`
+also records the MSYS2 package revisions, including packaging-only fixes.
+
+Release builds start from a fresh MSYS2 environment and update the full package
+set for each architecture. Pull requests can reuse the weekly prepared toolchain.
+A Tuesday CI run builds and tests fresh AMD64 and ARM64 resolver packages even
+in weeks without source changes. Its summary compares curl, OpenSSL, nghttp2,
+nghttp3 and ngtcp2 package revisions with the latest published Windows ZIP
+and flags differences. It publishes test artifacts. Stable installers
+are published through the normal versioned release workflow. CI runs the
+extracted executable with MSYS2 removed from PATH and checks both reported
+libcurl versions against the architecture's recorded curl package.
+[Native Windows workflow](../.github/workflows/dnsp-modern-windows.yml) ·
+[MSYS2 update policy](https://www.msys2.org/docs/updating/)
+
 Both architecture bundles are unsigned native Windows builds, offered as portable
 ZIPs and setup EXEs; no MSI/MSIX package is produced. CI executes the resolver,
 Python protocol fixtures, platform

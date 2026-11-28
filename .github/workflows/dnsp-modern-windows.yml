@@ -1,6 +1,8 @@
 name: DNSProxy modern - native Windows
 
 "on":
+  schedule:
+    - cron: '23 5 * * 2'
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -29,7 +31,7 @@ jobs:
             prefix: mingw-w64-clang-aarch64
             compiler: clang
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       # Pin the test driver independently of the native product architecture.
       DNSP_PYTHON_VERSION: '3.13.17'
@@ -39,9 +41,10 @@ jobs:
       DNSP_PACKAGE_PREFIX: ${{ matrix.prefix }}
       DNSP_COMPILER: ${{ matrix.compiler }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       - name: Select the toolchain refresh window
         id: cache-epoch
         shell: pwsh
@@ -53,13 +56,13 @@ jobs:
       - name: Restore the x64 test Python on ARM64 runners
         if: matrix.arch == 'arm64'
         id: python-cache
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ runner.tool_cache }}/Python/${{ env.DNSP_PYTHON_VERSION }}/x64
             ${{ runner.tool_cache }}/Python/${{ env.DNSP_PYTHON_VERSION }}/x64.complete
           key: dnsp-python-v1-${{ matrix.runner }}-${{ steps.cache-epoch.outputs.image }}-x64-${{ env.DNSP_PYTHON_VERSION }}
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.DNSP_PYTHON_VERSION }}
           # QUIC fixture dependencies do not all publish Windows ARM64 wheels.
@@ -79,8 +82,9 @@ jobs:
             ${{ runner.tool_cache }}/Python/${{ env.DNSP_PYTHON_VERSION }}/x64.complete
           key: ${{ steps.python-cache.outputs.cache-primary-key }}
       - name: Restore the prepared MSYS2 toolchain
+        if: github.event_name == 'pull_request'
         id: msys-cache
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/msys64
           key: dnsp-msys-v1-${{ matrix.runner }}-${{ matrix.msystem }}-${{ steps.cache-epoch.outputs.image }}-${{ steps.cache-epoch.outputs.week }}-${{ hashFiles('.github/workflows/dnsp-modern-windows.yml') }}
@@ -116,14 +120,45 @@ jobs:
         run: |
           & "$env:RUNNER_TEMP/msys64/usr/bin/bash.exe" -leo pipefail -c 'bash scripts/build-windows.sh'
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Compare the released Windows transport packages with this week's build
+        if: github.event_name == 'schedule'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DNSP_ARCH: ${{ matrix.arch }}
+        run: |
+          $tag = gh release view --json tagName --jq .tagName
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $old = Join-Path $env:RUNNER_TEMP 'released-transport'
+          gh release download $tag --pattern "dnsp-modern-*-windows-$env:DNSP_ARCH-poc.zip" --dir $old
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $archive = (Get-ChildItem $old -Filter '*.zip').FullName
+          Expand-Archive -LiteralPath $archive -DestinationPath "$old/extracted"
+          $pattern = "^$env:DNSP_PACKAGE_PREFIX-(curl|openssl|nghttp2|nghttp3|ngtcp2) "
+          $oldVersions = @(Get-Content "$old/extracted/BUILD-INFO.txt" | Where-Object { $_ -match $pattern })
+          $newVersions = @(Get-Content dist/windows/BUILD-INFO.txt | Where-Object { $_ -match $pattern })
+          if (-not ($oldVersions -match '-curl ') -or -not ($newVersions -match '-curl ')) {
+            throw 'The Windows package inventory is missing libcurl.'
+          }
+          "### Windows $env:DNSP_ARCH transport packages compared with $tag" >> $env:GITHUB_STEP_SUMMARY
+          $changes = Compare-Object $oldVersions $newVersions
+          if ($changes) {
+            Write-Output "::warning::Windows $env:DNSP_ARCH transport packages differ from $tag. Review the next DNSProxy release."
+            foreach ($change in $changes) {
+              $which = if ($change.SideIndicator -eq '=>') { 'Fresh build' } else { 'Published' }
+              "- $which — $($change.InputObject)" >> $env:GITHUB_STEP_SUMMARY
+            }
+          } else {
+            'The tracked package revisions match.' >> $env:GITHUB_STEP_SUMMARY
+          }
       - name: Save the prepared toolchain after a successful native build
-        if: steps.msys-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'pull_request' && steps.msys-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/msys64
           key: ${{ steps.msys-cache.outputs.cache-primary-key }}
       - name: Cache Windows protocol fixture downloads
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/AppData/Local/pip/Cache
           key: dnsp-pip-v1-${{ matrix.runner }}-x64-${{ env.DNSP_PYTHON_VERSION }}-${{ hashFiles('ci/requirements-*.txt') }}
@@ -131,6 +166,29 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --only-binary=:all: -r ci/requirements-protocol.txt
+      - name: Measure native resolver CPU on cached and uncached queries
+        if: github.event_name == 'pull_request' || github.event_name == 'schedule'
+        shell: pwsh
+        env:
+          DNSP_TEST_OPENSSL: ${{ steps.build.outputs.openssl }}
+        run: |
+          $candidate = (Resolve-Path dist/windows/dnsp-modern.exe).Path
+          $builds = @('--dnsp', $candidate)
+          if ($env:GITHUB_EVENT_NAME -eq 'pull_request') {
+            $coreChanges = git diff --name-only HEAD^1 HEAD -- dnsp-modern.c dnsp-platform.h dnsp-service.h dnsp-policy.h
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            if (-not $coreChanges) { exit 0 }
+            $baseline = Join-Path $env:RUNNER_TEMP 'dnsp-cpu-baseline'
+            git worktree add --detach $baseline HEAD^1
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            & "$env:RUNNER_TEMP/msys64/usr/bin/bash.exe" -leo pipefail -c 'cd "$(cygpath -u "$RUNNER_TEMP")/dnsp-cpu-baseline" && GITHUB_OUTPUT= bash scripts/build-windows.sh'
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $builds = @('--dnsp', (Join-Path $baseline 'dist/windows/dnsp-modern.exe'), '--candidate', $candidate)
+          }
+          $report = 'dist/windows-test-logs/forwarder-cpu'
+          python bench/compare_resolvers.py @builds --clients 1 32 --workloads miss hit --runs 4 --warmup 0.5 --duration 2 --output $report
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-Content "$report/summary.md" -Encoding utf8 >> $env:GITHUB_STEP_SUMMARY
       - name: Test the portable bundle without MSYS2 on PATH
         shell: pwsh
         env:

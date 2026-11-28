@@ -1,0 +1,39 @@
+{
+  "started_utc": "2026-11-28T02:05:34.328603+00:00",
+  "cpu_model": "ARMv8 (64-bit) Family 8 Model D49 Revision   0, MICROSOFT CORPORATION",
+  "system": "Windows-11-10.0.26200-SP0",
+  "python": "3.13.17",
+  "distribution": "Windows-11-10.0.26200-SP0",
+  "dependencies": {
+    "hypercorn": "0.18.0",
+    "h2": "4.4.1"
+  },
+  "binaries": {
+    "DNSProxy": {
+      "version": "dnsp-modern 4.12.0\nlibcurl_build=8.23.0\nlibcurl_runtime=8.23.0\ntls_backend=OpenSSL/4.1.0\nhttp2=yes\nhttp3=yes\nprefer_h3=yes",
+      "binary_sha256": "cd714210a9cbce635dc1bd985a61f1da164aea29e2df959fa14241efc5fc1724"
+    },
+    "DNSProxy candidate": {
+      "version": "dnsp-modern 4.12.0\nlibcurl_build=8.23.0\nlibcurl_runtime=8.23.0\ntls_backend=OpenSSL/4.1.0\nhttp2=yes\nhttp3=yes\nprefer_h3=yes",
+      "binary_sha256": "f79795c9e1cc52e58136b98518fbedda99d983bf6f48854567ba29b048cc020a"
+    }
+  },
+  "doh_forwarder_privileges": "inherited",
+  "proxy_cpu": null,
+  "fixture_client_cpus": null,
+  "runs": 4,
+  "clients": [
+    1,
+    32
+  ],
+  "workloads": [
+    "miss",
+    "hit"
+  ],
+  "direct_udp": false,
+  "hot_names": 16,
+  "duration_s": 2.0,
+  "warmup_s": 0.5,
+  "fixture_delay_ms": 1,
+  "clock_ticks_per_second": null
+}

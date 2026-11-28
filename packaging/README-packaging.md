@@ -9,6 +9,19 @@ the resolver to listen on port 5300.
 Persistent TCP clients can pipeline requests. The proxy sends replies in order
 and handles one upstream request at a time per connection.
 
+## How libcurl updates reach an installation
+
+| Distribution | Where libcurl comes from | How an installed copy receives an update |
+| --- | --- | --- |
+| Linux DEB / RPM | Distribution packages, dynamically linked | Apply the distribution’s package updates and restart DNSProxy to load the updated library. |
+| macOS archives | Apple's system libcurl | Apply the macOS update and restart DNSProxy. |
+| Windows ZIP and installers | Native MSYS2 DLLs bundled and tested together | Install the newer DNSProxy release or replace the complete portable bundle. |
+| GHCR | Debian packages installed during the image build | Pull the updated image and recreate the container. Release builds refresh the package layers. |
+
+The Windows weekly build exercises the available packages on both native
+architectures. Existing Windows installations follow the DNSProxy release cycle.
+[Windows build and update details](../docs/WINDOWS.md#libcurl-and-bundled-dll-updates)
+
 ## Manual build and integration tests
 
 On supported Debian/Ubuntu systems:
