@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install compiler, curl and Python venv
         run: |
           sudo sh scripts/ci-install-ubuntu.sh build-essential pkg-config libcurl4-openssl-dev curl python3-venv openssl iproute2
@@ -82,7 +82,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build the resolver and fetch checksum-pinned peers
         run: |
           sudo sh scripts/ci-install-ubuntu.sh build-essential pkg-config libcurl4-openssl-dev python3-venv openssl iproute2
@@ -110,7 +110,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Select the dependency refresh window
         id: dependencies
         run: echo "epoch=$(( $(date -u +%s) / 604800 ))" >> "$GITHUB_OUTPUT"
