@@ -284,6 +284,9 @@ class BenchmarkIntegrationTests(unittest.TestCase):
             self.assertGreater(h1['successful_queries'], 0)
             self.assertEqual(h2['failed_responses'] + h2['timeouts'], 0, h2)
             self.assertEqual(h1['failed_responses'] + h1['timeouts'], 0, h1)
+            if os.name == 'nt' or sys.platform.startswith('linux'):
+                self.assertIsNotNone(h2['proxy_cpu_seconds'])
+                self.assertGreaterEqual(h2['proxy_cpu_seconds'], 0)
             if sys.platform.startswith('linux'):
                 self.assertGreater(h2['proxy_rss_peak_bytes'], 0)
             else:

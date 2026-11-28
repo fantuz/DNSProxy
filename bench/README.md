@@ -58,6 +58,14 @@ The runner gives both the same options and alternates their order by repetition.
   --output dist/resolver-patch-comparison
 ```
 
+On Windows, point `--dnsp` and `--candidate` at the executable inside each
+complete native bundle. Set `DNSP_TEST_OPENSSL` to the OpenSSL executable used
+to create the loopback fixture certificate. Windows uses the host scheduler
+and reports process CPU time. Linux pins the forwarder to one CPU. Compare
+builds within the same host and architecture. The native Windows workflow
+keeps the raw CSV, environment and summary under `forwarder-cpu` in the
+test-log artifact when a PR changes the resolver or platform headers.
+
 Compare paired runs, tail latency and CPU time per completed query. Run the
 normal UDP and TCP correctness tests before adopting an event-loop change.
 
@@ -126,7 +134,11 @@ over UDP. The mock does no recursion or caching.
 * `p50_ms`, `p95_ms`, `p99_ms` = end-to-end UDP request/response latency,
   measured using `perf_counter_ns()` for complete successful replies.
 * `proxy_cpu_percent_of_one_core` = delta process user+system CPU time divided
-  by elapsed wall time × 100. `200%` means two CPU cores worth of CPU time.
+  by elapsed wall time × 100. Linux reads `/proc` and Windows reads the
+  resolver’s kernel and user time with `GetProcessTimes`. The fixture, load
+  generator and desktop monitor run in separate processes. For CPU cost per
+  successful query, divide `proxy_cpu_seconds` by `successful_queries` in a
+  run with zero failures, truncations and timeouts.
 * `proxy_rss_*` = Linux `/proc/PID` resident bytes; `proxy_rss_peak_bytes` is
   the **process lifetime** high-water mark, not a window-specific maximum.
 * `curl_metric_delta` = before/after differences from `127.0.0.1:<port>/metrics`,

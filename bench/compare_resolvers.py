@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare local DNS forwarding paths and warm answer caches on Linux."""
+"""Compare local DNS forwarding paths and warm answer caches on Linux or native Windows."""
 import argparse
 import base64
 import csv
@@ -311,7 +311,7 @@ def direct_upstream(args, run, port, metrics):
 
 def forwarder_credentials():
     # The namespace wrapper needs root, but ordinary desktop forwarders do not.
-    if os.geteuid() != 0:
+    if os.name == 'nt' or os.geteuid() != 0:
         return {}
     import pwd
     uid = int(os.environ.get('SUDO_UID', '0'))
@@ -326,11 +326,12 @@ def scenario(name, binary, args, run, directory, cert, upstream, metrics, worklo
     env = {k: v for k, v in os.environ.items()
            if k.lower() not in {'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy'}}
     env.update(SSL_CERT_FILE=str(cert), GOMAXPROCS='1')
-    # Give the forwarder exclusive use of one allowed CPU among benchmark processes.
+    if args.cpu is not None:
+        command = ['taskset', '-c', str(args.cpu), *command]
     log = directory / 'proxy.log'
     credentials = {} if name == 'systemd-resolved' else args.peer_credentials
     with log.open('wb') as stream:
-        process = subprocess.Popen(['taskset', '-c', str(args.cpu), *command], env=env,
+        process = subprocess.Popen(command, env=env,
                                    stdout=stream, stderr=subprocess.STDOUT, cwd=directory, **credentials)
         try:
             await_ready(port, process, name)
@@ -348,11 +349,16 @@ def scenario(name, binary, args, run, directory, cert, upstream, metrics, worklo
                 observed = metrics('snapshot')
                 n = row['queries'] if workload == 'miss' else 0
                 counts = check_upstream(observed, protocol, n)
-                row.update(proxy_cpu_s=round(cpu_after - cpu_before, 3), rss_mib=round(rss / 1048576, 2), **counts)
+                if cpu_before is None or cpu_after is None:
+                    raise RuntimeError('resolver CPU time unavailable')
+                row.update(proxy_cpu_s=round(cpu_after - cpu_before, 6),
+                           rss_mib=round(rss / 1048576, 2) if rss is not None else None, **counts)
                 yield dict(resolver=name, run=run, clients=clients, workload=workload, **row)
         except Exception:
-            print(f'{name}, {workload}, repetition {run}. UDP counters from /proc/net/snmp:', flush=True)
-            print('\n'.join(s for s in Path('/proc/net/snmp').read_text().splitlines() if s.startswith('Udp:')), flush=True)
+            print(f'{name}, {workload}, repetition {run}', flush=True)
+            snmp = Path('/proc/net/snmp')
+            if snmp.is_file():
+                print('\n'.join(s for s in snmp.read_text().splitlines() if s.startswith('Udp:')), flush=True)
             print(log.read_text(errors='replace')[-3000:], flush=True)
             raise
         finally:
@@ -382,11 +388,12 @@ def write_summary(directory, rows):
                 cpu = rss = '—'
                 if group[0]['proxy_cpu_s'] is not None:
                     cpu = f"{median(r['proxy_cpu_s'] * 1e6 / r['queries'] for r in group):.0f}"
+                if group[0]['rss_mib'] is not None:
                     rss = f"{median(r['rss_mib'] for r in group):.1f}"
                 lines.append(f'| {workload} | {clients} | {name} | {median(rates):,.0f} | {min(rates):,.0f}–{max(rates):,.0f} | '
                              + ' | '.join(f'{ms:.2f}' for ms in timings) + f' | {cpu} | {rss} |')
     temporary = directory / 'summary.partial.md'
-    temporary.write_text('\n'.join(lines) + '\n')
+    temporary.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     temporary.replace(directory / 'summary.md')
 
 
@@ -406,12 +413,15 @@ def main():
     parser.add_argument('--warmup', type=float, default=0.75)
     parser.add_argument('--delay-ms', type=float, default=1)
     args = parser.parse_args()
-    allowed = sorted(os.sched_getaffinity(0))
-    if (len(allowed) < 2 or not all(1 <= n <= 128 for n in args.clients)
+    windows = os.name == 'nt'
+    if windows and (args.systemd_resolved or args.dnscrypt or args.adguard):
+        parser.error('Windows comparisons support DNSProxy builds and the direct UDP fixture')
+    allowed = None if windows else sorted(os.sched_getaffinity(0))
+    if ((allowed is not None and len(allowed) < 2) or not all(1 <= n <= 128 for n in args.clients)
             or len(set(args.clients)) != len(args.clients) or len(set(args.workloads)) != len(args.workloads) or args.runs < 1
             or min(args.duration, args.warmup) <= 0 or args.delay_ms < 0):
         parser.error('requires two CPUs, distinct client counts in 1..128 and positive run lengths')
-    args.cpu = allowed[0]
+    args.cpu = allowed[0] if allowed else None
     args.peer_credentials = forwarder_credentials()
     binaries = {name: path.resolve(strict=True) for name, path in
                 [('DNSProxy', args.dnsp), ('DNSProxy candidate', args.candidate),
@@ -423,17 +433,21 @@ def main():
         flag = '-version' if name == 'dnscrypt-proxy' else '--version'
         software[name] = {'version': subprocess.check_output([binary, flag], text=True).strip(),
                           'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest()}
-    model = next((line.partition(':')[2].strip() for line in Path('/proc/cpuinfo').read_text().splitlines()
-                  if line.startswith('model name')), platform.machine())
+    model = platform.processor() or platform.machine()
+    if not windows:
+        model = next((line.partition(':')[2].strip() for line in Path('/proc/cpuinfo').read_text().splitlines()
+                      if line.startswith('model name')), model)
     metadata = dict(started_utc=datetime.now(timezone.utc).isoformat(), cpu_model=model, system=platform.platform(), python=platform.python_version(),
-                    distribution=platform.freedesktop_os_release()['PRETTY_NAME'],
+                    distribution=platform.platform() if windows else platform.freedesktop_os_release()['PRETTY_NAME'],
                     dependencies={p: version(p) for p in ['hypercorn', 'h2']}, binaries=software,
-                    doh_forwarder_privileges='unprivileged', proxy_cpu=args.cpu, fixture_client_cpus=allowed[1:], runs=args.runs,
+                    doh_forwarder_privileges='inherited' if windows else 'unprivileged', proxy_cpu=args.cpu,
+                    fixture_client_cpus=allowed[1:] if allowed else None, runs=args.runs,
                     clients=args.clients, workloads=args.workloads, direct_udp=bool(args.direct_udp or args.systemd_resolved), hot_names=HOT_NAMES, duration_s=args.duration, warmup_s=args.warmup,
-                    fixture_delay_ms=args.delay_ms, clock_ticks_per_second=os.sysconf('SC_CLK_TCK'))
+                    fixture_delay_ms=args.delay_ms, clock_ticks_per_second=None if windows else os.sysconf('SC_CLK_TCK'))
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / 'environment.json').write_text(json.dumps(metadata, indent=2) + '\n')
-    os.sched_setaffinity(0, allowed[1:])
+    if allowed:
+        os.sched_setaffinity(0, allowed[1:])
     partial = args.output / 'measurements.partial.csv'
     with tempfile.TemporaryDirectory() as tmp, partial.open('w', newline='') as output:
         directory = Path(tmp)

@@ -424,6 +424,33 @@ class Tests(unittest.TestCase):
         self.assertGreaterEqual(self.metric(after, 'dnsp_tcp_keepalive_queries_total') -
                                 self.metric(before, 'dnsp_tcp_keepalive_queries_total'), 3)
 
+    def test_tcp_slots_reused_after_middle_and_tail_disconnects(self):
+        with ExitStack() as clients:
+            def connect():
+                sock = clients.enter_context(socket.create_connection(('127.0.0.1', self.port), timeout=3))
+                exchange(sock)
+                return sock
+
+            def exchange(sock):
+                sock.sendall(self.frame(QUERY))
+                self.assertEqual(self.tcp_frame(sock), make_response(QUERY))
+
+            def finish(sock):
+                sock.shutdown(socket.SHUT_WR)
+                self.assertEqual(sock.recv(1), b'')
+                sock.close()
+
+            first, middle, last = connect(), connect(), connect()
+            finish(middle)
+            exchange(last)
+            replacement = connect()
+            finish(last)
+            exchange(replacement)
+            finish(replacement)
+            exchange(first)
+            finish(first)
+            connect()  # grow the table again after every slot was released
+
     def test_tcp_source_limit_and_idle_pressure(self):
         rejected = 'dnsp_tcp_connections_rejected_total{reason="source_limit"}'
         capacity = 'dnsp_tcp_connections_rejected_total{reason="capacity"}'
